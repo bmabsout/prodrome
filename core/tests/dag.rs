@@ -151,7 +151,6 @@ fn the_live_chain_reads_clean_and_in_the_generators_order() {
     }
     let store = EventStore::new(&events, untrusted());
     let read = store.read_dag_named().expect("the live chain reads");
-    assert_eq!(read.len(), 564, "the chain as of the vectors' generation");
     assert_eq!(store.verify(), Vec::<String>::new(), "verify is clean");
 
     #[derive(Deserialize)]
@@ -170,8 +169,17 @@ fn the_live_chain_reads_clean_and_in_the_generators_order() {
         .iter()
         .map(|object| object.name.as_str())
         .collect();
-    let ours: Vec<&str> = read.iter().map(|(name, _)| name.as_str()).collect();
+    // The generator wrote the chain as of ITS tip; the chain has grown since
+    // (it does every hour). Read it as of that tip — the last name, this being
+    // a chain — and the two reads must agree exactly, not merely overlap.
+    let last = Hash::new(*generated.last().expect("the generator saw a chain"))
+        .expect("the generator's names are hashes");
+    let then = store
+        .read_dag_at(&BTreeSet::from([last]))
+        .expect("the chain reads at the generator's tip");
+    let ours: Vec<&str> = then.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(ours, generated, "read_dag's order is the generator's");
+    assert!(read.len() >= then.len(), "the chain only grows");
 
     // One head, no refs/, and `read_chain` agrees with `read_dag` on it — the
     // chain is the DAG in which every object has one parent.
