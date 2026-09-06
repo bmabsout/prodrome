@@ -24,6 +24,7 @@ use std::collections::BTreeSet;
 
 use sha2::{Digest, Sha256};
 
+use crate::fpl::{Term, TERM_SIGNATURES};
 use crate::literal::{parse_literal, print_literal, Call, Datetime, ProdromeError, Table, Value};
 
 // --- the names, as types ----------------------------------------------------
@@ -262,67 +263,14 @@ impl NoteSite {
 }
 
 // --- the spec a repricing carries -------------------------------------------
-
-/// §7's `Term`, held as the literal it prints as.
-///
-/// ⚠️ COORDINATED PLACEHOLDER. `fpl.rs` is written in parallel and will export
-/// `pub enum Term` with its own `to_value`/`from_value`; this file does not
-/// touch that module, so until the two meet, a spec is carried as the value it
-/// prints as. That is enough for everything §3 and §4 promise — a spec rides
-/// with its event, the print is the identity on it, and the hash is the hash of
-/// the print — and it is deliberately NOT enough to evaluate one, which is the
-/// point: fulfillment is computed in exactly one place (§1) and this is not it.
-///
-/// The vocabulary IS checked, recursively (`TERM_SIGNATURES`), because §2's
-/// doctrine is that the whitelist is the grammar; the per-field BOUNDS
-/// (`Flat`'s 0..1, `Conj`'s `p`) are `fpl`'s and arrive with it. At integration
-/// this type becomes a thin wrapper over — or an alias for — `fpl::Term`, and
-/// the two methods below are where that happens.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Spec(Value);
-
-impl Spec {
-    /// The parse boundary for a spec: the outer value must be a term call, and
-    /// so must every call nested in it.
-    pub fn from_value(value: &Value) -> Result<Spec, ProdromeError> {
-        match value {
-            Value::Call(call) if TERM_SIGNATURES.iter().any(|(name, _)| *name == call.name) => {
-                check_term_vocabulary(value)?;
-                Ok(Spec(value.clone()))
-            }
-            other => Err(ProdromeError::invalid(format!(
-                "a spec must be one of SPEC §7's terms, got {other:?}"
-            ))),
-        }
-    }
-
-    pub fn to_value(&self) -> Value {
-        self.0.clone()
-    }
-
-    pub fn as_value(&self) -> &Value {
-        &self.0
-    }
-}
-
-fn check_term_vocabulary(value: &Value) -> Result<(), ProdromeError> {
-    match value {
-        Value::Call(call) => {
-            if !TERM_SIGNATURES.iter().any(|(name, _)| *name == call.name) {
-                return Err(ProdromeError::invalid(format!(
-                    "{:?} is not one of SPEC §7's terms",
-                    call.name
-                )));
-            }
-            for (_, field) in &call.fields {
-                check_term_vocabulary(field)?;
-            }
-            Ok(())
-        }
-        Value::Tuple(items) => items.iter().try_for_each(check_term_vocabulary),
-        _ => Ok(()),
-    }
-}
+//
+// A `SpecRevised` and an `Authored` carry a §7 `Term`, and `fpl::Term` IS that
+// type: one parser, one printer, one evaluator. The field is `fpl::Term` and
+// not a wrapper, because a wrapper would be a second name for the same value
+// and a place for a second reading to grow. §7's per-field bounds arrive with
+// it (`Flat`'s 0..1, `Conj`'s `p`, `Decay`'s lead-up), so a stored spec that
+// parses is a spec that evaluates — which the placeholder this replaced could
+// not promise.
 
 // --- the records ------------------------------------------------------------
 
@@ -350,12 +298,12 @@ pub struct Lifecycle {
 
 /// `SpecRevised(todo, at, actor, spec, note)` — a new authored price, effective
 /// at `at`. No env effect: the query layer picks the latest spec.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpecRevised {
     pub todo: TodoId,
     pub at: Datetime,
     pub actor: Actor,
-    pub spec: Spec,
+    pub spec: Term,
     pub note: String,
 }
 
@@ -387,7 +335,7 @@ pub struct SubTodo {
 
 /// A todo's CONTENT, in full, as of `at`. Snapshot semantics, like a git blob:
 /// an edit is a new `Authored` for the same id and the fold keeps the latest.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Authored {
     pub todo: TodoId,
     pub at: Datetime,
@@ -395,7 +343,7 @@ pub struct Authored {
     pub kind: Name,
     pub created: Datetime,
     pub body: MarkupSource,
-    pub spec: Option<Spec>,
+    pub spec: Option<Term>,
     pub rationale: Vec<String>,
     pub category: Option<Name>,
     pub waiting_on: StringSource,
@@ -407,7 +355,7 @@ pub struct Authored {
 }
 
 /// The closed kinds of §4.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TodoEvent {
     Created(Created),
     Completed(Lifecycle),
@@ -467,7 +415,7 @@ impl TodoEvent {
 /// `Sealed`, two or more a `Woven`, and there is no second spelling of either —
 /// which is what lets [`parents_of`] be total and lets `verify` call a
 /// one-parent `Woven` malformed rather than ambiguous.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Envelope {
     /// The chain envelope. `prev` is `None` at genesis — `Sealed.prev == ""` is
     /// an absence, not a name, and the type says so.
@@ -569,7 +517,7 @@ pub fn mk_spec_revised(
     todo: &str,
     at: Datetime,
     actor: &str,
-    spec: Spec,
+    spec: Term,
     note: &str,
 ) -> Result<TodoEvent, ProdromeError> {
     Ok(TodoEvent::SpecRevised(SpecRevised {
@@ -632,7 +580,7 @@ pub fn mk_authored(
     kind: &str,
     created: Datetime,
     body: &str,
-    spec: Option<Spec>,
+    spec: Option<Term>,
     rationale: Vec<String>,
     category: &str,
     waiting_on: &str,
@@ -697,32 +645,6 @@ pub fn mk_woven(parents: Vec<Hash>, event: Option<TodoEvent>) -> Result<Envelope
 
 // --- the vocabulary ----------------------------------------------------------
 
-/// §7's constructors, name and declared field order.
-///
-/// ⚠️ Held here rather than in `fpl` only because `fpl.rs` is being written in
-/// parallel; the reference has the same shape, building its loader's vocabulary
-/// as `dict(fpl.TERM_CONSTRUCTORS) | {the event kinds}`. At integration this
-/// table moves to `fpl` and this file imports it.
-pub const TERM_SIGNATURES: &[(&str, &[&str])] = &[
-    ("Flat", &["value"]),
-    (
-        "Decay",
-        &["start", "end", "end_date", "lead_up", "start_date"],
-    ),
-    ("Curve", &["points"]),
-    ("CurvePoint", &["at", "value", "label"]),
-    ("Conj", &["terms", "p"]),
-    ("Offset", &["delta", "term"]),
-    ("Gate", &["gate", "body"]),
-    ("Shift", &["delta", "term"]),
-    ("Within", &["window", "p", "term"]),
-    ("Importance", &["w", "term"]),
-    ("After", &["event", "anchor", "term", "pending", "needs"]),
-    ("Piecewise", &["head", "pieces"]),
-    ("Piece", &["at", "term"]),
-    ("OffsetBy", &["delta", "term"]),
-];
-
 /// §4's constructors, name and declared field order — the envelope kinds, the
 /// event kinds and the records they hold.
 pub const EVENT_SIGNATURES: &[(&str, &[&str])] = &[
@@ -775,6 +697,8 @@ pub struct EventVocabulary;
 
 impl crate::literal::Vocabulary for EventVocabulary {
     fn signature(&self, name: &str) -> Option<crate::literal::Signature> {
+        // §7's half is `fpl`'s, imported rather than restated: the layer that
+        // knows what a `Conj` MEANS is the one that declares its fields.
         Table(TERM_SIGNATURES)
             .signature(name)
             .or_else(|| Table(EVENT_SIGNATURES).signature(name))
@@ -1026,10 +950,10 @@ fn strings(items: &[Value], context: &str) -> Result<Vec<String>, ProdromeError>
     items.iter().map(|item| as_string(item, context)).collect()
 }
 
-fn spec_field(call: &Call, name: &str) -> Result<Option<Spec>, ProdromeError> {
+fn spec_field(call: &Call, name: &str) -> Result<Option<Term>, ProdromeError> {
     match required(call, name)? {
         Value::None => Ok(None),
-        other => Spec::from_value(other).map(Some),
+        other => Ok(Some(Term::from_value(other)?)),
     }
 }
 
@@ -1057,7 +981,7 @@ fn event_from_value(value: &Value) -> Result<TodoEvent, ProdromeError> {
             &todo()?,
             at()?,
             &actor()?,
-            Spec::from_value(required(call, "spec")?)?,
+            Term::from_value(required(call, "spec")?)?,
             &string_or_empty(call, "note")?,
         ),
         "Authored" => mk_authored(
@@ -1217,11 +1141,15 @@ mod tests {
     #[test]
     fn a_spec_must_be_one_of_the_terms() {
         let flat = parse_literal("Flat(value=0.5)", &EVENT_VOCABULARY).expect("parses");
-        assert!(Spec::from_value(&flat).is_ok());
+        assert!(Term::from_value(&flat).is_ok());
         let not_a_term =
             parse_literal("Note(on='block', lines=('x',))", &EVENT_VOCABULARY).expect("parses");
-        assert!(Spec::from_value(&not_a_term).is_err());
-        assert!(Spec::from_value(&Value::None).is_err());
+        assert!(Term::from_value(&not_a_term).is_err());
+        assert!(Term::from_value(&Value::None).is_err());
+        // And §7's BOUNDS now travel with the kind, which the placeholder this
+        // replaced could not check: a term that parses is a term that evaluates.
+        let out_of_range = parse_literal("Flat(value=1.5)", &EVENT_VOCABULARY).expect("parses");
+        assert!(Term::from_value(&out_of_range).is_err());
     }
 
     #[test]

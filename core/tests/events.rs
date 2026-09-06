@@ -12,8 +12,9 @@ use std::path::PathBuf;
 
 use prodrome::event::{
     binds, canonical_envelope, parents_of, parse_envelope, seal_hash, Envelope, TodoEvent,
-    EVENT_SIGNATURES, TERM_SIGNATURES,
+    EVENT_SIGNATURES,
 };
+use prodrome::fpl::TERM_SIGNATURES;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -92,12 +93,24 @@ fn the_live_chain_uses_the_closed_vocabulary_and_nothing_else() {
         .collect();
     let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
     let mut provisional = 0;
+    let mut priced = 0;
     for object in objects() {
         let envelope = parse_envelope(&object.text).expect("parses");
         if let Some(event) = envelope.event() {
             *kinds.entry(event.kind_name()).or_default() += 1;
             if !binds(event, &untrusted) {
                 provisional += 1;
+            }
+            // Since the seam closed, a stored spec IS an `fpl::Term`: it has
+            // been through §7's smart constructors, so it can be evaluated.
+            // The placeholder it replaced could only promise it printed back.
+            if let TodoEvent::Authored(authored) = event {
+                if let Some(spec) = &authored.spec {
+                    let now = prodrome::fpl::instant_of(authored.at);
+                    let value = prodrome::fpl::fulfillment(spec, now, &prodrome::fpl::Env::new());
+                    assert!((0.0..=1.0).contains(&value), "todo {:?}", authored.todo);
+                    priced += 1;
+                }
             }
             // An `Authored` record binds whatever its actor is (§5).
             if matches!(event, TodoEvent::Authored(_)) {
@@ -120,6 +133,10 @@ fn the_live_chain_uses_the_closed_vocabulary_and_nothing_else() {
     assert!(
         provisional > 0,
         "the live chain holds triage-actor lifecycle events"
+    );
+    assert!(
+        priced > 0,
+        "the live chain holds specs, and every one of them evaluates"
     );
 }
 
