@@ -120,7 +120,15 @@ with `at <= t` IN CAUSAL ORDER (`chronological`).
    moment a spec, a checklist length, or the trusted state changed, a
    `Piece(at, term)`: a flat 1.0 while resolved, else
    `checklist(spec in force, items in force)`; built by `mk_piecewise`
-   (normal form). Head extends to −∞; absent when there was never a spec or a
+   (normal form). **The head extends to −∞** (Bassel, 2026-09-06: "we need
+   something for all of time as a unit"): a todo's function is total over
+   time, and its unit — what it is before anything was recorded about a half
+   — is the EARLIEST recorded demand of that half, applied backward. A
+   completion recorded before its record (the backfill) therefore stands
+   against the demand the record says it had; nothing invents one. Stated
+   consequence: the prefix law (§9.2) is exact for every moment after a
+   todo's first spec AND first checklist are recorded; a late first half
+   re-heads the curve before it. Absent when there was never a spec or a
    checklist. `checklist(own, n)` = `own` if `n == 0`; `Conj(n × Flat(0.5))`
    if `own` is None; else `OffsetBy(own, Conj(...))`.
 5. `history(events, untrusted)`: the environment as a function of time —
@@ -177,7 +185,9 @@ records are dumb data; engine code never calls a raw constructor.
 
 Every implementation, on `prodrome/conformance/*.json` and on the live chain:
 1. print ∘ parse = id on every stored object, and hash(print) = name.
-2. Prefix: append any later event; every earlier moment reads the same.
+2. Prefix: append any later event; every earlier moment reads the same —
+   except the head's unit (§6.4): a todo's FIRST spec or FIRST checklist,
+   recorded late, re-heads its curve before it. Both halves recorded, exact.
 3. Independent events commute; a uniform shift of every `at` changes no winner.
 4. `history.at(t) == env_at(t)`.
 5. `mk_piecewise`: unit, join, idempotent, no adjacent repeats; `normalize`
