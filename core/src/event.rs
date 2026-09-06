@@ -1099,6 +1099,16 @@ pub fn parse_envelope(text: &str) -> Result<Envelope, ProdromeError> {
     Envelope::from_value(&parse_literal(text, &EVENT_VOCABULARY)?)
 }
 
+/// Read ONE event's canonical print back — [`canonical`]'s inverse, through the
+/// same closed vocabulary. An envelope is the stored object and `parse_envelope`
+/// is how a store reads one; this is for the callers that hold a bare event
+/// print instead (a fold's input, a binding's argument), and it exists here
+/// rather than at those call sites because the vocabulary and the smart
+/// constructors are this module's, not theirs.
+pub fn parse_event(text: &str) -> Result<TodoEvent, ProdromeError> {
+    event_from_value(&parse_literal(text, &EVENT_VOCABULARY)?)
+}
+
 /// THE trust rule, stated once (§5): may this event change what the system
 /// believes? An untrusted actor's lifecycle and repricing events are
 /// PROVISIONAL — stored, shown as claims, never folded — because that actor
