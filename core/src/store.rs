@@ -438,7 +438,20 @@ impl EventStore {
     /// The same read, with each object's name — which every caller that needs
     /// to rehash, link or report an object wants and would otherwise recompute.
     pub fn read_dag_named(&self) -> Result<Vec<(Hash, Envelope)>, ProdromeError> {
-        let objects = self.objects_from(&self.tips())?;
+        self.read_dag_at(&self.tips())
+    }
+
+    /// The DAG as it stood when `tips` were its heads: every object they rest
+    /// on, named, in [`linearise`]'s order. Objects are never deleted, so this
+    /// read is reproducible for as long as the store holds them — which is
+    /// what lets a vector pin a tip and stay true while the chain grows past
+    /// it, and what a reader that was handed a tip (a page, a sync, a replay)
+    /// reads instead of whatever the store has by now.
+    pub fn read_dag_at(
+        &self,
+        tips: &BTreeSet<Hash>,
+    ) -> Result<Vec<(Hash, Envelope)>, ProdromeError> {
+        let objects = self.objects_from(tips)?;
         let order = linearise(&objects)?;
         Ok(order
             .into_iter()

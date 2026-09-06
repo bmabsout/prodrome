@@ -14,7 +14,7 @@
 //! be loud, because a fold compared against the wrong history is worse than no
 //! comparison at all.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -113,14 +113,29 @@ fn live() -> Option<Chain> {
         .map(|name| Actor::new(name.as_str()).expect("an actor name"))
         .collect();
     let store = EventStore::new(&events, untrusted);
-    let objects = store.read_dag_named().expect("the live chain reads");
-    assert_eq!(
-        store.tip().map(|tip| tip.as_str().to_owned()),
-        Some(vector.tip.clone()),
-        "the chain has moved since live.json was written — regenerate it with \
+    // The chain grows every hour and the vector was taken at one tip, so read
+    // the chain AS OF that tip: objects are never deleted, so the read is the
+    // same one the generator made, for as long as the store holds them. A
+    // missing tip means the store is not the one the vector describes.
+    let tip = Hash::new(vector.tip.as_str()).expect("the vector's tip is a hash");
+    let head = store.tip().expect("a live chain has a head");
+    assert!(
+        head == tip
+            || store
+                .ancestors(&head)
+                .expect("the head's past reads")
+                .contains(&tip),
+        "live.json's tip is not in this chain's past — regenerate it with \
          `nix develop .#triage -c env PYTHONPATH=. python3 scripts/conformance.py`"
     );
-    assert_eq!(objects.len(), vector.objects, "the chain's object count");
+    let objects = store
+        .read_dag_at(&BTreeSet::from([tip]))
+        .expect("the live chain reads at the vector's tip");
+    assert_eq!(
+        objects.len(),
+        vector.objects,
+        "the chain's object count at that tip"
+    );
     Some(Chain {
         vector,
         store,
