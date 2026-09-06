@@ -8,40 +8,28 @@ laws in SPEC §9 are the tests.
 
     nix develop .#rust -c cargo test --manifest-path prodrome/Cargo.toml
 
-## Status, one row per module
-
-What a module claims is what its tests measure — the vectors it reproduces,
-not the code it contains.
-
-| module        | spec       | status  | evidence |
-| ------------- | ---------- | ------- | -------- |
-| `literal`     | §2         | pending | `conformance/literals.json` |
-| `event`       | §4         | pending | — |
-| `store`       | §3         | pending | `conformance/dag.json` |
-| `fpl`         | §7         | **built** | `conformance/fpl.json`: 150 terms, prints and JSON byte-identical, 900 fulfillment samples, every `normalized` print and every `explain` tree — largest float deviation 5.6e-16 against a 1e-9 budget. §9.5 laws on random terms in `tests/fpl_laws.rs`. |
-| `fold`        | §6.1–6.5   | pending | `conformance/folds.json` |
-| `registers`   | §6.6       | pending | `conformance/dag.json` |
-| `breaks`      | §7 knots   | **built** | `conformance/series.json`: 60 windows, 1429 knots, instants and `exact` identical, deviation 3.6e-16; §9.7 checked as a law in `tests/series_vectors.rs`. |
-
-`fpl` carries its own §2 printer and parser for the term constructors while
-`literal` is pending; the two are written to the same rules and unify into
-`literal` without a behaviour change.
 ## Status
 
 One row per module of the crate, and what it is checked against. A row is
 "done" only where a vector file or the live chain says so — a module with
 tests of its own and no vector behind it is not done, it is untested against
-the reference.
+the reference. What a module CLAIMS is what its tests MEASURE.
 
-| module       | SPEC   | state | checked against |
-| ------------ | ------ | ----- | --------------- |
-| `literal`    | §2     | done  | `conformance/literals.json` — 39 `values`, 564 `objects` (print∘parse = id, sha256(print) = name); property tests for no-panic and print stability |
-| `event`      | §4, §3 | done  | the same 564 objects through the CLOSED vocabulary as typed envelopes; the vocabulary set itself |
-| `store`      | §3     | done  | `conformance/dag.json` — 40 DAGs, each linearisation, tips, parents and `verify` finding; the live `events/` chain reads 564 objects, verifies clean, and in the generator's order |
-| `fpl`        | §7     | —     | `conformance/fpl.json`, `conformance/series.json` |
-| `fold`       | §6.1–5 | —     | `conformance/folds.json` |
-| `registers`  | §6.6   | —     | `conformance/dag.json`'s `conflicts` |
-| `breaks`     | §7     | —     | `conformance/series.json` |
+| module       | SPEC     | state | checked against |
+| ------------ | -------- | ----- | --------------- |
+| `literal`    | §2       | done  | `conformance/literals.json` — 39 `values`, 564 `objects` (print∘parse = id, sha256(print) = name); property tests for no-panic and print stability |
+| `event`      | §4, §3   | done  | the same 564 objects through the CLOSED vocabulary as typed envelopes; the vocabulary set itself; every stored spec EVALUATES, not just prints back |
+| `store`      | §3       | done  | `conformance/dag.json` — 40 DAGs, each linearisation, tips, parents and `verify` finding; the live `events/` chain reads 564 objects, verifies clean, and in the generator's order |
+| `fpl`        | §7       | done  | `conformance/fpl.json` — 150 terms, prints and JSON byte-identical, 900 fulfillment samples, every `normalized` print and every `explain` tree; largest float deviation 5.6e-16 against a 1e-9 budget. §9.5's constructor laws on random terms in `tests/fpl_laws.rs` |
+| `fold`       | §6.1–6.5 | done  | `conformance/folds.json` — all 120 logs: `env` and `history_at` by kind and instant, `specs`, `content` and `flatten` by canonical print, byte-exact. §9.2–9.4 as properties in `tests/fold_laws.rs`; the live chain in `tests/live.rs` |
+| `registers`  | §6.6     | done  | `conformance/dag.json`'s `conflicts` and `env` — all 40 DAGs, by exact object hash. §9.6 as properties over real two-replica stores; the registers equal the folds on every DAG, on all 120 logs, and on the live chain |
+| `breaks`     | §7 knots | done  | `conformance/series.json` — 60 windows, 1429 knots, instants and `exact` identical, deviation 3.6e-16; §9.7 checked as a law in `tests/series_vectors.rs` |
+
+`conformance/live.json` is the one vector that is not seeded: this box's own
+564-object chain, folded by the reference at a recorded instant, with the tip
+it was folded over written beside it. `tests/live.rs` reproduces all five
+folds and the registers on it and refuses loudly when the chain has moved —
+regenerate with `scripts/conformance.py` when it does.
 
 ### The one seam between the layers, closed
 
