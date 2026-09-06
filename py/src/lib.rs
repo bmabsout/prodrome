@@ -394,15 +394,79 @@ impl Store {
 }
 
 // --- §6.1–6.5: the folds -----------------------------------------------------
+//
+// THE LOG IS PARSED ONCE. A fold is a question asked of a sequence of events,
+// and the same sequence is asked many questions — four folds per request, one
+// per midnight for the time machine, one per knot for a curve. Sending the
+// prints across and parsing them for each question was 10 ms per crossing on
+// the live chain (565 events) and three crossings per day-fold; the day route
+// went from 62 ms to 263 ms the day the Python evaluator was deleted. So the
+// events cross ONCE, as a `Log`, and every fold below is a method on it. The
+// module-level functions remain as the one-shot spelling of the same thing —
+// `env_at(prints, t)` IS `Log(prints).env_at(t)` — and decide nothing of
+// their own.
+
+/// §6's subject: a sequence of events in causal order, parsed once.
+#[pyclass(module = "prodrome", name = "Log")]
+struct PyLog {
+    events: Vec<TodoEvent>,
+}
+
+#[pymethods]
+impl PyLog {
+    #[new]
+    fn new(events: Vec<String>) -> PyResult<Self> {
+        Ok(PyLog {
+            events: events_of(&events)?,
+        })
+    }
+
+    fn __len__(&self) -> usize {
+        self.events.len()
+    }
+
+    #[pyo3(signature = (t, untrusted = Vec::new()))]
+    fn env_at(&self, t: &str, untrusted: Vec<String>) -> PyResult<EnvWire> {
+        Ok(env_wire(&fold::env_at(
+            &self.events,
+            moment_of(t)?,
+            &untrusted_of(untrusted)?,
+        )))
+    }
+
+    #[pyo3(signature = (t, untrusted = Vec::new()))]
+    fn specs_at(&self, t: &str, untrusted: Vec<String>) -> PyResult<BTreeMap<String, String>> {
+        let specs = fold::specs_at(&self.events, moment_of(t)?, &untrusted_of(untrusted)?);
+        Ok(prints_of(&specs, print_term))
+    }
+
+    /// §6.3 takes no trust policy, deliberately: content from every actor renders.
+    fn authored_at(&self, t: &str) -> PyResult<BTreeMap<String, String>> {
+        let content = fold::authored_at(&self.events, moment_of(t)?);
+        Ok(prints_of(&content, |record| {
+            literal::print_literal(&record.to_value())
+        }))
+    }
+
+    #[pyo3(signature = (t, untrusted = Vec::new()))]
+    fn flatten(&self, t: &str, untrusted: Vec<String>) -> PyResult<BTreeMap<String, String>> {
+        let flat = fold::flatten(&self.events, moment_of(t)?, &untrusted_of(untrusted)?)
+            .map_err(refuse)?;
+        Ok(prints_of(&flat, print_term))
+    }
+
+    #[pyo3(signature = (untrusted = Vec::new()))]
+    fn history(&self, untrusted: Vec<String>) -> PyResult<PyHistory> {
+        Ok(PyHistory {
+            inner: fold::history(&self.events, &untrusted_of(untrusted)?),
+        })
+    }
+}
 
 #[pyfunction]
 #[pyo3(signature = (events, t, untrusted = Vec::new()))]
 fn env_at(events: Vec<String>, t: &str, untrusted: Vec<String>) -> PyResult<EnvWire> {
-    Ok(env_wire(&fold::env_at(
-        &events_of(&events)?,
-        moment_of(t)?,
-        &untrusted_of(untrusted)?,
-    )))
+    PyLog::new(events)?.env_at(t, untrusted)
 }
 
 #[pyfunction]
@@ -412,21 +476,12 @@ fn specs_at(
     t: &str,
     untrusted: Vec<String>,
 ) -> PyResult<BTreeMap<String, String>> {
-    let specs = fold::specs_at(
-        &events_of(&events)?,
-        moment_of(t)?,
-        &untrusted_of(untrusted)?,
-    );
-    Ok(prints_of(&specs, print_term))
+    PyLog::new(events)?.specs_at(t, untrusted)
 }
 
-/// §6.3 takes no trust policy, deliberately: content from every actor renders.
 #[pyfunction]
 fn authored_at(events: Vec<String>, t: &str) -> PyResult<BTreeMap<String, String>> {
-    let content = fold::authored_at(&events_of(&events)?, moment_of(t)?);
-    Ok(prints_of(&content, |record| {
-        literal::print_literal(&record.to_value())
-    }))
+    PyLog::new(events)?.authored_at(t)
 }
 
 #[pyfunction]
@@ -436,20 +491,13 @@ fn flatten(
     t: &str,
     untrusted: Vec<String>,
 ) -> PyResult<BTreeMap<String, String>> {
-    let flat = fold::flatten(
-        &events_of(&events)?,
-        moment_of(t)?,
-        &untrusted_of(untrusted)?,
-    )
-    .map_err(refuse)?;
-    Ok(prints_of(&flat, print_term))
+    PyLog::new(events)?.flatten(t, untrusted)
 }
 
 #[pyfunction]
 #[pyo3(signature = (events, t, untrusted = Vec::new()))]
 fn history_at(events: Vec<String>, t: &str, untrusted: Vec<String>) -> PyResult<EnvWire> {
-    let past = fold::history(&events_of(&events)?, &untrusted_of(untrusted)?);
-    Ok(env_wire(&past.at(moment_of(t)?)))
+    PyLog::new(events)?.history(untrusted)?.at(t)
 }
 
 /// §6.5 — the environment as a FUNCTION OF TIME, folded once and asked many
@@ -465,9 +513,7 @@ impl PyHistory {
     #[new]
     #[pyo3(signature = (events, untrusted = Vec::new()))]
     fn new(events: Vec<String>, untrusted: Vec<String>) -> PyResult<Self> {
-        Ok(PyHistory {
-            inner: fold::history(&events_of(&events)?, &untrusted_of(untrusted)?),
-        })
+        PyLog::new(events)?.history(untrusted)
     }
 
     fn at(&self, t: &str) -> PyResult<EnvWire> {
@@ -520,6 +566,22 @@ impl PyFolded {
         })
     }
 
+    /// The object each register of `kind` (`"state"`, `"spec"`, `"content"`)
+    /// currently shows, by todo — the projection's choice, as a name the
+    /// caller looks up among the objects it folded.
+    fn chosen(&self, kind: &str) -> PyResult<BTreeMap<String, String>> {
+        let kind = match kind {
+            "state" => registers::Kind::State,
+            "spec" => registers::Kind::Spec,
+            "content" => registers::Kind::Content,
+            other => return Err(refuse(format!("unknown register kind {other:?}"))),
+        };
+        Ok(registers::chosen_of(&self.inner, kind)
+            .iter()
+            .map(|(todo, name)| (todo.as_str().to_owned(), name.as_str().to_owned()))
+            .collect())
+    }
+
     /// Every register with more than one live write, by todo and register name,
     /// each write named by the object that made it.
     fn conflicts_of(&self) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
@@ -564,6 +626,51 @@ impl PyFolded {
     }
 }
 
+/// §6.6's subject: the DAG's nodes in topological order, parsed once — the
+/// registers' `Log`. A fold at every midnight, at every trust policy, is a
+/// method on the same handle, and no print crosses twice.
+#[pyclass(module = "prodrome", name = "Chain")]
+struct PyChain {
+    nodes: Vec<Node>,
+}
+
+#[pymethods]
+impl PyChain {
+    #[new]
+    fn new(nodes: Vec<NodeWire>) -> PyResult<Self> {
+        Ok(PyChain {
+            nodes: nodes_of(&nodes)?,
+        })
+    }
+
+    fn __len__(&self) -> usize {
+        self.nodes.len()
+    }
+
+    #[pyo3(signature = (t = None, untrusted = Vec::new()))]
+    fn fold(&self, t: Option<&str>, untrusted: Vec<String>) -> PyResult<PyFolded> {
+        Ok(PyFolded {
+            inner: registers::fold(
+                &self.nodes,
+                t.map(moment_of).transpose()?,
+                &untrusted_of(untrusted)?,
+            ),
+        })
+    }
+
+    /// The events these nodes carry, in the same order — §6.1–6.5's subject,
+    /// so the four folds and the registers read one parse of one sequence.
+    fn log(&self) -> PyLog {
+        PyLog {
+            events: self
+                .nodes
+                .iter()
+                .filter_map(|node| node.event.clone())
+                .collect(),
+        }
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (nodes, t = None, untrusted = Vec::new()))]
 fn fold_registers(
@@ -571,13 +678,7 @@ fn fold_registers(
     t: Option<&str>,
     untrusted: Vec<String>,
 ) -> PyResult<PyFolded> {
-    Ok(PyFolded {
-        inner: registers::fold(
-            &nodes_of(&nodes)?,
-            t.map(moment_of).transpose()?,
-            &untrusted_of(untrusted)?,
-        ),
-    })
+    PyChain::new(nodes)?.fold(t, untrusted)
 }
 
 // --- §7: FPL -----------------------------------------------------------------
@@ -693,6 +794,8 @@ fn prodrome(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("WITHIN_SAMPLES", fpl::WITHIN_SAMPLES)?;
     m.add("SAMPLES", breaks::SAMPLES)?;
     m.add_class::<Store>()?;
+    m.add_class::<PyLog>()?;
+    m.add_class::<PyChain>()?;
     m.add_class::<PyHistory>()?;
     m.add_class::<PyFolded>()?;
     m.add_function(wrap_pyfunction!(parse_literal, m)?)?;
