@@ -9,6 +9,76 @@ repository regenerates them); the laws in SPEC §9 are the tests.
     nix develop .#rust -c cargo test --manifest-path prodrome/Cargo.toml
     nix flake check          # the same suites, plus clippy, from the vendored lock
 
+## The browser runs it (`wasm/`)
+
+`prodrome-wasm` is `core/` compiled to WebAssembly and nothing else: seven
+functions that parse their arguments, call one thing in the core, and print the
+answer. No arithmetic, no policy, and no clock — every moment is an argument,
+because §1 forbids a clock in the core and a browser's is the least trustworthy
+in the system.
+
+    nix build .#prodrome-wasm
+
+Which gives two glues over one `.wasm` (474,073 bytes; 187 KB gzipped):
+`$out/web/` for the app and `$out/nodejs/` for `scripts/web-test.sh`.
+`scripts/build-web.sh` copies the first beside the bundle from
+`$SUZATARY_PRODROME_WASM`, exactly as it copies uPlot — that script is a
+bundler and Nix is the build.
+
+| export           | asks                                                        |
+| ---------------- | ----------------------------------------------------------- |
+| `verify_objects` | §3: do these bytes hash to these names, and do they form one DAG under these heads |
+| `fold`           | §6.1–6.5: what does the chain believe at an instant           |
+| `registers`      | §6.6: which registers have more than one live write           |
+| `fulfillment`    | §7: what is this term worth now                               |
+| `explain`        | §7: what is that number made of                               |
+| `series_knots`   | §7 knots: what is that term's curve over a window             |
+| `term_json`      | §2 → §7: a stored term's canonical print, as the JSON shape   |
+
+JSON and strings at the boundary. `fold`'s answers are `suzatary/view.py`'s
+shapes, so what comes back is the wire the web app already speaks; `env` and
+`history` are §7's own shapes, so a fold's answer is a legal argument to
+`fulfillment` and `series_knots` with nothing rewritten in between — a
+translation step is where a second reading grows.
+
+### How it is built
+
+The wasm32 target comes from NIXPKGS: `rustc --print target-list` has
+wasm32-unknown-unknown and `$(rustc --print sysroot)/lib/rustlib/` carries its
+std, so there is no `rust-overlay` and no `fenix` input to keep in step. That
+rustc links wasm with the system `lld`, which the `.#rust` shell carries.
+Dependencies are vendored from `Cargo.lock` (`importCargoLock`), so the build
+is pure and reaches no network. `wasm-bindgen` is pinned on BOTH sides —
+`=0.2.127` in `wasm/Cargo.toml`, `wasm-bindgen-cli_0_2_127` in `flake.nix` —
+because the generator and the runtime negotiate over a schema version compiled
+into each. `[profile.wasm-release]` is the browser's build and nothing else's
+(`opt-level = "s"`, fat LTO, one codegen unit), and `wasm-opt -Os` runs over
+what bindgen emits.
+
+### What the browser now does with it
+
+- **Verifies the chain.** `#/chain`'s verdict is `verify_objects`, so the tab
+  is no longer a second implementation of §3. It rehashes every object AND
+  parses it as an envelope — which the old hand-written path could not, having
+  no parser — and reports the causal order `linearise` put them in. That path
+  (`web/src/verify.ts`, SubtleCrypto) survives as a labelled FALLBACK, and the
+  page names whichever one ran.
+- **Checks the graph.** `#/graph` folds the objects here and recomputes every
+  drawn knot: same instants, same `exact`, every value within §9.8's 1e-9. The
+  server's numbers, checked by the reader's own machine — one evaluator, run
+  twice.
+- **Folds offline.** With the objects cached (`web/src/objects.ts`, IndexedDB),
+  a browser with no network folds them itself instead of showing yesterday's
+  answer, and the banner says so: the numbers are this moment's, and what may
+  have moved is the chain.
+
+`web/test/wasm.test.ts` runs the same `.wasm` under node against the vectors —
+564 objects rehashed and parsed, 900 fulfillment samples to 1e-9, 1429 knots at
+the reference's instants exactly — because everything between the Rust and the
+tab (bindgen's glue, `wasm-opt`'s rewrite, the JSON shapes and their guards)
+is outside `cargo test`. `web/e2e/core.test.ts` then checks that a real browser
+gets hold of it at all, which is the one thing a silent fallback would hide.
+
 ## Status
 
 One row per module of the crate, and what it is checked against. A row is
@@ -25,6 +95,7 @@ the reference. What a module CLAIMS is what its tests MEASURE.
 | `fold`       | §6.1–6.5 | done  | `conformance/folds.json` — all 120 logs: `env` and `history_at` by kind and instant, `specs`, `content` and `flatten` by canonical print, byte-exact. §9.2–9.4 as properties in `tests/fold_laws.rs`; the live chain in `tests/live.rs` |
 | `registers`  | §6.6     | done  | `conformance/dag.json`'s `conflicts` and `env` — all 40 DAGs, by exact object hash. §9.6 as properties over real two-replica stores; the registers equal the folds on every DAG, on all 120 logs, and on the live chain |
 | `breaks`     | §7 knots | done  | `conformance/series.json` — 60 windows, 1429 knots, instants and `exact` identical, deviation 3.6e-16; §9.7 checked as a law in `tests/series_vectors.rs` |
+| `wasm/`      | the boundary | done | the SAME `.wasm` a browser fetches, loaded under node and driven against the vectors (`web/test/wasm.test.ts`): 564 objects rehashed, parsed and linearised; 900 fulfillment samples within 1e-9; 1429 knots at the reference's instants exactly. A real Chromium reaches it in `web/e2e/core.test.ts` |
 
 ## The Python binding (`py/`)
 

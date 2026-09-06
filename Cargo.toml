@@ -1,8 +1,24 @@
 [workspace]
 resolver = "2"
-members = ["core", "py"]
+members = ["core", "py", "wasm"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "UNLICENSED"
+
+# The browser's build, and nothing else's.
+#
+# A profile of its own rather than settings on `[profile.release]`: the wasm is
+# the one artefact whose SIZE is a user-visible cost — it is fetched over the
+# tailnet before the chain page can say anything — and tuning the whole
+# workspace's release build for a constraint only one target has would be
+# tuning it for the wrong reason. `opt-level = "s"` and fat LTO cost the native
+# core nothing here because the native core never uses this profile.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
