@@ -43,12 +43,23 @@ the reference.
 | `registers`  | §6.6   | —     | `conformance/dag.json`'s `conflicts` |
 | `breaks`     | §7     | —     | `conformance/series.json` |
 
-### The one seam between the layers
+### The one seam between the layers, closed
 
-A stored `SpecRevised` or `Authored` carries a §7 `Term`. Until `fpl` lands,
-`event::Spec` holds that term as the value it prints as, with §7's vocabulary
-checked recursively (`event::TERM_SIGNATURES`) and its per-field bounds left
-to `fpl` — enough for everything §3 and §4 promise, and deliberately not
-enough to evaluate one, since fulfillment is computed in exactly one place.
-`Spec::{from_value,to_value}` is where `fpl::Term` replaces it, and
-`TERM_SIGNATURES` is the table that moves to `fpl` with it.
+A stored `SpecRevised` or `Authored` carries a §7 `Term`, and since the halves
+met that field IS `fpl::Term` — no wrapper, because a wrapper is a second name
+for one value and a place for a second reading to grow. `literal` owns the
+grammar: one printer (`print_literal`, `print_float`, `print_str`) and one
+parser (`parse_literal` against a `Vocabulary`), and `fpl` reaches it through
+`Term::{to_value,from_value}` while contributing `fpl::TERM_SIGNATURES` — the
+§7 half of the vocabulary `event::EVENT_VOCABULARY` reads a stored object
+against. So §7's per-field bounds now travel with a stored spec: a spec that
+parses is a spec that evaluates, which the placeholder could not promise.
+
+Two types did NOT merge, deliberately. `literal::Datetime`/`Timedelta` are the
+grammar's records — CPython's field bounds and normalisation, no arithmetic —
+while evaluation needs `now + δ`, `done − anchor` and a window cut into 64, and
+takes those from `chrono`. `fpl::instant_of`/`datetime_of` are the two total
+conversions, and `fold` reads an event's `at` through the first of them. And
+`Term` holds `f64`, so the event kinds that carry one are `PartialEq` and no
+longer `Eq`: an `Envelope`'s identity is its print and its hash, never a
+derived `Eq`, so nothing was using it.

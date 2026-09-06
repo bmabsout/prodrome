@@ -628,6 +628,13 @@ pub fn is_printable(c: char) -> bool {
     )
 }
 
+/// CPython's `repr(str)`, as a string — the one string printer in the crate.
+pub fn print_str(text: &str) -> String {
+    let mut out = String::new();
+    push_str_repr(&mut out, text);
+    out
+}
+
 /// CPython's `repr(str)`: single quotes unless the text holds a `'` and no `"`.
 fn push_str_repr(out: &mut String, text: &str) {
     let quote = if text.contains('\'') && !text.contains('"') {

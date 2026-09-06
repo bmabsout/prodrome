@@ -12,11 +12,12 @@
 //! which call them).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use serde_json::{Map, Value};
 use thiserror::Error;
+
+use crate::literal::{self, print_literal, Call, Finite, ProdromeError, Table};
 
 /// Naive local time only (§2): a stored instant never carries a zone.
 pub type Instant = NaiveDateTime;
@@ -922,7 +923,10 @@ pub fn mk_within(window: Delta, p: f64, term: Term) -> Result<Term, FplError> {
 }
 
 pub fn mk_importance(w: f64, term: Term) -> Result<Term, FplError> {
-    if w <= 0.0 {
+    // Stated as what `w` MUST be rather than what it must not: `w <= 0.0` is
+    // false for a NaN, which would have admitted the one unprintable float a
+    // term can hold (§2: `inf`/`nan` are not storable).
+    if !(w.is_finite() && w > 0.0) {
         return err(format!("Importance.w must be positive, got {w}"));
     }
     Ok(Term::new(TermF::Importance { w, term }))
@@ -1440,704 +1444,411 @@ pub fn from_json(d: &Value) -> Result<Term, FplError> {
     }
 }
 
-// --- §2 the literal bridge, restricted to the term constructors -------------
+// --- §2 the literal bridge: `literal` is the grammar ------------------------
 //
-// A small, correct printer and parser for the §2 grammar as the term
-// constructors use it (floats, strings, `datetime`, `timedelta`, tuples,
-// keyword calls). `literal.rs` owns the general form over every stored kind;
-// these are written to the same rules so the two can be unified without a
-// behaviour change.
+// ONE printer and ONE parser for the whole store. `literal::Value` is the
+// grammar's expression, `literal::print_literal` its canonical print and
+// `literal::parse_literal` its strict parser; everything below is the
+// translation between a `Term` and one of those expressions, plus the
+// vocabulary §7 contributes to a loader — `TERM_SIGNATURES`, which `event`
+// chains onto §4's so a spec can nest anywhere inside a stored object.
+//
+// The two layers keep DIFFERENT time types, deliberately. `literal::Datetime`
+// and `literal::Timedelta` are the GRAMMAR's records: CPython's field bounds
+// and its normalisation, and no arithmetic at all. Evaluation needs arithmetic
+// on instants and spans — `now + δ`, `done − anchor`, a window cut into 64 —
+// and takes `chrono`'s. Unifying them would mean either a date library inside
+// `literal` or an evaluator built on a record with no `+`, so the layers meet
+// HERE, in four total conversions, and the grammar stays ignorant of time as
+// anything but a shape.
 
-/// Python `repr` for a float: the shortest string that round-trips, with `.0`
-/// on integral values, and exponent form when the decimal point falls at or
-/// before −4 or past 16.
-pub fn print_float(v: f64) -> String {
-    if v.is_nan() || v.is_infinite() {
-        // §2: not storable. Naming it beats panicking inside a printer.
-        return if v.is_nan() {
-            "nan".into()
-        } else if v > 0.0 {
-            "inf".into()
-        } else {
-            "-inf".into()
-        };
-    }
-    let sign = if v.is_sign_negative() { "-" } else { "" };
-    let exp_form = format!("{:e}", v.abs());
-    let (mantissa, exponent) = exp_form
-        .split_once('e')
-        .expect("LowerExp always emits an 'e'");
-    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
-    let decpt: i32 = exponent
-        .parse::<i32>()
-        .expect("LowerExp exponent is an integer")
-        + 1;
-    let n = digits.len() as i32;
-    if decpt <= -4 || decpt > 16 {
-        let e = decpt - 1;
-        let (head, tail) = digits.split_at(1);
-        let frac = if tail.is_empty() {
-            String::new()
-        } else {
-            format!(".{tail}")
-        };
-        format!(
-            "{sign}{head}{frac}e{}{:02}",
-            if e < 0 { '-' } else { '+' },
-            e.abs()
-        )
-    } else if decpt <= 0 {
-        format!("{sign}0.{}{digits}", "0".repeat((-decpt) as usize))
-    } else if decpt >= n {
-        format!("{sign}{digits}{}.0", "0".repeat((decpt - n) as usize))
-    } else {
-        let (a, b) = digits.split_at(decpt as usize);
-        format!("{sign}{a}.{b}")
+/// §7's constructors, name and declared field order — the vocabulary a literal
+/// loader consults for a term. §2's `datetime`/`timedelta` are the grammar's
+/// own and need no entry.
+pub const TERM_SIGNATURES: &[(&str, &[&str])] = &[
+    ("Flat", &["value"]),
+    (
+        "Decay",
+        &["start", "end", "end_date", "lead_up", "start_date"],
+    ),
+    ("Curve", &["points"]),
+    ("CurvePoint", &["at", "value", "label"]),
+    ("Conj", &["terms", "p"]),
+    ("Offset", &["delta", "term"]),
+    ("Gate", &["gate", "body"]),
+    ("Shift", &["delta", "term"]),
+    ("Within", &["window", "p", "term"]),
+    ("Importance", &["w", "term"]),
+    ("After", &["event", "anchor", "term", "pending", "needs"]),
+    ("Piecewise", &["head", "pieces"]),
+    ("Piece", &["at", "term"]),
+    ("OffsetBy", &["delta", "term"]),
+];
+
+/// The vocabulary of a BARE term — what [`parse_term`] reads against. A stored
+/// object is read against `event::EVENT_VOCABULARY`, which is this and §4's.
+pub const TERM_VOCABULARY: Table = Table(TERM_SIGNATURES);
+
+/// A term's refusal, as the store's refusal. The two layers keep their own
+/// error types because their vocabularies of failure differ — a store reports
+/// a missing parent, a term an out-of-range exponent — and this is the one
+/// direction the boundary needs.
+impl From<FplError> for ProdromeError {
+    fn from(error: FplError) -> ProdromeError {
+        ProdromeError::Invalid(error.0)
     }
 }
 
-/// Python `repr` for a string: single quotes unless the text holds `'` and no
-/// `"`; `\\`, the delimiter, `\n`, `\r`, `\t`, then `\xNN`/`\uNNNN`/`\UNNNNNNNN`
-/// for the non-printable. Printable non-ASCII is written as itself.
-pub fn print_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
-                let _ = write!(out, "\\x{:02x}", c as u32);
-            }
-            c if (c as u32) < 0x80 => out.push(c),
-            c if !printable_non_ascii(c) => {
-                let n = c as u32;
-                let _ = if n <= 0xff {
-                    write!(out, "\\x{n:02x}")
-                } else if n <= 0xffff {
-                    write!(out, "\\u{n:04x}")
-                } else {
-                    write!(out, "\\U{n:08x}")
-                };
-            }
-            c => out.push(c),
-        }
+/// And back: a grammar refusal reaching a caller who asked for a term.
+impl From<ProdromeError> for FplError {
+    fn from(error: ProdromeError) -> FplError {
+        FplError(error.to_string())
     }
-    out.push(quote);
-    out
 }
 
-/// A deliberately narrow stand-in for `str.isprintable` over non-ASCII: the C1
-/// controls, the separators, the formatting characters and the surrogates
-/// escape, everything else is written as itself. The full Unicode-category
-/// answer belongs in `literal.rs`; a term's own string fields (an event name,
-/// a curve label) do not reach past this.
-fn printable_non_ascii(c: char) -> bool {
-    !matches!(c as u32,
-        0x80..=0x9f | 0xa0 | 0xad | 0x2000..=0x200f | 0x2028..=0x202f
-        | 0x205f..=0x206f | 0x3000 | 0xd800..=0xdfff | 0xfeff | 0xfff9..=0xfffb)
+fn f(name: &str, value: literal::Value) -> (String, literal::Value) {
+    (name.to_owned(), value)
 }
 
-/// `datetime(Y, M, D, h, m, s[, µs])` — the seventh argument only when non-zero.
-pub fn print_instant(t: Instant) -> String {
-    let us = t.and_utc().timestamp_subsec_micros();
-    let head = format!(
-        "datetime({}, {}, {}, {}, {}, {}",
+/// Every float inside a `Term` is finite: `unit`, `mk_conj`'s range,
+/// `mk_offset`'s and `mk_importance`'s all refuse a NaN or an infinity, so the
+/// printer is total and the `Finite` smart constructor cannot fire here.
+fn float_value(value: f64) -> literal::Value {
+    literal::Value::Float(
+        Finite::new(value).expect("a Term's floats are finite: every mk_* refuses the rest"),
+    )
+}
+
+/// The grammar's `datetime` as an evaluable instant — THE place §2's record
+/// becomes §7's arithmetic, and what `fold` uses to read an event's `at`.
+/// Total: `literal::Datetime`'s constructor already refused everything a
+/// `NaiveDateTime` cannot hold, so the `expect` is a proof and not a hope.
+pub fn instant_of(at: literal::Datetime) -> Instant {
+    NaiveDate::from_ymd_opt(at.year(), at.month(), at.day())
+        .and_then(|day| {
+            day.and_hms_micro_opt(at.hour(), at.minute(), at.second(), at.microsecond())
+        })
+        .expect("literal::Datetime::new admits only representable instants")
+}
+
+/// And back, for an instant the evaluator computed. `literal::Datetime` is the
+/// narrower type — years 1..=9999, as CPython — so this is the fallible
+/// direction, and the caller that cannot fail is the one printing a `Term`
+/// whose instants all came through [`instant_of`].
+pub fn datetime_of(t: Instant) -> Result<literal::Datetime, ProdromeError> {
+    literal::Datetime::new(
         t.year(),
         t.month(),
         t.day(),
         t.hour(),
         t.minute(),
-        t.second()
-    );
-    if us == 0 {
-        format!("{head})")
-    } else {
-        format!("{head}, {us})")
+        t.second(),
+        t.and_utc().timestamp_subsec_micros(),
+    )
+}
+
+fn instant_value(t: Instant) -> literal::Value {
+    literal::Value::Datetime(
+        datetime_of(t)
+            .expect("a Term's instants came through the grammar, whose years are 1..=9999"),
+    )
+}
+
+fn instant_field(value: &literal::Value, context: &str) -> Result<Instant, FplError> {
+    match value {
+        literal::Value::Datetime(at) => Ok(instant_of(*at)),
+        other => err(format!("{context} must be a datetime(...), got {other:?}")),
     }
 }
 
-/// `timedelta(days=…, seconds=…, microseconds=…)` — only the non-zero parts,
-/// in that order, over CPython's normalisation (`0 <= seconds < 86400`).
-pub fn print_delta(d: Delta) -> String {
-    let us = us_of(d);
-    let day = 86_400_000_000i64;
-    let rest = us.rem_euclid(day);
-    let parts: Vec<String> = [
-        ("days", us.div_euclid(day)),
-        ("seconds", rest / 1_000_000),
-        ("microseconds", rest % 1_000_000),
-    ]
-    .into_iter()
-    .filter(|(_, v)| *v != 0)
-    .map(|(name, v)| format!("{name}={v}"))
-    .collect();
-    format!("timedelta({})", parts.join(", "))
+/// A `chrono` span as the grammar's `timedelta(...)`. An i64 of microseconds is
+/// at most ~107 000 days, well inside CPython's 999 999 999-day range.
+fn delta_value(d: Delta) -> literal::Value {
+    literal::Value::Timedelta(
+        literal::Timedelta::from_micros(i128::from(us_of(d)))
+            .expect("a Delta of i64 microseconds is inside timedelta's range"),
+    )
 }
 
-fn print_tuple(items: &[String]) -> String {
-    match items.len() {
-        0 => "()".into(),
-        1 => format!("({},)", items[0]),
-        _ => format!("({})", items.join(", ")),
+fn delta_field(value: &literal::Value, context: &str) -> Result<Delta, FplError> {
+    match value {
+        literal::Value::Timedelta(d) => i64::try_from(d.total_micros())
+            .map(Duration::microseconds)
+            .map_err(|_| FplError(format!("{context} is too large to evaluate"))),
+        other => err(format!("{context} must be a timedelta(...), got {other:?}")),
     }
 }
 
-/// The canonical §2 print of a term: EVERY field, in declared order, keyword
-/// form. Equal terms print byte-identically, which is what lets the print be
-/// the identity.
-pub fn print_term(term: &Term) -> String {
-    match term.out() {
-        TermF::Flat { value } => format!("Flat(value={})", print_float(*value)),
-        TermF::Decay {
-            start,
-            end,
-            end_date,
-            lead_up,
-            start_date,
-        } => format!(
-            "Decay(start={}, end={}, end_date={}, lead_up={}, start_date={})",
-            print_float(*start),
-            print_float(*end),
-            print_instant(*end_date),
-            print_delta(*lead_up),
-            start_date
-                .map(print_instant)
-                .unwrap_or_else(|| "None".into())
-        ),
-        TermF::Curve { points } => {
-            let pts: Vec<String> = points
-                .iter()
-                .map(|pt| {
-                    format!(
-                        "CurvePoint(at={}, value={}, label={})",
-                        print_instant(pt.at),
-                        print_float(pt.value),
-                        print_str(&pt.label)
-                    )
-                })
-                .collect();
-            format!("Curve(points={})", print_tuple(&pts))
-        }
-        TermF::Conj { terms, p } => {
-            let ts: Vec<String> = terms.iter().map(print_term).collect();
-            format!("Conj(terms={}, p={})", print_tuple(&ts), print_float(*p))
-        }
-        TermF::Offset { delta, term } => {
-            format!(
-                "Offset(delta={}, term={})",
-                print_float(*delta),
-                print_term(term)
-            )
-        }
-        TermF::Gate { gate, body } => {
-            format!("Gate(gate={}, body={})", print_term(gate), print_term(body))
-        }
-        TermF::OffsetBy { delta, term } => {
-            format!(
-                "OffsetBy(delta={}, term={})",
-                print_term(delta),
-                print_term(term)
-            )
-        }
-        TermF::Shift { delta, term } => {
-            format!(
-                "Shift(delta={}, term={})",
-                print_delta(*delta),
-                print_term(term)
-            )
-        }
-        TermF::Within { window, p, term } => format!(
-            "Within(window={}, p={}, term={})",
-            print_delta(*window),
-            print_float(*p),
-            print_term(term)
-        ),
-        TermF::Importance { w, term } => {
-            format!(
-                "Importance(w={}, term={})",
-                print_float(*w),
-                print_term(term)
-            )
-        }
-        TermF::After {
-            event,
-            anchor,
-            term,
-            pending,
-            needs,
-        } => format!(
-            "After(event={}, anchor={}, term={}, pending={}, needs={})",
-            print_str(event),
-            print_instant(*anchor),
-            print_term(term),
-            print_term(pending),
-            needs.map(print_delta).unwrap_or_else(|| "None".into())
-        ),
-        TermF::Piecewise { head, pieces } => {
-            let ps: Vec<String> = pieces
-                .iter()
-                .map(|(at, t)| format!("Piece(at={}, term={})", print_instant(*at), print_term(t)))
-                .collect();
-            format!(
-                "Piecewise(head={}, pieces={})",
-                print_term(head),
-                print_tuple(&ps)
-            )
-        }
+fn lit_field<'a>(call: &'a Call, name: &str) -> Result<&'a literal::Value, FplError> {
+    call.field(name)
+        .ok_or_else(|| FplError(format!("{}(...) is missing {name}", call.name)))
+}
+
+fn lit_number(call: &Call, name: &str) -> Result<f64, FplError> {
+    match lit_field(call, name)? {
+        literal::Value::Float(value) => Ok(value.get()),
+        literal::Value::Int(int) => int
+            .as_i64()
+            .map(|value| value as f64)
+            .ok_or_else(|| FplError(format!("{}.{name} is out of range", call.name))),
+        other => err(format!(
+            "{}.{name} must be a number, got {other:?}",
+            call.name
+        )),
     }
 }
 
-/// One expression of the §2 grammar, before it means anything.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Lit {
-    None,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Str(String),
-    Tuple(Vec<Lit>),
-    Call {
-        name: String,
-        pos: Vec<Lit>,
-        kw: Vec<(String, Lit)>,
-    },
+fn lit_text(call: &Call, name: &str) -> Result<String, FplError> {
+    match call.field(name) {
+        // A trailing label or note omitted from a hand-written literal reads as
+        // the `''` the canonical print puts back, exactly as in §4.
+        None => Ok(String::new()),
+        Some(literal::Value::Str(text)) => Ok(text.clone()),
+        Some(other) => err(format!(
+            "{}.{name} must be a string, got {other:?}",
+            call.name
+        )),
+    }
 }
 
-struct Parser<'a> {
-    src: &'a [u8],
-    i: usize,
+fn lit_tuple<'a>(call: &'a Call, name: &str) -> Result<&'a [literal::Value], FplError> {
+    lit_field(call, name)?
+        .as_tuple()
+        .ok_or_else(|| FplError(format!("{}.{name} must be a tuple", call.name)))
 }
 
-impl Parser<'_> {
-    fn space(&mut self) {
-        while self.i < self.src.len() && self.src[self.i].is_ascii_whitespace() {
-            self.i += 1;
+/// One element of a tuple field, as the constructor it must be.
+fn lit_element<'a>(value: &'a literal::Value, name: &str) -> Result<&'a Call, FplError> {
+    match value.as_call() {
+        Some(call) if call.name == name => Ok(call),
+        other => err(format!("expected a {name}(...), got {other:?}")),
+    }
+}
+
+impl Term {
+    /// The term as ONE expression of §2's grammar: every field, in declared
+    /// order, keyword form. `print_literal` of this is the canonical print, and
+    /// the print is the identity because [`Term::from_value`] reads it back.
+    pub fn to_value(&self) -> literal::Value {
+        let call = literal::Value::call;
+        match self.out() {
+            TermF::Flat { value } => call("Flat", vec![f("value", float_value(*value))]),
+            TermF::Decay {
+                start,
+                end,
+                end_date,
+                lead_up,
+                start_date,
+            } => call(
+                "Decay",
+                vec![
+                    f("start", float_value(*start)),
+                    f("end", float_value(*end)),
+                    f("end_date", instant_value(*end_date)),
+                    f("lead_up", delta_value(*lead_up)),
+                    f(
+                        "start_date",
+                        start_date.map_or(literal::Value::None, instant_value),
+                    ),
+                ],
+            ),
+            TermF::Curve { points } => call(
+                "Curve",
+                vec![f(
+                    "points",
+                    literal::Value::Tuple(
+                        points
+                            .iter()
+                            .map(|point| {
+                                call(
+                                    "CurvePoint",
+                                    vec![
+                                        f("at", instant_value(point.at)),
+                                        f("value", float_value(point.value)),
+                                        f("label", literal::Value::str(point.label.clone())),
+                                    ],
+                                )
+                            })
+                            .collect(),
+                    ),
+                )],
+            ),
+            TermF::Conj { terms, p } => call(
+                "Conj",
+                vec![
+                    f(
+                        "terms",
+                        literal::Value::Tuple(terms.iter().map(Term::to_value).collect()),
+                    ),
+                    f("p", float_value(*p)),
+                ],
+            ),
+            TermF::Offset { delta, term } => call(
+                "Offset",
+                vec![f("delta", float_value(*delta)), f("term", term.to_value())],
+            ),
+            TermF::Gate { gate, body } => call(
+                "Gate",
+                vec![f("gate", gate.to_value()), f("body", body.to_value())],
+            ),
+            TermF::Shift { delta, term } => call(
+                "Shift",
+                vec![f("delta", delta_value(*delta)), f("term", term.to_value())],
+            ),
+            TermF::Within { window, p, term } => call(
+                "Within",
+                vec![
+                    f("window", delta_value(*window)),
+                    f("p", float_value(*p)),
+                    f("term", term.to_value()),
+                ],
+            ),
+            TermF::Importance { w, term } => call(
+                "Importance",
+                vec![f("w", float_value(*w)), f("term", term.to_value())],
+            ),
+            TermF::After {
+                event,
+                anchor,
+                term,
+                pending,
+                needs,
+            } => call(
+                "After",
+                vec![
+                    f("event", literal::Value::str(event.clone())),
+                    f("anchor", instant_value(*anchor)),
+                    f("term", term.to_value()),
+                    f("pending", pending.to_value()),
+                    f("needs", needs.map_or(literal::Value::None, delta_value)),
+                ],
+            ),
+            TermF::Piecewise { head, pieces } => call(
+                "Piecewise",
+                vec![
+                    f("head", head.to_value()),
+                    f(
+                        "pieces",
+                        literal::Value::Tuple(
+                            pieces
+                                .iter()
+                                .map(|(at, term)| {
+                                    call(
+                                        "Piece",
+                                        vec![
+                                            f("at", instant_value(*at)),
+                                            f("term", term.to_value()),
+                                        ],
+                                    )
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ],
+            ),
+            TermF::OffsetBy { delta, term } => call(
+                "OffsetBy",
+                vec![f("delta", delta.to_value()), f("term", term.to_value())],
+            ),
         }
     }
-    fn peek(&mut self) -> Option<u8> {
-        self.space();
-        self.src.get(self.i).copied()
-    }
-    fn eat(&mut self, c: u8) -> Result<(), FplError> {
-        if self.peek() == Some(c) {
-            self.i += 1;
-            Ok(())
-        } else {
-            err(format!("expected {:?} at byte {}", c as char, self.i))
-        }
-    }
-    fn name(&mut self) -> String {
-        self.space();
-        let start = self.i;
-        while self
-            .src
-            .get(self.i)
-            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
-        {
-            self.i += 1;
-        }
-        String::from_utf8_lossy(&self.src[start..self.i]).into_owned()
-    }
-    fn string(&mut self) -> Result<Lit, FplError> {
-        let quote = self.src[self.i];
-        self.i += 1;
-        let mut out = String::new();
-        loop {
-            let c = *self
-                .src
-                .get(self.i)
-                .ok_or_else(|| FplError("unterminated string".into()))?;
-            if c == quote {
-                self.i += 1;
-                return Ok(Lit::Str(out));
-            }
-            if c != b'\\' {
-                // Step over the whole UTF-8 run, not the lead byte alone.
-                let start = self.i;
-                self.i = start + utf8_len(c);
-                if self.i > self.src.len() {
-                    return err("truncated UTF-8 in string");
-                }
-                out.push_str(&String::from_utf8_lossy(&self.src[start..self.i]));
-                continue;
-            }
-            self.i += 1;
-            let e = *self
-                .src
-                .get(self.i)
-                .ok_or_else(|| FplError("unterminated escape".into()))?;
-            self.i += 1;
-            match e {
-                b'n' => out.push('\n'),
-                b'r' => out.push('\r'),
-                b't' => out.push('\t'),
-                b'\\' | b'\'' | b'"' => out.push(e as char),
-                b'x' | b'u' | b'U' => {
-                    let width = match e {
-                        b'x' => 2,
-                        b'u' => 4,
-                        _ => 8,
-                    };
-                    let end = self.i + width;
-                    if end > self.src.len() {
-                        return err("truncated escape");
-                    }
-                    let hex = std::str::from_utf8(&self.src[self.i..end])
-                        .map_err(|_| FplError("bad escape".into()))?;
-                    self.i = end;
-                    let n =
-                        u32::from_str_radix(hex, 16).map_err(|_| FplError("bad escape".into()))?;
-                    out.push(char::from_u32(n).ok_or_else(|| FplError("bad codepoint".into()))?);
-                }
-                other => return err(format!("unknown escape \\{}", other as char)),
-            }
-        }
-    }
-    fn number(&mut self) -> Result<Lit, FplError> {
-        let start = self.i;
-        if self.src.get(self.i) == Some(&b'-') {
-            self.i += 1;
-        }
-        let mut float = false;
-        while let Some(c) = self.src.get(self.i) {
-            match c {
-                b'0'..=b'9' => self.i += 1,
-                b'.' | b'e' | b'E' => {
-                    float = true;
-                    self.i += 1;
-                }
-                b'+' | b'-' if matches!(self.src.get(self.i - 1), Some(b'e' | b'E')) => self.i += 1,
-                _ => break,
-            }
-        }
-        let text = std::str::from_utf8(&self.src[start..self.i]).unwrap_or("");
-        if float {
-            text.parse::<f64>()
-                .map(Lit::Float)
-                .map_err(|e| FplError(format!("bad float {text:?}: {e}")))
-        } else {
-            text.parse::<i64>()
-                .map(Lit::Int)
-                .map_err(|e| FplError(format!("bad int {text:?}: {e}")))
-        }
-    }
-    fn tuple(&mut self) -> Result<Lit, FplError> {
-        self.i += 1;
-        let mut items = vec![];
-        loop {
-            if self.peek() == Some(b')') {
-                self.i += 1;
-                return Ok(Lit::Tuple(items));
-            }
-            items.push(self.expr()?);
-            match self.peek() {
-                Some(b',') => self.i += 1,
-                Some(b')') => {}
-                _ => return err(format!("expected ',' or ')' at byte {}", self.i)),
-            }
-        }
-    }
-    fn call(&mut self, name: String) -> Result<Lit, FplError> {
-        self.eat(b'(')?;
-        let (mut pos, mut kw) = (vec![], vec![]);
-        loop {
-            if self.peek() == Some(b')') {
-                self.i += 1;
-                return Ok(Lit::Call { name, pos, kw });
-            }
-            let save = self.i;
-            let key = if matches!(self.peek(), Some(c) if c.is_ascii_alphabetic() || c == b'_') {
-                let k = self.name();
-                if self.peek() == Some(b'=') {
-                    self.i += 1;
-                    Some(k)
-                } else {
-                    self.i = save;
-                    None
-                }
-            } else {
-                None
-            };
-            let value = self.expr()?;
-            match key {
-                Some(k) => kw.push((k, value)),
-                None => pos.push(value),
-            }
-            match self.peek() {
-                Some(b',') => self.i += 1,
-                Some(b')') => {}
-                _ => return err(format!("expected ',' or ')' at byte {}", self.i)),
-            }
-        }
-    }
-    fn expr(&mut self) -> Result<Lit, FplError> {
-        match self.peek() {
-            None => err("unexpected end of expression"),
-            Some(b'(') => self.tuple(),
-            Some(b'\'' | b'"') => self.string(),
-            Some(c) if c.is_ascii_digit() || c == b'-' => self.number(),
-            Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
-                let name = self.name();
-                match name.as_str() {
-                    "None" => Ok(Lit::None),
-                    "True" => Ok(Lit::Bool(true)),
-                    "False" => Ok(Lit::Bool(false)),
-                    _ => self.call(name),
-                }
-            }
-            Some(c) => err(format!("unexpected {:?} at byte {}", c as char, self.i)),
-        }
-    }
-}
 
-fn utf8_len(b: u8) -> usize {
-    match b {
-        0x00..=0x7f => 1,
-        0xc0..=0xdf => 2,
-        0xe0..=0xef => 3,
-        _ => 4,
-    }
-}
-
-/// Parse one §2 expression. The grammar IS the whitelist — nothing else is
-/// admitted, and a refusal is a value, never a crash.
-pub fn parse_literal(text: &str) -> Result<Lit, FplError> {
-    let mut p = Parser {
-        src: text.as_bytes(),
-        i: 0,
-    };
-    let lit = p.expr()?;
-    p.space();
-    if p.i != p.src.len() {
-        return err(format!("trailing input at byte {}", p.i));
-    }
-    Ok(lit)
-}
-
-fn arg<'a>(pos: &'a [Lit], kw: &'a [(String, Lit)], index: usize, name: &str) -> Option<&'a Lit> {
-    pos.get(index)
-        .or_else(|| kw.iter().find(|(k, _)| k == name).map(|(_, v)| v))
-}
-
-fn need<'a>(
-    call: &str,
-    pos: &'a [Lit],
-    kw: &'a [(String, Lit)],
-    index: usize,
-    name: &str,
-) -> Result<&'a Lit, FplError> {
-    arg(pos, kw, index, name).ok_or_else(|| FplError(format!("{call}(...) missing {name}")))
-}
-
-fn as_f64(l: &Lit) -> Result<f64, FplError> {
-    match l {
-        Lit::Float(f) => Ok(*f),
-        Lit::Int(i) => Ok(*i as f64),
-        other => err(format!("expected a number, got {other:?}")),
-    }
-}
-
-fn as_i64(l: &Lit) -> Result<i64, FplError> {
-    match l {
-        Lit::Int(i) => Ok(*i),
-        other => err(format!("expected an integer, got {other:?}")),
-    }
-}
-
-fn as_str(l: &Lit) -> Result<String, FplError> {
-    match l {
-        Lit::Str(s) => Ok(s.clone()),
-        other => err(format!("expected a string, got {other:?}")),
-    }
-}
-
-fn as_instant(l: &Lit) -> Result<Instant, FplError> {
-    match l {
-        Lit::Call { name, pos, kw } if name == "datetime" => {
-            let get = |i: usize, n: &str, default: i64| -> Result<i64, FplError> {
-                match arg(pos, kw, i, n) {
-                    Some(v) => as_i64(v),
-                    None => Ok(default),
-                }
-            };
-            let (y, mo, d) = (get(0, "year", 0)?, get(1, "month", 1)?, get(2, "day", 1)?);
-            let (h, mi, s) = (
-                get(3, "hour", 0)?,
-                get(4, "minute", 0)?,
-                get(5, "second", 0)?,
-            );
-            let us = get(6, "microsecond", 0)?;
-            u32::try_from(mo)
-                .ok()
-                .zip(u32::try_from(d).ok())
-                .and_then(|(mo, d)| NaiveDate::from_ymd_opt(y as i32, mo, d))
-                .and_then(|date| date.and_hms_micro_opt(h as u32, mi as u32, s as u32, us as u32))
-                .ok_or_else(|| {
-                    FplError(format!("datetime out of range: {y}-{mo}-{d} {h}:{mi}:{s}"))
-                })
-        }
-        other => err(format!("expected datetime(...), got {other:?}")),
-    }
-}
-
-fn as_delta(l: &Lit) -> Result<Delta, FplError> {
-    match l {
-        Lit::Call { name, pos, kw } if name == "timedelta" => {
-            let get = |i: usize, n: &str| -> Result<i64, FplError> {
-                match arg(pos, kw, i, n) {
-                    Some(v) => as_i64(v),
-                    None => Ok(0),
-                }
-            };
-            Ok(Duration::microseconds(
-                get(0, "days")? * 86_400_000_000
-                    + get(1, "seconds")? * 1_000_000
-                    + get(2, "microseconds")?,
-            ))
-        }
-        other => err(format!("expected timedelta(...), got {other:?}")),
-    }
-}
-
-fn as_opt<T>(l: &Lit, f: impl Fn(&Lit) -> Result<T, FplError>) -> Result<Option<T>, FplError> {
-    match l {
-        Lit::None => Ok(None),
-        other => f(other).map(Some),
-    }
-}
-
-fn as_tuple(l: &Lit) -> Result<&[Lit], FplError> {
-    match l {
-        Lit::Tuple(items) => Ok(items),
-        other => err(format!("expected a tuple, got {other:?}")),
-    }
-}
-
-/// A §2 literal as a `Term`, dispatched into the smart constructors — whose
-/// error IS the parse error (§2). The vocabulary is exactly the term
-/// constructors plus `CurvePoint`, `Piece`, `datetime` and `timedelta`.
-pub fn term_of_literal(l: &Lit) -> Result<Term, FplError> {
-    let Lit::Call { name, pos, kw } = l else {
-        return err(format!("expected a term constructor, got {l:?}"));
-    };
-    let a = |i: usize, n: &str| need(name, pos, kw, i, n);
-    match name.as_str() {
-        "Flat" => mk_flat(as_f64(a(0, "value")?)?),
-        "Decay" => mk_decay(
-            as_f64(a(0, "start")?)?,
-            as_f64(a(1, "end")?)?,
-            as_instant(a(2, "end_date")?)?,
-            match arg(pos, kw, 3, "lead_up") {
-                Some(v) => as_delta(v)?,
-                None => Duration::weeks(1),
-            },
-            match arg(pos, kw, 4, "start_date") {
-                Some(v) => as_opt(v, as_instant)?,
-                None => None,
-            },
-        ),
-        "Curve" => {
-            let mut points = vec![];
-            for pt in as_tuple(a(0, "points")?)? {
-                let Lit::Call {
-                    name: pn,
-                    pos: pp,
-                    kw: pk,
-                } = pt
-                else {
-                    return err(format!("expected CurvePoint(...), got {pt:?}"));
-                };
-                if pn != "CurvePoint" {
-                    return err(format!("unknown constructor {pn:?} in Curve.points"));
-                }
-                points.push(CurvePoint {
-                    at: as_instant(need(pn, pp, pk, 0, "at")?)?,
-                    value: as_f64(need(pn, pp, pk, 1, "value")?)?,
-                    label: match arg(pp, pk, 2, "label") {
-                        Some(v) => as_str(v)?,
-                        None => String::new(),
-                    },
-                });
-            }
-            mk_curve(points)
-        }
-        "Conj" => {
-            let mut terms = vec![];
-            for t in as_tuple(a(0, "terms")?)? {
-                terms.push(term_of_literal(t)?);
-            }
-            mk_conj(
-                terms,
-                match arg(pos, kw, 1, "p") {
-                    Some(v) => as_f64(v)?,
-                    None => PRIORITY_POWER,
+    /// One expression of §2's grammar as a `Term`, dispatched into the smart
+    /// constructors — whose error IS the parse error (§2). The grammar has
+    /// already checked the NAMES against [`TERM_SIGNATURES`] and put the fields
+    /// in declared order; what is left is the meaning, which is this layer's.
+    pub fn from_value(value: &literal::Value) -> Result<Term, FplError> {
+        let call = value
+            .as_call()
+            .ok_or_else(|| FplError(format!("expected a term constructor, got {value:?}")))?;
+        let term =
+            |name: &str| -> Result<Term, FplError> { Term::from_value(lit_field(call, name)?) };
+        match call.name.as_str() {
+            "Flat" => mk_flat(lit_number(call, "value")?),
+            "Decay" => mk_decay(
+                lit_number(call, "start")?,
+                lit_number(call, "end")?,
+                instant_field(lit_field(call, "end_date")?, "Decay.end_date")?,
+                match call.field("lead_up") {
+                    Some(value) => delta_field(value, "Decay.lead_up")?,
+                    None => Duration::weeks(1),
                 },
-            )
-        }
-        "Offset" => mk_offset(as_f64(a(0, "delta")?)?, term_of_literal(a(1, "term")?)?),
-        "Gate" => mk_gate(
-            term_of_literal(a(0, "gate")?)?,
-            term_of_literal(a(1, "body")?)?,
-        ),
-        "OffsetBy" => mk_offset_by(
-            term_of_literal(a(0, "delta")?)?,
-            term_of_literal(a(1, "term")?)?,
-        ),
-        "Shift" => mk_shift(as_delta(a(0, "delta")?)?, term_of_literal(a(1, "term")?)?),
-        "Within" => mk_within(
-            as_delta(a(0, "window")?)?,
-            as_f64(a(1, "p")?)?,
-            term_of_literal(a(2, "term")?)?,
-        ),
-        "Importance" => mk_importance(as_f64(a(0, "w")?)?, term_of_literal(a(1, "term")?)?),
-        "After" => mk_after(
-            as_str(a(0, "event")?)?,
-            as_instant(a(1, "anchor")?)?,
-            term_of_literal(a(2, "term")?)?,
-            term_of_literal(a(3, "pending")?)?,
-            match arg(pos, kw, 4, "needs") {
-                Some(v) => as_opt(v, as_delta)?,
-                None => None,
-            },
-        ),
-        "Piecewise" => {
-            let mut pieces = vec![];
-            for p in as_tuple(a(1, "pieces")?)? {
-                let Lit::Call {
-                    name: pn,
-                    pos: pp,
-                    kw: pk,
-                } = p
-                else {
-                    return err(format!("expected Piece(...), got {p:?}"));
-                };
-                if pn != "Piece" {
-                    return err(format!("unknown constructor {pn:?} in Piecewise.pieces"));
+                match call.field("start_date") {
+                    None | Some(literal::Value::None) => None,
+                    Some(value) => Some(instant_field(value, "Decay.start_date")?),
+                },
+            ),
+            "Curve" => {
+                let mut points = Vec::new();
+                for item in lit_tuple(call, "points")? {
+                    let point = lit_element(item, "CurvePoint")?;
+                    points.push(CurvePoint {
+                        at: instant_field(lit_field(point, "at")?, "CurvePoint.at")?,
+                        value: lit_number(point, "value")?,
+                        label: lit_text(point, "label")?,
+                    });
                 }
-                pieces.push((
-                    as_instant(need(pn, pp, pk, 0, "at")?)?,
-                    term_of_literal(need(pn, pp, pk, 1, "term")?)?,
-                ));
+                mk_curve(points)
             }
-            mk_piecewise(term_of_literal(a(0, "head")?)?, pieces)
+            "Conj" => {
+                let mut terms = Vec::new();
+                for item in lit_tuple(call, "terms")? {
+                    terms.push(Term::from_value(item)?);
+                }
+                mk_conj(
+                    terms,
+                    match call.field("p") {
+                        Some(_) => lit_number(call, "p")?,
+                        None => PRIORITY_POWER,
+                    },
+                )
+            }
+            "Offset" => mk_offset(lit_number(call, "delta")?, term("term")?),
+            "Gate" => mk_gate(term("gate")?, term("body")?),
+            "OffsetBy" => mk_offset_by(term("delta")?, term("term")?),
+            "Shift" => mk_shift(
+                delta_field(lit_field(call, "delta")?, "Shift.delta")?,
+                term("term")?,
+            ),
+            "Within" => mk_within(
+                delta_field(lit_field(call, "window")?, "Within.window")?,
+                lit_number(call, "p")?,
+                term("term")?,
+            ),
+            "Importance" => mk_importance(lit_number(call, "w")?, term("term")?),
+            "After" => mk_after(
+                lit_text(call, "event")?,
+                instant_field(lit_field(call, "anchor")?, "After.anchor")?,
+                term("term")?,
+                term("pending")?,
+                match call.field("needs") {
+                    None | Some(literal::Value::None) => None,
+                    Some(value) => Some(delta_field(value, "After.needs")?),
+                },
+            ),
+            "Piecewise" => {
+                let mut pieces = Vec::new();
+                for item in lit_tuple(call, "pieces")? {
+                    let piece = lit_element(item, "Piece")?;
+                    pieces.push((
+                        instant_field(lit_field(piece, "at")?, "Piece.at")?,
+                        Term::from_value(lit_field(piece, "term")?)?,
+                    ));
+                }
+                mk_piecewise(term("head")?, pieces)
+            }
+            other => err(format!("{other:?} is not one of SPEC §7's terms")),
         }
-        other => err(format!("unknown constructor {other:?}")),
     }
 }
 
-/// `print_term`'s inverse: one canonical literal back into a `Term`.
+/// The canonical §2 print of a term.
+pub fn print_term(term: &Term) -> String {
+    print_literal(&term.to_value())
+}
+
+/// `print_term`'s inverse: one canonical literal back into a `Term`, through
+/// the closed vocabulary of §7 and every smart constructor.
 pub fn parse_term(text: &str) -> Result<Term, FplError> {
-    term_of_literal(&parse_literal(text)?)
+    Term::from_value(&literal::parse_literal(text, &TERM_VOCABULARY)?)
 }
