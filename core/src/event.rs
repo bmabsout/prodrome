@@ -802,36 +802,48 @@ impl TodoEvent {
                     field("note", text(e.note.clone())),
                 ],
             ),
-            TodoEvent::Authored(e) => Value::call(
-                "Authored",
-                vec![
-                    field("todo", text(e.todo.0.clone())),
-                    field("at", Value::Datetime(e.at)),
-                    field("actor", text(e.actor.0.clone())),
-                    field("kind", text(e.kind.0.clone())),
-                    field("created", Value::Datetime(e.created)),
-                    field("body", text(e.body.0.clone())),
-                    field(
-                        "spec",
-                        e.spec.as_ref().map_or(Value::None, |spec| spec.to_value()),
-                    ),
-                    field(
-                        "rationale",
-                        tuple_of(&e.rationale, |line| text(line.clone())),
-                    ),
-                    field("category", optional_text(e.category.as_ref())),
-                    field("waiting_on", text(e.waiting_on.0.clone())),
-                    field("detail", text(e.detail.0.clone())),
-                    field(
-                        "source",
-                        e.source.as_ref().map_or(Value::None, Source::to_value),
-                    ),
-                    field("subtodos", tuple_of(&e.subtodos, SubTodo::to_value)),
-                    field("notes", tuple_of(&e.notes, Note::to_value)),
-                    field("note", text(e.note.clone())),
-                ],
-            ),
+            TodoEvent::Authored(e) => e.to_value(),
         }
+    }
+}
+
+impl Authored {
+    /// A content record as a literal. Split out of [`TodoEvent::to_value`]
+    /// because the CONTENT fold (§6.3) hands back `Authored` records and their
+    /// print is what a consumer compares — one printer, reached from either
+    /// shape.
+    pub fn to_value(&self) -> Value {
+        Value::call(
+            "Authored",
+            vec![
+                field("todo", text(self.todo.0.clone())),
+                field("at", Value::Datetime(self.at)),
+                field("actor", text(self.actor.0.clone())),
+                field("kind", text(self.kind.0.clone())),
+                field("created", Value::Datetime(self.created)),
+                field("body", text(self.body.0.clone())),
+                field(
+                    "spec",
+                    self.spec
+                        .as_ref()
+                        .map_or(Value::None, |spec| spec.to_value()),
+                ),
+                field(
+                    "rationale",
+                    tuple_of(&self.rationale, |line| text(line.clone())),
+                ),
+                field("category", optional_text(self.category.as_ref())),
+                field("waiting_on", text(self.waiting_on.0.clone())),
+                field("detail", text(self.detail.0.clone())),
+                field(
+                    "source",
+                    self.source.as_ref().map_or(Value::None, Source::to_value),
+                ),
+                field("subtodos", tuple_of(&self.subtodos, SubTodo::to_value)),
+                field("notes", tuple_of(&self.notes, Note::to_value)),
+                field("note", text(self.note.clone())),
+            ],
+        )
     }
 }
 
