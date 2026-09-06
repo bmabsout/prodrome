@@ -1,0 +1,722 @@
+//! SPEC §9.2–9.4 and §9.6, as properties over random logs and random
+//! two-replica DAGs.
+//!
+//! The vectors say this side agrees with the reference on the cases the
+//! reference happened to generate. These say the AGREEMENT IS STRUCTURAL:
+//! nothing rewrites history, order is causal and the stamp is data, the
+//! history is the environment as a function of time, and on any DAG the
+//! registers are the folds with the conflicts named exactly.
+//!
+//! The generators mirror `scripts/conformance.py`'s `a_log`/`an_event` — the
+//! same three todos, the same seven kinds in the same proportions, the same
+//! two actors with one of them untrusted — so a failure here is a failure the
+//! vector generator could have produced, and a fix is checkable against it.
+//!
+//! The DAG laws build REAL stores in temp directories and drive them the way a
+//! second replica would: append, adopt, write concurrently, merge. Nothing
+//! about a frontier may depend on this side having constructed the graph in
+//! memory.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use chrono::{Duration, NaiveDate};
+use prodrome::event::{
+    mk_authored, mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, mk_subtodo,
+    Actor, TodoEvent, TodoId,
+};
+use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Env, History, Untrusted};
+use prodrome::fpl::{self, print_term, Instant, Term};
+use prodrome::literal::Datetime;
+use prodrome::registers::{
+    conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Kind, Node,
+};
+use prodrome::store::EventStore;
+use proptest::prelude::*;
+
+const TODOS: [&str; 3] = ["alpha", "beta", "gamma"];
+/// `scripts/conformance.py`'s actors, in its proportions: two writes trusted
+/// for every one that is not.
+const ACTORS: [&str; 3] = ["bassel", "bassel", "triage"];
+/// The generator's window: sixty days from the origin.
+const WINDOW: i64 = 60 * 86_400;
+
+fn origin() -> Instant {
+    NaiveDate::from_ymd_opt(2026, 9, 1)
+        .and_then(|day| day.and_hms_opt(0, 0, 0))
+        .expect("a real date")
+}
+
+fn moment(seconds: i64) -> Datetime {
+    fpl::datetime_of(origin() + Duration::seconds(seconds)).expect("inside the grammar's years")
+}
+
+/// Later than every event any generator here produces, so a dated fold sees
+/// the whole log and can be compared with the undated register fold.
+fn far() -> Datetime {
+    moment(WINDOW * 20)
+}
+
+fn untrusted() -> Untrusted {
+    Untrusted::of([Actor::new("triage").expect("valid")])
+}
+
+fn ok<T>(result: Result<T, prodrome::literal::ProdromeError>) -> T {
+    result.expect("the generator only builds events the constructors admit")
+}
+
+/// An event with its instant left OPEN. The generators produce these, and the
+/// laws realise them at whatever instant they are about: the prefix law needs
+/// an event dated after the log, and the shift law needs the same log dated
+/// differently, and neither is expressible if the stamp is baked in.
+#[derive(Debug, Clone)]
+struct Draft {
+    todo: &'static str,
+    actor: &'static str,
+    roll: u8,
+    spec: Option<Term>,
+    items: usize,
+    text: u32,
+}
+
+impl Draft {
+    fn at(&self, at: Datetime) -> TodoEvent {
+        self.at_with_note(at, "")
+    }
+
+    fn at_with_note(&self, at: Datetime, note: &str) -> TodoEvent {
+        match self.roll {
+            0 => ok(mk_created(
+                self.todo,
+                at,
+                self.actor,
+                &format!("t{}", self.text),
+                note,
+            )),
+            1 | 2 => {
+                let subtodos = (0..self.items)
+                    .map(|i| ok(mk_subtodo(&format!("item {i}"), i % 3 == 0)))
+                    .collect();
+                ok(mk_authored(
+                    self.todo,
+                    at,
+                    self.actor,
+                    "todo",
+                    at,
+                    &format!("body {} \\@x", self.text),
+                    self.spec.clone(),
+                    vec![],
+                    "",
+                    "",
+                    "",
+                    None,
+                    subtodos,
+                    vec![],
+                    note,
+                ))
+            }
+            3 => ok(mk_spec_revised(
+                self.todo,
+                at,
+                self.actor,
+                self.spec
+                    .clone()
+                    .unwrap_or_else(|| fpl::mk_flat(0.5).expect("0.5 is a fulfillment")),
+                note,
+            )),
+            4 => ok(mk_completed(self.todo, at, self.actor, note)),
+            5 => ok(mk_cancelled(self.todo, at, self.actor, note)),
+            _ => ok(mk_reopened(self.todo, at, self.actor, note)),
+        }
+    }
+}
+
+/// A spec the way `scripts/conformance.py` draws one, shallow: the shapes that
+/// make `flatten`'s normal form do work — a schedule to splice, a conjunction
+/// to push under one — without the depth `fpl`'s own laws already cover.
+fn a_spec() -> impl Strategy<Value = Term> {
+    let leaf = prop_oneof![
+        (0.02f64..0.98).prop_map(|v| fpl::mk_flat(v).expect("in [0, 1]")),
+        (0.3f64..0.95, 0.0f64..0.2, 0i64..WINDOW, 6i64..400).prop_map(|(start, end, at, lead)| {
+            fpl::mk_decay(
+                start,
+                end,
+                origin() + Duration::seconds(at),
+                Duration::hours(lead),
+                None,
+            )
+            .expect("a well-formed decay")
+        }),
+    ];
+    leaf.prop_recursive(2, 8, 2, |inner| {
+        prop_oneof![
+            (
+                prop::collection::vec(inner.clone(), 1..3),
+                prop::sample::select(vec![-4.0, -1.0, 0.0])
+            )
+                .prop_map(|(terms, p)| fpl::mk_conj(terms, p).expect("p is in range")),
+            (
+                inner.clone(),
+                prop::collection::btree_set(0i64..WINDOW, 1..3),
+                prop::collection::vec(inner, 2)
+            )
+                .prop_map(|(head, ats, terms)| fpl::mk_piecewise(
+                    head,
+                    ats.iter()
+                        .zip(terms)
+                        .map(|(at, term)| (origin() + Duration::seconds(*at), term))
+                        .collect()
+                )
+                .expect("the instants are a sorted set"))
+        ]
+    })
+}
+
+fn a_draft() -> impl Strategy<Value = Draft> {
+    (
+        prop::sample::select(TODOS.to_vec()),
+        prop::sample::select(ACTORS.to_vec()),
+        0u8..7,
+        // The generator carries a spec on most `Authored` records and not all.
+        prop::option::weighted(0.85, a_spec()),
+        prop::sample::select(vec![0usize, 0, 2, 3]),
+        0u32..999,
+    )
+        .prop_map(|(todo, actor, roll, spec, items, text)| Draft {
+            todo,
+            actor,
+            roll,
+            spec,
+            items,
+            text,
+        })
+}
+
+/// Drafts with their instants, ready to realise. Kept apart from the events so
+/// a law can re-date the same log.
+fn a_schedule(size: std::ops::Range<usize>) -> impl Strategy<Value = Vec<(Draft, i64)>> {
+    prop::collection::vec((a_draft(), 0i64..WINDOW), size).prop_map(|mut drafts| {
+        // `a_log` sorts by instant, and Rust's sort is stable, so equal stamps
+        // keep the order they were drawn in — the reference's `sorted` too.
+        drafts.sort_by_key(|(_, at)| *at);
+        drafts
+    })
+}
+
+fn realise(schedule: &[(Draft, i64)], shift: i64) -> Vec<TodoEvent> {
+    schedule
+        .iter()
+        .map(|(draft, at)| draft.at(moment(at + shift)))
+        .collect()
+}
+
+fn a_log() -> impl Strategy<Value = Vec<TodoEvent>> {
+    a_schedule(0..25).prop_map(|schedule| realise(&schedule, 0))
+}
+
+/// What every fold answers, as one comparable value. Terms and records go in
+/// as their canonical PRINTS: a fold that agreed to nine decimals and printed
+/// a different term would not be the same fold.
+#[derive(Debug, PartialEq)]
+struct Folds {
+    env: Env,
+    specs: BTreeMap<String, String>,
+    content: BTreeMap<String, String>,
+    flatten: BTreeMap<String, String>,
+    history: History,
+}
+
+fn folds(log: &[TodoEvent], t: Datetime, policy: &Untrusted) -> Folds {
+    Folds {
+        env: env_at(log, t, policy),
+        specs: specs_at(log, t, policy)
+            .iter()
+            .map(|(todo, spec)| (todo.as_str().to_owned(), print_term(spec)))
+            .collect(),
+        content: authored_at(log, t)
+            .iter()
+            .map(|(todo, record)| {
+                (
+                    todo.as_str().to_owned(),
+                    prodrome::literal::print_literal(&record.to_value()),
+                )
+            })
+            .collect(),
+        flatten: flatten(log, t, policy)
+            .expect("the log folds")
+            .iter()
+            .map(|(todo, term)| (todo.as_str().to_owned(), print_term(term)))
+            .collect(),
+        history: history(log, policy),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// §9.4 — `history.at(t)` is `env_at(·, t)` at EVERY instant, not only at
+    /// the ones a vector pinned.
+    #[test]
+    fn the_history_is_the_environment_as_a_function_of_time(
+        log in a_log(),
+        asked in prop::collection::vec(0i64..WINDOW, 1..6),
+    ) {
+        let policy = untrusted();
+        let past = history(&log, &policy);
+        for seconds in asked {
+            let t = moment(seconds);
+            prop_assert_eq!(past.at(t), env_at(&log, t, &policy));
+        }
+    }
+
+    /// §9.2, THE PREFIX LAW — nothing rewrites history. Append an event later
+    /// than the log's last, and at every earlier moment every todo's function
+    /// reads exactly what it read before, against the environment of that
+    /// moment.
+    ///
+    /// With ONE exception, which is `flatten`'s definition and not a bug: the
+    /// HEAD is `checklist(first spec ever, first checklist ever)`, so an
+    /// appended event that records EITHER half for the first time re-heads
+    /// that todo's whole curve. It can only bite a todo that already had a
+    /// function from the other half alone — a checklist with no spec, or a
+    /// spec with no content record — and `a_late_first_half_of_the_head_re_heads_the_curve`
+    /// below is the witness for both, read off the reference. Everything else
+    /// is untouchable, which is what this asserts.
+    #[test]
+    fn appending_a_later_event_changes_no_earlier_moment(
+        schedule in a_schedule(1..25),
+        extra in a_draft(),
+        gap in 1i64..3600,
+        asked in prop::collection::vec(0i64..WINDOW, 1..6),
+    ) {
+        let policy = untrusted();
+        let log = realise(&schedule, 0);
+        let last = schedule.last().expect("a non-empty schedule").1;
+        let tau = moment(last + gap);
+        let mut longer = log.clone();
+        longer.push(extra.at(tau));
+
+        let before = flatten(&log, tau, &policy).expect("folds");
+        let after = flatten(&longer, tau, &policy).expect("folds");
+        // A later event can only ADD a function, never remove one.
+        for todo in before.keys() {
+            prop_assert!(after.contains_key(todo));
+        }
+        // A todo whose head the appended event DETERMINES: the first spec, or
+        // the first content record (which fixes the first checklist length).
+        // `specs_at`/`authored_at` hold a key exactly when the chain holds
+        // such a write, which is the condition `flatten`'s head reads.
+        let head_of = |log: &[TodoEvent]| -> (BTreeSet<TodoId>, BTreeSet<TodoId>) {
+            (
+                specs_at(log, tau, &policy).into_keys().collect(),
+                authored_at(log, tau).into_keys().collect(),
+            )
+        };
+        let (priced_before, written_before) = head_of(&log);
+        let (priced_after, written_after) = head_of(&longer);
+        let past_before = history(&log, &policy);
+        let past_after = history(&longer, &policy);
+        for seconds in asked {
+            // STRICTLY before tau: the law is about EARLIER moments, and at
+            // tau itself the appended event is in force by design — that is
+            // the fold working, not history being rewritten.
+            let t = moment(seconds.min(last + gap - 1));
+            let now = fpl::instant_of(t);
+            for (todo, term) in &before {
+                let re_headed = (!priced_before.contains(todo) && priced_after.contains(todo))
+                    || (!written_before.contains(todo) && written_after.contains(todo));
+                if re_headed {
+                    continue;
+                }
+                prop_assert_eq!(
+                    fpl::fulfillment(term, now, &prodrome::fold::evaluation_env(&past_before.at(t))),
+                    fpl::fulfillment(
+                        &after[todo],
+                        now,
+                        &prodrome::fold::evaluation_env(&past_after.at(t))
+                    ),
+                    "{:?} at {:?}", todo, t
+                );
+            }
+        }
+    }
+
+    /// §9.3, first half — INDEPENDENT EVENTS COMMUTE. Shuffle the log, then
+    /// restore each todo's own order: that is a linearisation of the per-todo
+    /// partial order, which is exactly what "independent" means. Every fold
+    /// answers the same, so each is a function of the event SET and two
+    /// replicas that merge in different orders converge.
+    #[test]
+    fn independent_events_commute(
+        log in a_log(),
+        keys in prop::collection::vec(0u32..1000, 0..25),
+        at in 0i64..WINDOW,
+    ) {
+        let policy = untrusted();
+        let t = moment(at);
+        // A permutation of the positions, from keys the shrinker can shrink.
+        let mut order: Vec<usize> = (0..log.len()).collect();
+        order.sort_by_key(|i| (keys.get(*i).copied().unwrap_or(0), *i));
+
+        let mut queues: BTreeMap<&TodoId, Vec<&TodoEvent>> = BTreeMap::new();
+        for event in &log {
+            queues.entry(event.todo()).or_default().push(event);
+        }
+        for queue in queues.values_mut() {
+            queue.reverse(); // pop from the back keeps each todo's own order
+        }
+        let relinearised: Vec<TodoEvent> = order
+            .iter()
+            .map(|i| {
+                queues
+                    .get_mut(log[*i].todo())
+                    .and_then(Vec::pop)
+                    .expect("one event per position")
+                    .clone()
+            })
+            .collect();
+        prop_assert_eq!(relinearised.len(), log.len());
+        prop_assert_eq!(folds(&relinearised, t, &policy), folds(&log, t, &policy));
+    }
+
+    /// §9.3, second half — THE STAMP IS DATA, NOT ORDER. Shift every `at` by
+    /// the same amount and move the question by the same amount: the time
+    /// machine's window moves, and no register's winner changes.
+    #[test]
+    fn a_uniform_shift_changes_no_winner(
+        schedule in a_schedule(0..25),
+        shift in -(WINDOW / 2)..(WINDOW / 2),
+        at in 0i64..WINDOW,
+    ) {
+        let policy = untrusted();
+        let here = realise(&schedule, 0);
+        let there = realise(&schedule, shift);
+        let t = moment(at);
+        let moved = moment(at + shift);
+
+        let kinds = |env: &Env| -> BTreeMap<String, &'static str> {
+            env.iter()
+                .map(|(todo, binding)| (todo.as_str().to_owned(), binding.kind()))
+                .collect()
+        };
+        prop_assert_eq!(
+            kinds(&env_at(&here, t, &policy)),
+            kinds(&env_at(&there, moved, &policy))
+        );
+        let printed = |specs: BTreeMap<TodoId, Term>| -> BTreeMap<String, String> {
+            specs
+                .iter()
+                .map(|(todo, spec)| (todo.as_str().to_owned(), print_term(spec)))
+                .collect()
+        };
+        prop_assert_eq!(
+            printed(specs_at(&here, t, &policy)),
+            printed(specs_at(&there, moved, &policy))
+        );
+    }
+
+    /// §6.6's monoid action on a log's chain of nodes, with no store in the
+    /// way: `extend(extend(s, xs), ys) == extend(s, xs ++ ys)`, and extending
+    /// with what is already folded changes nothing.
+    #[test]
+    fn extending_is_a_monoid_action(log in a_log(), split in 0usize..25) {
+        let policy = untrusted();
+        let nodes = chain_of(&log);
+        let split = split.min(nodes.len());
+        let whole = fold(&nodes, None, &policy);
+        prop_assert_eq!(
+            &extend(&fold(&nodes[..split], None, &policy), &nodes[split..], None, &policy),
+            &whole
+        );
+        prop_assert_eq!(&extend(&whole, &nodes, None, &policy), &whole);
+        prop_assert_eq!(
+            since(&fold(&nodes[..split], None, &policy), &nodes),
+            nodes[split..].iter().collect::<Vec<_>>()
+        );
+    }
+}
+
+/// THE ONE PLACE A LATER EVENT REACHES BACK, named with its witnesses.
+///
+/// `flatten`'s head is `checklist(first spec ever, first checklist ever)`, and
+/// a todo can have a function from EITHER half alone: a checklist with no spec
+/// is `Conj(n × Flat(0.5))`, and a spec with no content record is the spec. So
+/// the event that records the OTHER half for the first time re-heads the curve
+/// at every earlier moment, once each way below.
+///
+/// `scripts/conformance.py`'s generator draws exactly this — an `Authored`
+/// carries a spec 85% of the time and subtodos some of the time, and a
+/// `SpecRevised` prices a todo that has no content record at all — where
+/// `tests/test_laws.py`'s generator never does (its authored records always
+/// carry a spec and never a subtodo), which is why the reference's own prefix
+/// law never meets it.
+///
+/// This is the REFERENCE's behaviour and not a porting error: every number and
+/// print below was read off `suzatary/prodrome/events.py` on these exact
+/// inputs. Pinning it keeps the exception a decision instead of a surprise.
+#[test]
+fn a_late_first_half_of_the_head_re_heads_the_curve() {
+    let policy = untrusted();
+    let start = moment(0);
+    let tau = moment(1);
+    let env = prodrome::fpl::Env::new();
+    let now = fpl::instant_of(start);
+
+    // A checklist with no spec, priced for the first time at tau.
+    let checklist_only = mk_authored(
+        "gamma",
+        start,
+        "bassel",
+        "todo",
+        start,
+        "body",
+        None,
+        vec![],
+        "",
+        "",
+        "",
+        None,
+        vec![
+            mk_subtodo("item 0", true).expect("valid"),
+            mk_subtodo("item 1", false).expect("valid"),
+        ],
+        vec![],
+        "",
+    )
+    .expect("valid");
+    let first_price = mk_authored(
+        "gamma",
+        tau,
+        "bassel",
+        "todo",
+        tau,
+        "body",
+        Some(fpl::mk_flat(0.02).expect("in [0, 1]")),
+        vec![],
+        "",
+        "",
+        "",
+        None,
+        vec![],
+        vec![],
+        "",
+    )
+    .expect("valid");
+    let gamma = TodoId::new("gamma").expect("valid");
+    let before = flatten(std::slice::from_ref(&checklist_only), tau, &policy).expect("folds");
+    let after = flatten(&[checklist_only, first_price], tau, &policy).expect("folds");
+    assert_eq!(
+        print_term(&before[&gamma]),
+        "Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0)"
+    );
+    assert_eq!(
+        print_term(&after[&gamma]),
+        "Piecewise(head=OffsetBy(delta=Flat(value=0.02), \
+         term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0)), \
+         pieces=(Piece(at=datetime(2026, 9, 1, 0, 0, 1), term=Flat(value=0.02)),))"
+    );
+    assert_eq!(fpl::fulfillment(&before[&gamma], now, &env), 0.5);
+    assert_eq!(fpl::fulfillment(&after[&gamma], now, &env), 0.51);
+
+    // And the other way: a spec with no content record, given a checklist for
+    // the first time at tau.
+    let priced = mk_spec_revised(
+        "beta",
+        start,
+        "bassel",
+        fpl::mk_flat(0.5).expect("in [0, 1]"),
+        "",
+    )
+    .expect("valid");
+    let first_checklist = mk_authored(
+        "beta",
+        tau,
+        "bassel",
+        "todo",
+        tau,
+        "body",
+        None,
+        vec![],
+        "",
+        "",
+        "",
+        None,
+        vec![
+            mk_subtodo("item 0", true).expect("valid"),
+            mk_subtodo("item 1", false).expect("valid"),
+        ],
+        vec![],
+        "",
+    )
+    .expect("valid");
+    let beta = TodoId::new("beta").expect("valid");
+    let before = flatten(std::slice::from_ref(&priced), tau, &policy).expect("folds");
+    let after = flatten(&[priced, first_checklist], tau, &policy).expect("folds");
+    assert_eq!(print_term(&before[&beta]), "Flat(value=0.5)");
+    assert_eq!(
+        print_term(&after[&beta]),
+        "OffsetBy(delta=Flat(value=0.5), \
+         term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0))"
+    );
+    assert_eq!(fpl::fulfillment(&before[&beta], now, &env), 0.5);
+    assert_eq!(fpl::fulfillment(&after[&beta], now, &env), 0.75);
+}
+
+/// A log as the chain a single writer builds: each object sealed on the one
+/// before, so the node's parents are real and its name is its own hash.
+fn chain_of(log: &[TodoEvent]) -> Vec<Node> {
+    let mut prev: Option<prodrome::event::Hash> = None;
+    let mut nodes = Vec::with_capacity(log.len());
+    for event in log {
+        let envelope = prodrome::event::mk_sealed(prev.clone(), event.clone());
+        let name = prodrome::event::seal_hash(&envelope);
+        prev = Some(name.clone());
+        nodes.push(Node::of(name, &envelope));
+    }
+    nodes
+}
+
+static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+/// A scratch root that cleans itself up when the law is done with it.
+struct Replicas(std::path::PathBuf);
+
+impl Drop for Replicas {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Two replicas that diverged: a shared history, then concurrent writes on
+/// each side, then an import. Built the only way a second head can appear.
+fn diverged(
+    shared: &[TodoEvent],
+    mine: &[TodoEvent],
+    theirs: &[TodoEvent],
+) -> (Replicas, EventStore) {
+    let root = std::env::temp_dir().join(format!(
+        "prodrome-laws-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let guard = Replicas(root.clone());
+    let policy: BTreeSet<Actor> = [Actor::new("triage").expect("valid")].into_iter().collect();
+    let here = EventStore::new(root.join("here"), policy.clone());
+    for event in shared {
+        here.append(event.clone(), None).expect("appends");
+    }
+    let there = EventStore::new(root.join("there"), policy);
+    if let Some(tip) = here.tip() {
+        there.adopt(&here, &tip).expect("adopts");
+    }
+    for event in mine {
+        here.append(event.clone(), None).expect("appends");
+    }
+    for event in theirs {
+        there.append(event.clone(), None).expect("appends");
+    }
+    if let Some(tip) = there.tip() {
+        here.adopt(&there, &tip).expect("adopts");
+    }
+    (guard, here)
+}
+
+fn nodes_from(store: &EventStore) -> Vec<Node> {
+    nodes_of(&store.read_dag_named().expect("the DAG reads"))
+}
+
+fn events_from(nodes: &[Node]) -> Vec<TodoEvent> {
+    nodes.iter().filter_map(|node| node.event.clone()).collect()
+}
+
+fn written(events: &[TodoEvent], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
+    events
+        .iter()
+        .filter(|event| policy.binds(event))
+        .flat_map(|event| {
+            prodrome::registers::writes_of(event)
+                .iter()
+                .map(|kind| (*kind, event.todo().clone()))
+        })
+        .collect()
+}
+
+fn conflicted(state: &Folded) -> BTreeSet<(Kind, TodoId)> {
+    conflicts_of(state)
+        .iter()
+        .flat_map(|(todo, by_kind)| by_kind.keys().map(|kind| (*kind, todo.clone())))
+        .collect()
+}
+
+proptest! {
+    // Each case builds two stores on disk and imports one into the other, so
+    // the budget buys graphs rather than repetitions.
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// §9.6, first clause — ON ANY DAG THE REGISTERS ARE THE FOLDS. Under
+    /// conflict the projections pick the linearisation's last write, which is
+    /// the write the event folds pick, so a conflicted todo never shows one
+    /// write's content beside another write's price.
+    #[test]
+    fn the_registers_are_the_folds_on_any_dag(
+        shared in a_schedule(1..8),
+        mine in a_schedule(1..6),
+        theirs in a_schedule(1..6),
+    ) {
+        let policy = untrusted();
+        let mine: Vec<TodoEvent> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
+        let theirs: Vec<TodoEvent> =
+            theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
+        let (_guard, store) = diverged(&realise(&shared, 0), &mine, &theirs);
+        let nodes = nodes_from(&store);
+        let events = events_from(&nodes);
+        let state = fold(&nodes, None, &policy);
+
+        prop_assert_eq!(env_of(&state), env_at(&events, far(), &policy));
+        let printed = |specs: BTreeMap<TodoId, Term>| -> BTreeMap<String, String> {
+            specs.iter().map(|(t, s)| (t.as_str().to_owned(), print_term(s))).collect()
+        };
+        prop_assert_eq!(printed(specs_of(&state)), printed(specs_at(&events, far(), &policy)));
+        prop_assert_eq!(content_of(&state), authored_at(&events, far()));
+    }
+
+    /// §9.6, the rest — CONFLICTS ARE EXACTLY THE REGISTERS BOTH BRANCHES
+    /// WROTE (the shared prefix's writes are ancestors of both and never
+    /// conflict); A MERGE SETTLES NOTHING, because it carries no write; and a
+    /// write that DESCENDS FROM BOTH settles every register it writes.
+    #[test]
+    fn conflicts_are_the_concurrent_writes_and_a_descending_write_settles(
+        shared in a_schedule(1..8),
+        mine in a_schedule(1..6),
+        theirs in a_schedule(1..6),
+    ) {
+        let policy = untrusted();
+        let mine: Vec<TodoEvent> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
+        let theirs: Vec<TodoEvent> =
+            theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
+        let (_guard, store) = diverged(&realise(&shared, 0), &mine, &theirs);
+
+        let expected: BTreeSet<(Kind, TodoId)> = written(&mine, &policy)
+            .intersection(&written(&theirs, &policy))
+            .cloned()
+            .collect();
+        prop_assert_eq!(conflicted(&fold(&nodes_from(&store), None, &policy)), expected.clone());
+
+        if store.tips().len() > 1 {
+            store.merge(None, None).expect("merges");
+            prop_assert_eq!(
+                conflicted(&fold(&nodes_from(&store), None, &policy)),
+                expected.clone(),
+                "a merge carries no write and settles nothing"
+            );
+            let settle = mk_completed("alpha", far(), "bassel", "settled").expect("valid");
+            store.append(settle, None).expect("appends");
+            let alpha = TodoId::new("alpha").expect("valid");
+            let mut left = expected;
+            left.remove(&(Kind::State, alpha));
+            prop_assert_eq!(conflicted(&fold(&nodes_from(&store), None, &policy)), left);
+        }
+    }
+}
