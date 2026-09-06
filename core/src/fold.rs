@@ -291,6 +291,13 @@ pub fn history(events: &[TodoEvent], untrusted: &Untrusted) -> History {
 /// demand. A todo with no spec and no checklist has no function and is absent,
 /// resolved or not.
 ///
+/// One consequence, stated because it is the only way a later event reaches
+/// back: a todo can have a function from ONE half of the head — a checklist
+/// with no spec, or a spec with no content record — and the event that records
+/// the other half for the first time RE-HEADS its whole curve. It is the same
+/// reading ("what the todo asked while open"), applied to a head that was
+/// half-known; `tests/fold_laws.rs` pins it both ways, against the reference.
+///
 /// Returns a `Result` rather than panicking: every `mk_*` below is called with
 /// arguments this function proves valid, but a fold over stored data answers
 /// with a value, never with an abort.
