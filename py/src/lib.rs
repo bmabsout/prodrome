@@ -592,6 +592,30 @@ fn fulfillment(term: &str, now: &str, env: Option<EnvWire>) -> PyResult<f64> {
     ))
 }
 
+/// The same evaluation, for MANY terms at ONE instant against ONE
+/// environment — which is what pricing a list IS, and what every consumer
+/// showing a table asks for.
+///
+/// It decides nothing `fulfillment` does not: `fpl::fulfillment` per term, in
+/// the order given. What it saves is the CONVERSION — the environment is read
+/// out of Python and its instants parsed once for the whole list instead of
+/// once per term, which on the live chain is 177 bindings times 184 terms and
+/// was measured at 31 ms of a 37 ms fold (2026-09-06).
+#[pyfunction]
+#[pyo3(signature = (terms, now, env = None))]
+fn fulfillments(
+    terms: BTreeMap<String, String>,
+    now: &str,
+    env: Option<EnvWire>,
+) -> PyResult<BTreeMap<String, f64>> {
+    let at = instant_of(now)?;
+    let env = fpl_env(env.as_ref())?;
+    terms
+        .iter()
+        .map(|(todo, text)| Ok((todo.clone(), fpl::fulfillment(&term_of(text)?, at, &env))))
+        .collect()
+}
+
 #[pyfunction]
 #[pyo3(signature = (term, now, env = None))]
 fn explain(py: Python<'_>, term: &str, now: &str, env: Option<EnvWire>) -> PyResult<Py<PyAny>> {
@@ -681,6 +705,7 @@ fn prodrome(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(history_at, m)?)?;
     m.add_function(wrap_pyfunction!(fold_registers, m)?)?;
     m.add_function(wrap_pyfunction!(fulfillment, m)?)?;
+    m.add_function(wrap_pyfunction!(fulfillments, m)?)?;
     m.add_function(wrap_pyfunction!(explain, m)?)?;
     m.add_function(wrap_pyfunction!(normalize, m)?)?;
     m.add_function(wrap_pyfunction!(to_json, m)?)?;
