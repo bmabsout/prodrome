@@ -1,10 +1,18 @@
 # prodrome
 
 The core, in Rust: one evaluator for every host — the box (through the Python
-binding in `py/`, which is built), the browser and the phone (through
-WebAssembly, which is not). `SPEC.md` is the contract; `conformance/` are the
-vectors the Python reference produced (`scripts/conformance.py` in the parent
-repository regenerates them); the laws in SPEC §9 are the tests.
+binding in `py/`), the browser and the phone. Since 2026-09-06 that sentence
+is literal rather than aspirational: the parent repository's Python holds the
+term and event RECORDS, the `mk_*` smart constructors and the canonical
+printer, and every number, fold, normal form and knot it answers with came
+from here. There is no second implementation to fall back to.
+
+`SPEC.md` is the contract; `conformance/` are the vectors the Python reference
+produced WHILE IT WAS STILL A REFERENCE (`scripts/conformance.py` in the parent
+repository regenerates them, but regeneration now reads this crate through the
+binding, so it re-states the vectors rather than re-deriving them — they are
+frozen evidence of what the reference said, and that is their value); the laws
+in SPEC §9 are the tests.
 
     nix develop .#rust -c cargo test --manifest-path prodrome/Cargo.toml
     nix flake check          # the same suites, plus clippy, from the vendored lock
@@ -134,8 +142,16 @@ The surface: `parse_literal`/`print_literal`/`seal_hash` (§2–3);
 `verify`/`append`/`merge`/`adopt` (§3); `env_at`, `specs_at`, `authored_at`,
 `flatten`, `history_at`, a `History` handle and `fold_registers` returning a
 `Folded` with `env_of`/`specs_of`/`content_of`/`conflicts_of`/`extend` (§6);
-`fulfillment`, `explain`, `normalize`, `to_json`, `from_json`, `checklist`,
-`series_knots` (§7).
+`fulfillment`, `fulfillments`, `explain`, `normalize`, `to_json`, `from_json`,
+`checklist`, `series_knots` (§7).
+
+`fulfillments` is `fulfillment` for a LIST, and it exists for one reason: the
+environment is converted out of Python per call, so pricing 184 todos against
+177 bindings parsed 177 instants 184 times — 31.5 ms of a 37 ms fold. It
+decides nothing the singular does not (the same core call per term, in the
+order given); it converts the environment first. `suzatary/fpl.py`'s `prices`
+is the caller, and `tests/test_fpl.py::PricingAList` pins the two against each
+other term for term, because speed is all it may buy.
 
 One deliberate narrowing: `parse_literal(text)` reads a stored OBJECT, not any
 value of the grammar. The reference's parser DISPATCHES INTO the `mk_*`
@@ -144,20 +160,31 @@ alone knows names and arity and would hand back a value §7 forbids. Going
 through `parse_envelope` is what makes the two refuse the same texts — which
 `tests/test_differential.py` checks against the reference directly.
 
-### The differential test is the switch's gate
+### The differential test was the switch's gate, and the switch is thrown
 
-`tests/test_differential.py` (in the parent repository) runs the Python
+`tests/test_differential.py` (in the parent repository) ran the Python
 reference and this crate in ONE process, on the same generated inputs and on
-the live chain, and compares what each answers NOW. That is a stronger claim
-than the vectors make: a vector file pins the core against numbers the
-reference produced once, and a reference that has changed since is a reference
+the live chain, and compared what each answered NOW — a stronger claim than
+the vectors make, because a vector file pins the core against numbers the
+reference produced once and a reference that has changed since is a reference
 nothing is checking. Prints, hashes, linearisations, register frontiers and
-`verify` findings are compared byte for byte; fulfillments, `explain` trees
-and knot values to 1e-9. Its generators are `scripts/conformance.py`'s and
-`tests/test_laws.py`'s, imported rather than written again.
+`verify` findings byte for byte; fulfillments, `explain` trees and knot values
+to 1e-9. It passed, and on 2026-09-06 the Python evaluator was deleted.
 
-Until it passes there are two readings of the semantics and no evidence they
-are one, so it is what the Python evaluator's deletion waits on.
+So most of that file is gone with it. What is left is what still HAS two
+sides: the §2 printer (`suzatary/literals.py` prints, this crate parses and
+prints back), the `mk_*` bounds (both parsers dispatch into their validators,
+so a refusal must be a refusal on both hosts), and §3's linearisation, read
+and write path (`store.linearise` and `read_dag` are still Python — this crate
+exposes a linearisation only through a `Store` on disk — and so is the append
+that holds the flock). Running both sides of a DELEGATED function would be
+running one side twice and calling the agreement evidence.
+
+What checks this crate now: `conformance/*.json`, SPEC §9's laws in
+`core/tests/`, `tests/live.rs` on the box's own chain, and the parent
+repository's `tests/test_laws.py` and `tests/test_registers.py`, which state
+the same laws through the Python surface and therefore state them about this
+crate.
 
 `conformance/live.json` is the one vector that is not seeded: this box's own
 564-object chain, folded by the reference at a recorded instant, with the tip
