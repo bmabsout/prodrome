@@ -382,6 +382,21 @@ pub fn content_of(state: &Folded) -> BTreeMap<TodoId, Authored> {
     out
 }
 
+/// The object whose write each register of `kind` currently shows — the
+/// projection's CHOICE, by name. A reader holding the objects looks the event
+/// up by this instead of taking a reprint of it across a boundary: a content
+/// record is a whole todo body, and 184 of them printed per fold was 1.7 ms
+/// of a 12 ms day-fold (2026-09-06).
+pub fn chosen_of(state: &Folded, kind: Kind) -> BTreeMap<TodoId, Hash> {
+    let mut out = BTreeMap::new();
+    for (Key(held, todo), frontier) in &state.frontiers {
+        if *held == kind {
+            out.insert(todo.clone(), state.chosen(frontier).at.clone());
+        }
+    }
+    out
+}
+
 /// Every register with more than one write in its frontier, by todo: the
 /// writes a human has to settle, each named by the object that made it.
 pub fn conflicts_of(state: &Folded) -> BTreeMap<TodoId, BTreeMap<Kind, Frontier>> {
