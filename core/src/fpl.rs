@@ -11,7 +11,7 @@
 //! that exists came through one of them (or through `from_json`/`parse_term`,
 //! which call them).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
@@ -464,6 +464,367 @@ pub fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
     }
 }
 
+// --- The explanation: Cofree TermF Annotation -------------------------------
+
+/// The Minimum Fulfillment Bound (Theorem IV.1): the floor a composed p-mean
+/// score PROVES about its worst DIRECT member. Applied per node — the flat
+/// bound is unsound across the levels of a nested composition. The reference
+/// refuses `n < 1`; here the formula is simply total (an empty `Conj` reads 1.0).
+pub fn min_fulfillment(composed: f64, n: usize, p: f64) -> f64 {
+    let nf = n as f64;
+    if p == 0.0 {
+        return composed.powf(nf);
+    }
+    let inner = nf * composed.powf(p) - (nf - 1.0);
+    if inner > 0.0 {
+        inner.powf(1.0 / p)
+    } else {
+        0.0
+    }
+}
+
+/// Each member's SHARE of responsibility for the p-mean it composes into:
+/// `eᵢ = (1/n)·(xᵢ/M)ᵖ`, summing to exactly 1. Applies power_mean's clamp to
+/// the same values, or the shares would not describe the number returned.
+pub fn member_shares(values: &[f64], p: f64) -> Vec<f64> {
+    if values.is_empty() {
+        return vec![];
+    }
+    let n = values.len();
+    if p == 0.0 {
+        return vec![1.0 / n as f64; n];
+    }
+    let m = power_mean(values, p);
+    values
+        .iter()
+        .map(|v| (1.0 / n as f64) * (v.max(0.001) / m).powf(p))
+        .collect()
+}
+
+/// A note's leaf: the scalars an explanation carries beside its value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Scalar {
+    Text(String),
+    Float(f64),
+    Int(i64),
+    Bool(bool),
+}
+
+/// `Scalar | tuple[Scalar, …] | tuple[Mapping[str, Scalar], …]` — the
+/// reference's `Note`, as a closed type.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Note {
+    One(Scalar),
+    Many(Vec<Scalar>),
+    Maps(Vec<BTreeMap<String, Scalar>>),
+}
+
+/// `Cofree TermF Annotation`: the term's OWN shape, each node carrying its
+/// fulfillment at the moment the parent actually used it, plus the notes.
+///
+/// One documented bend in the shape: a `Piecewise` node's decoration is the
+/// PIECE IN FORCE, which rides in the `head` slot with `pieces` empty — head
+/// and pieces are transitions, not subterms, and the schedule's size and start
+/// are notes. Every other constructor's children line up one for one.
+///
+/// The layer is boxed for the same reason `Term`'s is: `TermF` holds its
+/// children by value, so the fixed point needs exactly one indirection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Explanation {
+    pub value: f64,
+    pub notes: BTreeMap<String, Note>,
+    pub node: Box<TermF<Explanation>>,
+}
+
+fn iso_note(t: Instant) -> Note {
+    Note::One(Scalar::Text(iso(t)))
+}
+
+/// The term's own fields as `to_json` prints them, minus the subterms.
+fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
+    let mut n = BTreeMap::new();
+    match term.out() {
+        TermF::Flat { value } => {
+            n.insert("value".into(), Note::One(Scalar::Float(*value)));
+        }
+        TermF::Decay {
+            start,
+            end,
+            end_date,
+            lead_up,
+            start_date,
+        } => {
+            n.insert("start".into(), Note::One(Scalar::Float(*start)));
+            n.insert("end".into(), Note::One(Scalar::Float(*end)));
+            n.insert("endDate".into(), iso_note(*end_date));
+            n.insert(
+                "leadUpHours".into(),
+                Note::One(Scalar::Float(total_seconds(*lead_up) / 3600.0)),
+            );
+            if let Some(sd) = start_date {
+                n.insert("startDate".into(), iso_note(*sd));
+            }
+        }
+        TermF::Curve { points } => {
+            n.insert(
+                "points".into(),
+                Note::Maps(
+                    points
+                        .iter()
+                        .map(|pt| {
+                            let mut m = BTreeMap::new();
+                            m.insert("at".to_string(), Scalar::Text(iso(pt.at)));
+                            m.insert("value".to_string(), Scalar::Float(pt.value));
+                            if !pt.label.is_empty() {
+                                m.insert("label".to_string(), Scalar::Text(pt.label.clone()));
+                            }
+                            m
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        TermF::Conj { p, .. } => {
+            n.insert("p".into(), Note::One(Scalar::Float(*p)));
+        }
+        TermF::Within { window, p, .. } => {
+            n.insert(
+                "windowHours".into(),
+                Note::One(Scalar::Float(total_seconds(*window) / 3600.0)),
+            );
+            n.insert("p".into(), Note::One(Scalar::Float(*p)));
+        }
+        TermF::Offset { delta, .. } => {
+            n.insert("delta".into(), Note::One(Scalar::Float(*delta)));
+        }
+        TermF::Shift { delta, .. } => {
+            n.insert(
+                "deltaHours".into(),
+                Note::One(Scalar::Float(total_seconds(*delta) / 3600.0)),
+            );
+        }
+        TermF::Importance { w, .. } => {
+            n.insert("w".into(), Note::One(Scalar::Float(*w)));
+        }
+        TermF::After {
+            event,
+            anchor,
+            needs,
+            ..
+        } => {
+            n.insert("event".into(), Note::One(Scalar::Text(event.clone())));
+            n.insert("anchor".into(), iso_note(*anchor));
+            if let Some(nd) = needs {
+                n.insert(
+                    "needsHours".into(),
+                    Note::One(Scalar::Float(total_seconds(*nd) / 3600.0)),
+                );
+            }
+        }
+        // Gate, OffsetBy: every field is a subterm. Piecewise: its head and
+        // pieces are transitions, and `explained` writes `pieces`/`since`.
+        TermF::Gate { .. } | TermF::OffsetBy { .. } | TermF::Piecewise { .. } => {}
+    }
+    n
+}
+
+/// A `to_json`-shaped tree where every node also carries its own fulfillment.
+///
+/// ⚠️ CHILDREN ARE ANNOTATED AT THE TIME THE PARENT ACTUALLY USED: Shift,
+/// Within and After re-anchor time for their subterm, and a child evaluated at
+/// `now` would report a number the parent never consumed.
+pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
+    let value = fulfillment(term, now, env);
+    let mut notes = scalar_notes(term);
+    let node: TermF<Explanation> = match term.out() {
+        TermF::Flat { value } => TermF::Flat { value: *value },
+        TermF::Decay {
+            start,
+            end,
+            end_date,
+            lead_up,
+            start_date,
+        } => TermF::Decay {
+            start: *start,
+            end: *end,
+            end_date: *end_date,
+            lead_up: *lead_up,
+            start_date: *start_date,
+        },
+        TermF::Curve { points } => TermF::Curve {
+            points: points.clone(),
+        },
+        TermF::Conj { terms, p } => {
+            let kids: Vec<Explanation> = terms.iter().map(|t| explained(t, now, env)).collect();
+            notes.insert(
+                "certifies".into(),
+                Note::One(Scalar::Float(min_fulfillment(value, terms.len(), *p))),
+            );
+            let vs: Vec<f64> = kids.iter().map(|k| k.value).collect();
+            notes.insert(
+                "shares".into(),
+                Note::Many(
+                    member_shares(&vs, *p)
+                        .into_iter()
+                        .map(Scalar::Float)
+                        .collect(),
+                ),
+            );
+            TermF::Conj { terms: kids, p: *p }
+        }
+        TermF::Offset { delta, term } => TermF::Offset {
+            delta: *delta,
+            term: explained(term, now, env),
+        },
+        TermF::Importance { w, term } => TermF::Importance {
+            w: *w,
+            term: explained(term, now, env),
+        },
+        TermF::Gate { gate, body } => TermF::Gate {
+            gate: explained(gate, now, env),
+            body: explained(body, now, env),
+        },
+        TermF::OffsetBy { delta, term } => TermF::OffsetBy {
+            delta: explained(delta, now, env),
+            term: explained(term, now, env),
+        },
+        TermF::Shift { delta, term } => TermF::Shift {
+            delta: *delta,
+            term: explained(term, after(now, us_of(*delta)), env),
+        },
+        TermF::Within { window, p, term } => {
+            let step = us_of(div_delta(*window, WITHIN_SAMPLES));
+            let times: Vec<Instant> = (0..=WITHIN_SAMPLES).map(|i| after(now, step * i)).collect();
+            let vs: Vec<f64> = times.iter().map(|t| fulfillment(term, *t, env)).collect();
+            let shares = member_shares(&vs, *p);
+            // `max(range(n), key=…)` keeps the FIRST maximal index.
+            let mut peak = 0usize;
+            for (i, s) in shares.iter().enumerate() {
+                if *s > shares[peak] {
+                    peak = i;
+                }
+            }
+            notes.insert("peakAt".into(), iso_note(times[peak]));
+            notes.insert("peakShare".into(), Note::One(Scalar::Float(shares[peak])));
+            TermF::Within {
+                window: *window,
+                p: *p,
+                term: explained(term, times[peak], env),
+            }
+        }
+        TermF::After {
+            event,
+            anchor,
+            term,
+            pending,
+            needs,
+        } => {
+            let (label, at) = match bound(env, event, now) {
+                None => ("pending", now),
+                // The slippage the parent applied.
+                Some(Outcome::Completed(done)) => ("completed", after(now, -us_of(done - *anchor))),
+                Some(Outcome::Cancelled(_)) => ("cancelled", now),
+            };
+            notes.insert("bound".into(), Note::One(Scalar::Text(label.to_string())));
+            TermF::After {
+                event: event.clone(),
+                anchor: *anchor,
+                term: explained(term, at, env),
+                pending: explained(pending, now, env),
+                needs: *needs,
+            }
+        }
+        TermF::Piecewise { head, pieces } => {
+            let (since, in_f) = in_force(head, pieces, now);
+            notes.insert("pieces".into(), Note::One(Scalar::Int(pieces.len() as i64)));
+            notes.insert(
+                "since".into(),
+                Note::One(Scalar::Text(since.map(iso).unwrap_or_default())),
+            );
+            TermF::Piecewise {
+                head: explained(in_f, now, env),
+                pieces: vec![],
+            }
+        }
+    };
+    Explanation {
+        value,
+        notes,
+        node: Box::new(node),
+    }
+}
+
+fn scalar_json(s: &Scalar) -> Value {
+    match s {
+        Scalar::Text(t) => Value::String(t.clone()),
+        Scalar::Float(f) => Value::from(*f),
+        Scalar::Int(i) => Value::from(*i),
+        Scalar::Bool(b) => Value::Bool(*b),
+    }
+}
+
+fn note_json(n: &Note) -> Value {
+    match n {
+        Note::One(s) => scalar_json(s),
+        Note::Many(xs) => Value::Array(xs.iter().map(scalar_json).collect()),
+        Note::Maps(ms) => Value::Array(
+            ms.iter()
+                .map(|m| {
+                    Value::Object(m.iter().map(|(k, v)| (k.clone(), scalar_json(v))).collect())
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The wire: `to_json`'s shape with a `value` on every node, the notes beside
+/// it, and each part explained in place of its printed subterm.
+pub fn explanation_json(node: &Explanation) -> Value {
+    let mut out = Map::new();
+    out.insert("kind".into(), Value::String(node.node.kind().to_string()));
+    out.insert("value".into(), Value::from(node.value));
+    for (k, n) in &node.notes {
+        out.insert(k.clone(), note_json(n));
+    }
+    match &*node.node {
+        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } => {}
+        TermF::Conj { terms, .. } => {
+            out.insert(
+                "terms".into(),
+                Value::Array(terms.iter().map(explanation_json).collect()),
+            );
+        }
+        TermF::Offset { term, .. }
+        | TermF::Importance { term, .. }
+        | TermF::Shift { term, .. }
+        | TermF::Within { term, .. } => {
+            out.insert("term".into(), explanation_json(term));
+        }
+        TermF::Gate { gate, body } => {
+            out.insert("gate".into(), explanation_json(gate));
+            out.insert("body".into(), explanation_json(body));
+        }
+        TermF::OffsetBy { delta, term } => {
+            out.insert("delta".into(), explanation_json(delta));
+            out.insert("term".into(), explanation_json(term));
+        }
+        TermF::After { term, pending, .. } => {
+            out.insert("term".into(), explanation_json(term));
+            out.insert("pending".into(), explanation_json(pending));
+        }
+        // The piece in force rides in the `head` slot; it prints as "term".
+        TermF::Piecewise { head, .. } => {
+            out.insert("term".into(), explanation_json(head));
+        }
+    }
+    Value::Object(out)
+}
+
+/// `explained`, printed — the name every consumer already reads.
+pub fn explain(term: &Term, now: Instant, env: &Env) -> Value {
+    explanation_json(&explained(term, now, env))
+}
+
 // --- Smart constructors (§1: records are dumb data; these are the only path) -
 
 fn unit(name: &str, v: f64) -> Result<f64, FplError> {
@@ -694,6 +1055,150 @@ fn spliced(piece: &(Instant, Term), until: Option<Instant>) -> Vec<(Instant, Ter
     let mut out = vec![(piece.0, at_instant)];
     out.extend(later);
     out
+}
+
+/// The Piecewise-outermost normal form: every operator that reads its subterms
+/// POINTWISE (Conj, Offset, Gate, Importance, OffsetBy) is pushed under a
+/// Piecewise over the merged partition of its parts' instants, and a Shift
+/// translates the instants it crosses. Within averages over a window and After
+/// binds history, so neither commutes with a partition; their subterms are
+/// normalised and they stay where they are.
+pub fn normalize(term: &Term) -> Term {
+    match term.out() {
+        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } => term.clone(),
+        TermF::Piecewise { head, pieces } => piecewise(
+            normalize(head),
+            pieces.iter().map(|(at, t)| (*at, normalize(t))).collect(),
+        ),
+        TermF::Conj { terms, p } => {
+            let p = *p;
+            pointwise(terms.iter().map(normalize).collect(), &|parts| {
+                Term::new(TermF::Conj {
+                    terms: parts.to_vec(),
+                    p,
+                })
+            })
+        }
+        TermF::Offset { delta, term } => {
+            let delta = *delta;
+            pointwise(vec![normalize(term)], &|parts| {
+                Term::new(TermF::Offset {
+                    delta,
+                    term: parts[0].clone(),
+                })
+            })
+        }
+        TermF::Gate { gate, body } => pointwise(vec![normalize(gate), normalize(body)], &|parts| {
+            Term::new(TermF::Gate {
+                gate: parts[0].clone(),
+                body: parts[1].clone(),
+            })
+        }),
+        TermF::OffsetBy { delta, term } => {
+            pointwise(vec![normalize(delta), normalize(term)], &|parts| {
+                Term::new(TermF::OffsetBy {
+                    delta: parts[0].clone(),
+                    term: parts[1].clone(),
+                })
+            })
+        }
+        TermF::Importance { w, term } => {
+            let w = *w;
+            pointwise(vec![normalize(term)], &|parts| {
+                Term::new(TermF::Importance {
+                    w,
+                    term: parts[0].clone(),
+                })
+            })
+        }
+        TermF::Shift { delta, term } => {
+            let by = *delta;
+            let inner = normalize(term);
+            match inner.out() {
+                // ⟦Shift(δ, pw)⟧(now) = ⟦pw⟧(now + δ), so a piece from τ is in
+                // force from τ − δ.
+                TermF::Piecewise { head, pieces } => piecewise(
+                    Term::new(TermF::Shift {
+                        delta: by,
+                        term: head.clone(),
+                    }),
+                    pieces
+                        .iter()
+                        .map(|(at, t)| {
+                            (
+                                after(*at, -us_of(by)),
+                                Term::new(TermF::Shift {
+                                    delta: by,
+                                    term: t.clone(),
+                                }),
+                            )
+                        })
+                        .collect(),
+                ),
+                _ => Term::new(TermF::Shift {
+                    delta: by,
+                    term: inner,
+                }),
+            }
+        }
+        TermF::Within { window, p, term } => Term::new(TermF::Within {
+            window: *window,
+            p: *p,
+            term: normalize(term),
+        }),
+        TermF::After {
+            event,
+            anchor,
+            term,
+            pending,
+            needs,
+        } => Term::new(TermF::After {
+            event: event.clone(),
+            anchor: *anchor,
+            term: normalize(term),
+            pending: normalize(pending),
+            needs: *needs,
+        }),
+    }
+}
+
+/// An operator over already-normalised `parts`, lifted over their schedules:
+/// the head is the operator over the heads, and at every instant any part
+/// changes, a piece with the operator over what each part reads there. Parts
+/// without a schedule are constant in the partition.
+fn pointwise(parts: Vec<Term>, rebuild: &dyn Fn(&[Term]) -> Term) -> Term {
+    if !parts
+        .iter()
+        .any(|p| matches!(p.out(), TermF::Piecewise { .. }))
+    {
+        return rebuild(&parts);
+    }
+    let mut instants: BTreeSet<Instant> = BTreeSet::new();
+    for part in &parts {
+        if let TermF::Piecewise { pieces, .. } = part.out() {
+            instants.extend(pieces.iter().map(|(at, _)| *at));
+        }
+    }
+    let at = |part: &Term, moment: Option<Instant>| -> Term {
+        match part.out() {
+            TermF::Piecewise { head, pieces } => match moment {
+                None => head.clone(),
+                Some(m) => in_force(head, pieces, m).1.clone(),
+            },
+            _ => part.clone(),
+        }
+    };
+    let head = rebuild(&parts.iter().map(|p| at(p, None)).collect::<Vec<_>>());
+    let pieces: Vec<(Instant, Term)> = instants
+        .into_iter()
+        .map(|m| {
+            (
+                m,
+                rebuild(&parts.iter().map(|p| at(p, Some(m))).collect::<Vec<_>>()),
+            )
+        })
+        .collect();
+    piecewise(head, pieces)
 }
 
 // --- §7 JSON boundary (parse, don't validate — via the smart constructors) ---
