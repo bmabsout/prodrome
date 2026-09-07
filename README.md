@@ -19,7 +19,7 @@ in SPEC §9 are the tests.
 
 ## The browser runs it (`wasm/`)
 
-`prodrome-wasm` is `core/` compiled to WebAssembly and nothing else: seven
+`prodrome-wasm` is `core/` compiled to WebAssembly and nothing else: eight
 functions that parse their arguments, call one thing in the core, and print the
 answer. No arithmetic, no policy, and no clock — every moment is an argument,
 because §1 forbids a clock in the core and a browser's is the least trustworthy
@@ -38,6 +38,7 @@ bundler and Nix is the build.
 | `verify_objects` | §3: do these bytes hash to these names, and do they form one DAG under these heads |
 | `fold`           | §6.1–6.5: what does the chain believe at an instant           |
 | `registers`      | §6.6: which registers have more than one live write           |
+| `entries`        | §6.7: every todo as the folds see it — the composition, once  |
 | `fulfillment`    | §7: what is this term worth now                               |
 | `explain`        | §7: what is that number made of                               |
 | `series_knots`   | §7 knots: what is that term's curve over a window             |
@@ -103,6 +104,7 @@ the reference. What a module CLAIMS is what its tests MEASURE.
 | `fold`       | §6.1–6.5 | done  | `conformance/folds.json` — all 120 logs: `env` and `history_at` by kind and instant, `specs`, `content` and `flatten` by canonical print, byte-exact. §9.2–9.4 as properties in `tests/fold_laws.rs`; the live chain in `tests/live.rs` |
 | `registers`  | §6.6     | done  | `conformance/dag.json`'s `conflicts` and `env` — all 40 DAGs, by exact object hash. §9.6 as properties over real two-replica stores; the registers equal the folds on every DAG, on all 120 logs, and on the live chain |
 | `breaks`     | §7 knots | done  | `conformance/series.json` — 60 windows, 1429 knots, instants and `exact` identical, deviation 3.6e-16; §9.7 checked as a law in `tests/series_vectors.rs` |
+| `view`       | §6.7     | done  | `conformance/view.json` — the LAST derivation in this directory, generated from the Python composition before this module existed: 40 forked DAGs at five instants under both trust policies (400 cases, 1,180 entries; 31 with a refused claim, 93 with a conflicted register), plus the live chain's 250 todos at their own tip. Every field of every row, `value` to 1e-9, largest deviation 1.1e-16. §9.9 as a property in `tests/fold_laws.rs`, stated through the route each field does NOT take |
 | `wasm/`      | the boundary | done | the SAME `.wasm` a browser fetches, loaded under node and driven against the vectors (`web/test/wasm.test.ts`): 564 objects rehashed, parsed and linearised; 900 fulfillment samples within 1e-9; 1429 knots at the reference's instants exactly. A real Chromium reaches it in `web/e2e/core.test.ts` |
 
 ## The Python binding (`py/`)
