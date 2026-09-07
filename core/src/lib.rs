@@ -15,6 +15,7 @@
 //! - `fold`     — §6.1–6.5: causal folds, flatten, history
 //! - `registers`— §6.6: frontiers over the DAG, the fold as a monoid action
 //! - `breaks`   — §7 breakpoints and series knots
+//! - `view`     — §6.7: the entry, the composition of the folds above
 
 pub mod breaks;
 pub mod event;
@@ -23,3 +24,4 @@ pub mod fpl;
 pub mod literal;
 pub mod registers;
 pub mod store;
+pub mod view;
