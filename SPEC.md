@@ -144,11 +144,11 @@ with `at <= t` IN CAUSAL ORDER (`chronological`).
 7. **The entry** — `entries(nodes, t, untrusted) : [Entry]`, one row per todo
    any event ever mentions, ordered by id. It is a COMPOSITION of the folds
    above and §7 and not a fold of its own, stated so that every consumer
-   performs it once: let `confirmed = fold(nodes, t, untrusted)` and `loose`
-   the same under the empty policy; then `outcome = env_of(confirmed)[todo]`;
-   `claim = env_of(loose)[todo]` where the two name different OUTCOMES
-   (`open`, `Completed`, `Cancelled` — the instants do not disagree), absent
-   where they agree;
+   performs it once: let `confirmed = fold(nodes, t, untrusted)`; then
+   `outcome = env_of(confirmed)[todo]`; `claim = env_at(events, t, ∅)[todo]`
+   — §6.1 trusting every writer, which §9.6 says is `env_of` of the loose
+   registers — where the two name different OUTCOMES (`open`, `Completed`,
+   `Cancelled`; the instants do not disagree), absent where they agree;
    `spec = flatten(events of nodes, t, untrusted)[todo]` and `value` its
    `fulfillment` at `t` under `confirmed`'s environment, absent TOGETHER
    (§6.4: no spec and no checklist is no function, and absence is not zero);

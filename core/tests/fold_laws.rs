@@ -726,13 +726,15 @@ proptest! {
 
     /// §9.9 — VIEW IS THE COMPOSITION IT NAMES (§6.7).
     ///
-    /// Every field is recomputed here from the EVENT folds — `env_at`,
-    /// `flatten`, `authored_at`, `fulfillment` — where `view::entries` reads
-    /// the REGISTERS. That is the point: the two routes meet only through
-    /// §9.6, so this is a second path to each answer and not the same code run
-    /// twice. Under conflict the register projection picks the linearisation's
-    /// last write, which is the write the event folds pick, so the routes
-    /// agree on forked graphs too — which is why the DAG is a two-replica one.
+    /// Every field is recomputed here by the OTHER route. `view::entries`
+    /// reads the confirmed outcome, the content and the conflicts off the
+    /// REGISTERS, so those are checked against the event folds (`env_at`,
+    /// `authored_at`); it reads the claim off `env_at`, so that one is checked
+    /// against the loose REGISTERS. The two routes meet only through §9.6, so
+    /// this is a second path to each answer and not the same code run twice.
+    /// Under conflict the register projection picks the linearisation's last
+    /// write, which is the write the event folds pick, so the routes agree on
+    /// forked graphs too — which is why the DAG is a two-replica one.
     ///
     /// The moment is drawn INSIDE the generator's window, so entries are asked
     /// for while some events are still in the future: the row set is every
@@ -764,7 +766,8 @@ proptest! {
         );
 
         let bound = env_at(&events, t, &policy);
-        let loose = env_at(&events, t, &Untrusted::none());
+        // The claim, by the route `entries` does NOT take: the loose registers.
+        let loose = env_of(&fold(&nodes, Some(t), &Untrusted::none()));
         let specs = flatten(&events, t, &policy).expect("the DAG flattens");
         let records = authored_at(&events, t);
         let conflicts = conflicts_of(&fold(&nodes, Some(t), &policy));
