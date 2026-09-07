@@ -1,11 +1,12 @@
-//! SPEC §9.2–9.4 and §9.6, as properties over random logs and random
+//! SPEC §9.2–9.4, §9.6 and §9.9, as properties over random logs and random
 //! two-replica DAGs.
 //!
 //! The vectors say this side agrees with the reference on the cases the
 //! reference happened to generate. These say the AGREEMENT IS STRUCTURAL:
 //! nothing rewrites history, order is causal and the stamp is data, the
-//! history is the environment as a function of time, and on any DAG the
-//! registers are the folds with the conflicts named exactly.
+//! history is the environment as a function of time, on any DAG the registers
+//! are the folds with the conflicts named exactly, and the entry (§6.7) is the
+//! composition of those folds and nothing else.
 //!
 //! The generators mirror `scripts/conformance.py`'s `a_log`/`an_event` — the
 //! same three todos, the same seven kinds in the same proportions, the same
@@ -26,13 +27,16 @@ use prodrome::event::{
     mk_authored, mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, mk_subtodo,
     Actor, TodoEvent, TodoId,
 };
-use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Env, History, Untrusted};
+use prodrome::fold::{
+    authored_at, env_at, flatten, history, specs_at, Binding, Env, History, Untrusted,
+};
 use prodrome::fpl::{self, print_term, Instant, Term};
 use prodrome::literal::Datetime;
 use prodrome::registers::{
     conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Kind, Node,
 };
 use prodrome::store::EventStore;
+use prodrome::view;
 use proptest::prelude::*;
 
 const TODOS: [&str; 3] = ["alpha", "beta", "gamma"];
@@ -717,6 +721,113 @@ proptest! {
             let mut left = expected;
             left.remove(&(Kind::State, alpha));
             prop_assert_eq!(conflicted(&fold(&nodes_from(&store), None, &policy)), left);
+        }
+    }
+
+    /// §9.9 — VIEW IS THE COMPOSITION IT NAMES (§6.7).
+    ///
+    /// Every field is recomputed here from the EVENT folds — `env_at`,
+    /// `flatten`, `authored_at`, `fulfillment` — where `view::entries` reads
+    /// the REGISTERS. That is the point: the two routes meet only through
+    /// §9.6, so this is a second path to each answer and not the same code run
+    /// twice. Under conflict the register projection picks the linearisation's
+    /// last write, which is the write the event folds pick, so the routes
+    /// agree on forked graphs too — which is why the DAG is a two-replica one.
+    ///
+    /// The moment is drawn INSIDE the generator's window, so entries are asked
+    /// for while some events are still in the future: the row set is every
+    /// todo the events mention, and `t` says only what is believed.
+    #[test]
+    fn the_entry_is_the_composition_of_the_folds_it_names(
+        shared in a_schedule(1..8),
+        mine in a_schedule(1..6),
+        theirs in a_schedule(1..6),
+        when in 0i64..WINDOW,
+    ) {
+        let policy = untrusted();
+        let mine: Vec<TodoEvent> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
+        let theirs: Vec<TodoEvent> =
+            theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
+        let (_guard, store) = diverged(&realise(&shared, 0), &mine, &theirs);
+        let nodes = nodes_from(&store);
+        let events = events_from(&nodes);
+        let t = moment(when);
+
+        let rows = view::entries(&nodes, t, &policy).expect("the DAG folds");
+
+        // The ROWS: one per todo any event mentions, in id order — no filter
+        // on `t`, none on trust.
+        let mentioned: BTreeSet<&TodoId> = events.iter().map(TodoEvent::todo).collect();
+        prop_assert_eq!(
+            rows.iter().map(|row| &row.todo).collect::<Vec<_>>(),
+            mentioned.into_iter().collect::<Vec<_>>()
+        );
+
+        let bound = env_at(&events, t, &policy);
+        let loose = env_at(&events, t, &Untrusted::none());
+        let specs = flatten(&events, t, &policy).expect("the DAG flattens");
+        let records = authored_at(&events, t);
+        let conflicts = conflicts_of(&fold(&nodes, Some(t), &policy));
+        let env = prodrome::fold::evaluation_env(&bound);
+        let now = fpl::instant_of(t);
+        let carried: BTreeMap<&prodrome::event::Hash, &TodoEvent> = nodes
+            .iter()
+            .filter_map(|node| node.event.as_ref().map(|event| (&node.name, event)))
+            .collect();
+
+        for row in &rows {
+            let todo = &row.todo;
+            prop_assert_eq!(row.outcome, bound.get(todo).copied(), "outcome");
+
+            // The CLAIM is the loose fold where the two name different
+            // outcomes, and absent where they agree — the instants alone do
+            // not disagree.
+            let kinds = |b: Option<Binding>| b.map_or("open", Binding::kind);
+            let disputed = kinds(loose.get(todo).copied()) != kinds(bound.get(todo).copied());
+            prop_assert_eq!(row.claim, if disputed { loose.get(todo).copied() } else { None }, "claim");
+
+            // The PRICE: §6.4's function, valued at `t` under the CONFIRMED
+            // environment, and absent exactly where the function is.
+            prop_assert_eq!(row.spec().map(print_term), specs.get(todo).map(print_term), "spec");
+            prop_assert_eq!(
+                row.value(),
+                specs.get(todo).map(|spec| fpl::fulfillment(spec, now, &env)),
+                "value"
+            );
+
+            // The CONTENT is a NAME, and the object it names carries the
+            // record `authored_at` chose.
+            let named = row.content.as_ref().map(|name| match carried[name] {
+                TodoEvent::Authored(record) => (**record).clone(),
+                other => panic!("the content register names {other:?}"),
+            });
+            prop_assert_eq!(named.as_ref(), records.get(todo), "content");
+
+            let by_kind: BTreeMap<Kind, Vec<prodrome::event::Hash>> = conflicts
+                .get(todo)
+                .map(|held| {
+                    held.iter()
+                        .map(|(kind, frontier)| {
+                            (*kind, frontier.writes().iter().map(|w| w.at.clone()).collect())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            prop_assert_eq!(&row.conflicts, &by_kind, "conflicts");
+
+            // The STANDING is the two asymmetries and nothing else.
+            let provisional = disputed
+                || named.is_some_and(|record| policy.actors().contains(&record.actor));
+            prop_assert_eq!(row.standing.is_provisional(), provisional, "standing");
+
+            // The STREAM is every object whose event names this todo, in the
+            // DAG's own order.
+            let stream: Vec<&prodrome::event::Hash> = nodes
+                .iter()
+                .filter(|node| node.event.as_ref().is_some_and(|e| e.todo() == todo))
+                .map(|node| &node.name)
+                .collect();
+            prop_assert_eq!(row.stream.iter().collect::<Vec<_>>(), stream, "stream");
         }
     }
 }
