@@ -322,6 +322,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "proptest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

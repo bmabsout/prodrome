@@ -18,7 +18,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -163,6 +163,49 @@ impl EventStore {
         names
     }
 
+    fn lock_file(&self) -> PathBuf {
+        self.root.join(".lock")
+    }
+
+    /// AN EXCLUSIVE `flock` ON `root/.lock`, HELD FOR ONE WRITE.
+    ///
+    /// The same file and the same operation the Python writer takes
+    /// (`suzatary/prodrome/store.py::_flock`), and that is the whole point:
+    /// until stage 4 of `docs/ARCHITECTURE.md` the Python CLI and the MCP
+    /// server still append to the same `events/` this does. Two writers that
+    /// lock different files are two writers that do not lock — an append is
+    /// read-the-heads, write-the-object, move-HEAD, and two of those
+    /// interleaved fork the chain.
+    ///
+    /// `flock` is per open file description, so this is advisory BETWEEN
+    /// PROCESSES and says nothing between the threads of one. An application
+    /// that decides something FROM the chain and then appends (the server's
+    /// existence checks, its id search, its stamp) serialises its own threads
+    /// above this; the lock here covers the append itself.
+    ///
+    /// The guard is the `File`: the lock releases when the last descriptor for
+    /// the description closes, so dropping it unlocks on every path out,
+    /// including an early `?`.
+    #[cfg(unix)]
+    fn lock(&self) -> Result<Option<File>, ProdromeError> {
+        use rustix::fs::{flock, FlockOperation};
+        fs::create_dir_all(&self.root).map_err(|e| Self::io(&self.root, e))?;
+        let path = self.lock_file();
+        let handle = File::create(&path).map_err(|e| Self::io(&path, e))?;
+        flock(&handle, FlockOperation::LockExclusive)
+            .map_err(|e| Self::io(&path, std::io::Error::from(e)))?;
+        Ok(Some(handle))
+    }
+
+    /// No lock off unix, because there is no store off unix: `prodrome-wasm`
+    /// compiles this crate for the browser, where `root` is a path nothing
+    /// reads. Stated rather than `#[cfg]`-ed away at the call sites, so the
+    /// write paths below read the same on every target.
+    #[cfg(not(unix))]
+    fn lock(&self) -> Result<Option<File>, ProdromeError> {
+        Ok(None)
+    }
+
     fn io(path: &Path, error: std::io::Error) -> ProdromeError {
         ProdromeError::Io {
             path: path.display().to_string(),
@@ -207,6 +250,7 @@ impl EventStore {
         event: TodoEvent,
         parents: Option<&[Hash]>,
     ) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
         let heads = self.tips();
         let on: Vec<Hash> = match parents {
             Some(named) => {
@@ -237,6 +281,7 @@ impl EventStore {
         parents: Option<&[Hash]>,
         event: Option<TodoEvent>,
     ) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
         let heads = self.tips();
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
@@ -269,6 +314,7 @@ impl EventStore {
     /// every head we hold is a FAST-FORWARD; anything else becomes a second
     /// head for `merge` to join.
     pub fn adopt(&self, source: &EventStore, digest: &Hash) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
         self.copy_in(source, digest)?;
         let heads = self.tips();
         for head in &heads {
@@ -1012,6 +1058,52 @@ mod tests {
                 digest.as_str()
             )
         );
+        let _ = fs::remove_dir_all(store.root());
+    }
+
+    /// THE LOCK IS THE PYTHON WRITER'S LOCK, and this is the checkable half of
+    /// that claim: it is `root/.lock`, and an append takes it exclusively.
+    ///
+    /// What is checked is that a SECOND holder of an exclusive `flock` on that
+    /// exact path cannot get it while an append would hold one, and that the
+    /// append is possible once that holder lets go — which is what serialises
+    /// this writer against `suzatary/prodrome/store.py::_flock` across
+    /// processes. The file NAME is the interoperable part: two writers locking
+    /// two different files are two writers that do not lock.
+    #[cfg(unix)]
+    #[test]
+    fn an_append_takes_the_same_lock_file_the_python_writer_takes() {
+        use rustix::fs::{flock, FlockOperation};
+
+        let store = EventStore::new(scratch("locked"), untrusted());
+        store
+            .append(
+                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        assert_eq!(store.lock_file(), store.root().join(".lock"));
+        assert!(store.lock_file().exists(), "the append created the lock");
+
+        // A second exclusive holder, the way another process would be.
+        let held = File::create(store.lock_file()).expect("the lock file opens");
+        flock(&held, FlockOperation::LockExclusive).expect("locks");
+        assert!(
+            flock(
+                File::create(store.lock_file()).expect("opens"),
+                FlockOperation::NonBlockingLockExclusive
+            )
+            .is_err(),
+            "a held exclusive lock is not available to a second holder"
+        );
+        drop(held);
+        store
+            .append(
+                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends once the other writer let go");
+        assert_eq!(store.verify(), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
     }
 }
