@@ -316,6 +316,37 @@ impl EventStore {
     pub fn adopt(&self, source: &EventStore, digest: &Hash) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         self.copy_in(source, digest)?;
+        self.place(digest)
+    }
+
+    /// The same adoption from a replica that is NOT a directory: `objects` maps
+    /// a name to the canonical print that name is the hash of.
+    ///
+    /// A replica that reaches this store over a wire arrives as BYTES, and the
+    /// alternative was for its caller to lay them out as a second store —
+    /// a temporary directory whose layout is this module's own business,
+    /// written by somebody who is not this module. The placement rule, the
+    /// reverification and the walk over parents are IDENTICAL; only where the
+    /// bytes are read from differs, which is why [`EventStore::adopt`] is now
+    /// this function with a directory for a source.
+    ///
+    /// The same refusals, in the same words: bytes that do not hash to the name
+    /// given, an object that does not parse, and a parent neither `objects` nor
+    /// this store holds.
+    pub fn adopt_objects(
+        &self,
+        objects: &BTreeMap<Hash, String>,
+        digest: &Hash,
+    ) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
+        self.copy_in_from(digest, |name| {
+            objects.get(name).map(|text| text.as_bytes().to_vec())
+        })?;
+        self.place(digest)
+    }
+
+    /// Where an adopted tip lands — git's placement, minus the ceremony.
+    fn place(&self, digest: &Hash) -> Result<Hash, ProdromeError> {
         let heads = self.tips();
         for head in &heads {
             if head == digest || self.ancestors(head)?.contains(digest) {
@@ -357,6 +388,18 @@ impl EventStore {
     /// ends that branch of the walk: this store is closed under parents, so
     /// everything above one of ours is already here.
     fn copy_in(&self, source: &EventStore, digest: &Hash) -> Result<(), ProdromeError> {
+        self.copy_in_from(digest, |name| fs::read(source.object_path(name)).ok())
+    }
+
+    /// The walk both adoptions share: from `digest` down through parents,
+    /// taking in what this store lacks and REVERIFYING each object on the way.
+    /// `bytes_of` is where the replica's objects are read from — a directory,
+    /// or a map that arrived over a wire.
+    fn copy_in_from(
+        &self,
+        digest: &Hash,
+        bytes_of: impl Fn(&Hash) -> Option<Vec<u8>>,
+    ) -> Result<(), ProdromeError> {
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
         let mut pending = vec![digest.clone()];
@@ -365,15 +408,12 @@ impl EventStore {
                 self.load(&name)?;
                 continue;
             }
-            let there = source.object_path(&name);
-            if !there.exists() {
+            let Some(raw) = bytes_of(&name) else {
                 return Err(ProdromeError::Store(format!(
-                    "missing object {} in {}",
-                    name.as_str(),
-                    source.root.display()
+                    "missing object {}, named as a parent",
+                    name.as_str()
                 )));
-            }
-            let raw = fs::read(&there).map_err(|e| Self::io(&there, e))?;
+            };
             let object = decode(&name, &raw)?;
             let here = self.object_path(&name);
             fs::write(&here, &raw).map_err(|e| Self::io(&here, e))?;
@@ -912,6 +952,82 @@ mod tests {
         assert_eq!(here.events().expect("reads").len(), 3);
         let _ = fs::remove_dir_all(here.root());
         let _ = fs::remove_dir_all(there.root());
+    }
+
+    /// THE VECTOR FOR `adopt_objects`: a replica whose objects arrive as BYTES
+    /// lands exactly where the same replica's DIRECTORY would have landed.
+    ///
+    /// Two stores are built with the same history and diverged the same way;
+    /// one takes the other in through [`EventStore::adopt`] and the other
+    /// through [`EventStore::adopt_objects`], and the heads, the objects and
+    /// `verify` agree. That is the whole claim the new door makes — same
+    /// placement, same reverification, a different source of bytes — and the
+    /// two refusals below are the other half of it.
+    #[test]
+    fn adopting_bytes_lands_where_adopting_a_directory_lands() {
+        let by_dir = EventStore::new(scratch("bytes-dir"), untrusted());
+        let by_bytes = EventStore::new(scratch("bytes-map"), untrusted());
+        let there = EventStore::new(scratch("bytes-there"), untrusted());
+        let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
+        for store in [&by_dir, &by_bytes, &there] {
+            store.append(shared.clone(), None).expect("appends");
+        }
+        // Each side writes its own second object, so the two histories diverge.
+        for store in [&by_dir, &by_bytes] {
+            store
+                .append(
+                    mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
+                    None,
+                )
+                .expect("appends");
+        }
+        let theirs = there
+            .append(
+                mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+
+        by_dir.adopt(&there, &theirs).expect("adopts a directory");
+        // The same objects, as the wire carries them: a name and the canonical
+        // print that name is the hash of.
+        let over_the_wire: BTreeMap<Hash, String> = there
+            .read_dag_named()
+            .expect("reads")
+            .into_iter()
+            .map(|(name, object)| (name, crate::event::canonical_envelope(&object)))
+            .collect();
+        by_bytes
+            .adopt_objects(&over_the_wire, &theirs)
+            .expect("adopts bytes");
+
+        assert_eq!(by_bytes.tips(), by_dir.tips());
+        assert_eq!(
+            by_bytes.read_dag_named().expect("reads"),
+            by_dir.read_dag_named().expect("reads")
+        );
+        assert_eq!(by_bytes.verify(), Vec::<String>::new());
+
+        // A REPLICA IS NOT TRUSTED FOR BEING A REPLICA. Bytes that do not hash
+        // to the name they were filed under are refused, and so is a parent
+        // nobody holds.
+        let liar = EventStore::new(scratch("bytes-liar"), untrusted());
+        let mut tampered = over_the_wire.clone();
+        if let Some(text) = tampered.get_mut(&theirs) {
+            text.push(' ');
+        }
+        assert!(liar.adopt_objects(&tampered, &theirs).is_err());
+        let orphan: BTreeMap<Hash, String> = over_the_wire
+            .iter()
+            .filter(|(name, _)| **name == theirs)
+            .map(|(name, text)| (name.clone(), text.clone()))
+            .collect();
+        let missing = EventStore::new(scratch("bytes-orphan"), untrusted());
+        assert!(missing.adopt_objects(&orphan, &theirs).is_err());
+
+        for store in [&by_dir, &by_bytes, &there, &liar, &missing] {
+            let _ = fs::remove_dir_all(store.root());
+        }
     }
 
     #[test]
