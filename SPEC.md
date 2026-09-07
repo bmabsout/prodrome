@@ -82,8 +82,11 @@ never a crash: parsing is fuzzed (tests/test_fuzz.py).
   malformed `Woven`; a stale head; an UNTRUSTED actor's event dated behind any
   of its parents (§5).
 - **`adopt(source, tip)`**: copy verified objects in; a contained tip changes
-  nothing; a tip containing every head fast-forwards; else a second head.
-  **`merge(parents)`** writes a `Woven` and makes it the single tip.
+  nothing; a tip containing every head fast-forwards; else a second head. The
+  SOURCE is a replica's objects by name, whether that is another store or a map
+  of canonical prints that arrived over a wire (`adopt_objects`) — the placement
+  and the reverification are the same, and only where the bytes are read from
+  differs. **`merge(parents)`** writes a `Woven` and makes it the single tip.
 
 ## 4. Events
 
