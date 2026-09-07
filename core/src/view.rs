@@ -170,6 +170,44 @@ impl Entry {
     pub fn value(&self) -> Option<f64> {
         self.priced.as_ref().map(|priced| priced.value)
     }
+
+    /// The lifecycle as the WIRE spells it: the outcome's constructor name
+    /// lowercased, `"open"` for no binding.
+    ///
+    /// A rendering, in the same category as [`fpl::iso`] and `print_term` and
+    /// for the same reason: the alternative is each binding rendering it, and
+    /// two spellings of one string is exactly the drift this module exists to
+    /// remove. It decides nothing — [`Entry::outcome`] is the value.
+    pub fn state(&self) -> &'static str {
+        lowered(self.outcome)
+    }
+
+    /// The confirmed binding's instant as CPython's `isoformat(" ")` — the
+    /// spelling `view.json_entry` shipped — and `""` for an open todo, which
+    /// is absence and not an instant.
+    pub fn at(&self) -> String {
+        self.outcome.map_or_else(String::new, |binding| {
+            fpl::iso(binding.at()).replace('T', " ")
+        })
+    }
+
+    /// The CLAIMED state, `""` where the two folds agree.
+    pub fn claimed(&self) -> &'static str {
+        match self.claim {
+            None => "",
+            claimed => lowered(claimed),
+        }
+    }
+}
+
+/// `state`'s and `claimed`'s shared spelling: `"open"`, `"completed"`,
+/// `"cancelled"`.
+fn lowered(binding: Option<Binding>) -> &'static str {
+    match binding {
+        None => "open",
+        Some(Binding::Completed(_)) => "completed",
+        Some(Binding::Cancelled(_)) => "cancelled",
+    }
 }
 
 /// §6.7 — every todo the DAG has ever mentioned, as the folds see it at `t`.
