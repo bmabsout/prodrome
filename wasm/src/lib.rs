@@ -20,6 +20,9 @@
 //! | function         | asks                                                    |
 //! | ---------------- | ------------------------------------------------------- |
 //! | `verify_objects` | §3: do these bytes hash to these names, and do they form one DAG under these heads |
+//! | `lifecycle`      | §4: spell one lifecycle event, through its own `mk_*`    |
+//! | `seal`           | §3: seal an event onto these heads — the name and the bytes |
+//! | `merge_object`   | §3: join these heads — structure, so no event and no actor |
 //! | `fold`           | §6.1–6.5: what does the chain believe at an instant      |
 //! | `registers`      | §6.6: which registers have more than one live write      |
 //! | `entries`        | §6.7: every todo as the folds see it, composed ONCE      |
@@ -35,7 +38,19 @@
 //! memory.
 //!
 //! NO CLOCK, anywhere below. §1 forbids one in the core, and a browser's clock
-//! is the least trustworthy in the system; every moment is an argument.
+//! is the least trustworthy in the system; every moment is an argument — the
+//! `at` a replica seals included, which is why [`lifecycle`] takes one rather
+//! than reading one.
+//!
+//! ⚠️ SINCE STAGE 3 THIS CRATE ALSO WRITES, and it is worth saying why that is
+//! not a widening. `seal` and `merge_object` build an ENVELOPE and hand back
+//! its name and its bytes; they touch no store, because a browser has none.
+//! Every rule about what an object may be is still the core's `mk_*`
+//! constructors, and the box rehashes and re-verifies everything it is given
+//! anyway (`suzatary_core::sync`). What the browser gains is the ability to
+//! name a value the same way the box would — which is the one thing a replica
+//! cannot do without §2's printer, and the one thing a second printer in
+//! TypeScript would have got subtly wrong.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -588,6 +603,126 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         ),
         ("records", Value::Object(records)),
     ]))
+}
+
+// --- §3 and §4: SEALING, so a replica can append ------------------------------
+
+/// A lifecycle event, as its CANONICAL PRINT — §4's four same-shaped kinds
+/// (`Created`, `Completed`, `Cancelled`, `Reopened`), through the very `mk_*`
+/// constructors that are their parse boundary.
+///
+/// This exists because a replica has to be able to append WITH NO NETWORK, and
+/// the only alternative was a printer written in TypeScript — a second
+/// implementation of §2's grammar, which is exactly what this crate exists to
+/// prevent. The caller supplies four strings; the core decides whether they are
+/// a value, spells it, and refuses if they are not.
+///
+/// The answer is a print rather than JSON because the print IS the value's
+/// identity (§3): it is what [`seal`] hashes, what the file holds, and what
+/// crosses every other boundary in this system.
+///
+/// ⚠️ `at` IS THE CALLER'S CLAIM AND NOTHING CLAMPS IT (§1). A device with a
+/// wrong clock produces an event dated in the future; `verify` reports what it
+/// must and no layer here rewrites it.
+#[wasm_bindgen]
+pub fn lifecycle(
+    kind: &str,
+    todo: &str,
+    at: &str,
+    actor: &str,
+    note: &str,
+) -> Result<String, JsError> {
+    let at = parse_instant("at", at).map_err(refused)?;
+    let at = datetime_of(at).map_err(|e| refused(format!("at: {e}")))?;
+    let event = match kind {
+        "Created" => prodrome::event::mk_created(todo, at, actor, "", note),
+        "Completed" => prodrome::event::mk_completed(todo, at, actor, note),
+        "Cancelled" => prodrome::event::mk_cancelled(todo, at, actor, note),
+        "Reopened" => prodrome::event::mk_reopened(todo, at, actor, note),
+        other => {
+            return Err(refused(format!(
+                "kind must be one of Created, Completed, Cancelled, Reopened, got {other:?}"
+            )));
+        }
+    }
+    .map_err(|e| refused(e.to_string()))?;
+    Ok(prodrome::event::canonical(&event))
+}
+
+/// One object's name and its bytes, the way `/api/objects` carries them.
+fn object_of(envelope: &Envelope) -> Result<String, JsError> {
+    let literal = prodrome::event::canonical_envelope(envelope);
+    printed(&object(vec![
+        ("name", Value::String(name_of(&literal))),
+        ("literal", Value::String(literal)),
+    ]))
+}
+
+/// The event a sealing call was given, or `None` — a print, read back through
+/// the closed vocabulary and every `mk_*` rule, so a caller cannot seal a
+/// record the constructors would have refused.
+fn event_of(event: Option<String>) -> Result<Option<TodoEvent>, JsError> {
+    event
+        .map(|print| {
+            prodrome::event::parse_event(&print)
+                .map_err(|e| refused(format!("event: {e}")))
+        })
+        .transpose()
+}
+
+/// §3 — SEAL AN EVENT ONTO THE HEADS A REPLICA HOLDS, and answer with the name
+/// and the bytes.
+///
+/// `prev` is a JSON array of head names: none is genesis (`Sealed(prev='')`),
+/// one is an ordinary `Sealed`, and two or more is a `Woven` that writes and
+/// joins at once. `event` is a lifecycle print from [`lifecycle`] or an
+/// `Authored` print the box authored (`POST /api/author`), and `null` is only
+/// legal with two parents or more, where it is a plain merge — see
+/// [`merge_object`], which is the door that says so in its name.
+///
+/// THIS IS THE WHOLE OF WHAT A PHONE NEEDS TO WRITE. Print through the core's
+/// printer, hash the print: the name is `sha256(utf8(print))`, which is what
+/// the store's filename is and what the box rehashes on receipt. So a replica
+/// and a box independently agree on what an object is CALLED, with nothing in
+/// between them but bytes.
+#[wasm_bindgen]
+pub fn seal(prev: &str, event: Option<String>) -> Result<String, JsError> {
+    let parents = parse_names("prev", prev).map_err(refused)?;
+    let event = event_of(event)?;
+    let envelope = match (parents.len(), event) {
+        (0, Some(event)) => prodrome::event::mk_sealed(None, event),
+        (1, Some(event)) => prodrome::event::mk_sealed(parents.into_iter().next(), event),
+        (_, event) => prodrome::event::mk_woven(parents, event).map_err(|e| refused(e.to_string()))?,
+    };
+    object_of(&envelope)
+}
+
+/// §3 — A MERGE: `Woven(parents, event)` over two heads or more.
+///
+/// `event` is `null` for the ordinary case, and that is the design rather than
+/// an omission: a merge asserts STRUCTURE, not a fact about a todo, so it
+/// carries no author, no instant and no id. Two replicas joining the same
+/// heads therefore produce the same bytes — `mk_woven` sorts the parents — and
+/// the union of two histories stays a union however many times it is taken.
+///
+/// A caller that wants the join ATTRIBUTED passes an ordinary event print, and
+/// the object is a write and a join at once.
+#[wasm_bindgen]
+pub fn merge_object(parents: &str, event: Option<String>) -> Result<String, JsError> {
+    let parents = parse_names("parents", parents).map_err(refused)?;
+    let event = event_of(event)?;
+    let envelope = prodrome::event::mk_woven(parents, event).map_err(|e| refused(e.to_string()))?;
+    object_of(&envelope)
+}
+
+/// A JSON array of object names, each checked as one.
+fn parse_names(field: &str, json_text: &str) -> Result<Vec<Hash>, Refusal> {
+    let names: Vec<String> = serde_json::from_str(json_text)
+        .map_err(|e| format!("{field}: expected a list of object names ({e})"))?;
+    names
+        .into_iter()
+        .map(|name| Hash::new(name).map_err(|e| format!("{field}: {e}")))
+        .collect()
 }
 
 // --- §7: the evaluator -------------------------------------------------------
