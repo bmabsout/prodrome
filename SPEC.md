@@ -141,6 +141,25 @@ with `at <= t` IN CAUSAL ORDER (`chronological`).
    value, more is a CONFLICT. `extend(state, nodes)` is a monoid action.
    Projections pick the write latest in the linearisation, so on any DAG
    `env_of/specs_of/content_of` equal folds 1–3; `conflicts_of` names the rest.
+7. **The entry** — `entries(nodes, t, untrusted) : [Entry]`, one row per todo
+   any event ever mentions, ordered by id. It is a COMPOSITION of the folds
+   above and §7 and not a fold of its own, stated so that every consumer
+   performs it once: let `confirmed = fold(nodes, t, untrusted)` and `loose`
+   the same under the empty policy; then `outcome = env_of(confirmed)[todo]`;
+   `claim = env_of(loose)[todo]` where the two name different OUTCOMES
+   (`open`, `Completed`, `Cancelled` — the instants do not disagree), absent
+   where they agree;
+   `spec = flatten(events of nodes, t, untrusted)[todo]` and `value` its
+   `fulfillment` at `t` under `confirmed`'s environment, absent TOGETHER
+   (§6.4: no spec and no checklist is no function, and absence is not zero);
+   `content = chosen_of(confirmed, content)[todo]`, the NAME of the winning
+   object and never the record; `conflicts = conflicts_of(confirmed)[todo]`;
+   `stream` = every node whose event names the todo, in causal order.
+   A todo whose events are all dated after `t` is still a row, open and
+   unpriced: `t` asks what is BELIEVED, not what exists. `standing` says
+   whether the answer is the trusted fold's whole — a claim refused, an
+   untrusted actor's content record, or both — which is §5's containment
+   asymmetry as a value the reader is shown.
 
 ## 7. FPL
 
@@ -180,7 +199,9 @@ Semantics `⟦t⟧(now, env) ∈ [0,1]`:
 `Hash` (64 hex), `TodoId`, `Actor`, `Login`, `MarkupSource`, `StringSource`,
 `NoteSite`; `Envelope = Sealed | Woven`; `TodoEvent`; `Term` as `Fix TermF`;
 `Explanation = Cofree TermF Annotation`; `Frontier` as a non-empty ordered set
-of writes; `Folded` state; `Breaks`. Smart constructors (`mk_*`) validate;
+of writes; `Folded` state; `Breaks`; `Entry` (§6.7) with its price and its
+function absent TOGETHER and its `Standing` a sum with no "provisional for no
+reason" inhabitant. Smart constructors (`mk_*`) validate;
 records are dumb data; engine code never calls a raw constructor.
 
 ## 9. Laws (the conformance suite)
@@ -199,6 +220,12 @@ Every implementation, on `prodrome/conformance/*.json` and on the live chain:
 7. Interpolation between series knots equals evaluation on the exact fragment.
 8. `fulfillment` within 1e-9 of the reference on every vector; hashes, prints,
    linearisations, frontiers, and `verify` findings exactly.
+9. **view is the composition** (§6.7): on any DAG and at any moment, every
+   field of every entry equals the fold §6.7 names it by, and the rows are
+   exactly the todos the events mention. Numbered last so that 1–8 keep the
+   numbers every consumer already cites; it belongs beside 6, which it rests
+   on. A composition spelled a second time is a second reading of the
+   semantics, so this is the law that lets there be one spelling.
 
 ## 10. Non-goals
 
