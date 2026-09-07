@@ -664,8 +664,7 @@ fn object_of(envelope: &Envelope) -> Result<String, JsError> {
 fn event_of(event: Option<String>) -> Result<Option<TodoEvent>, JsError> {
     event
         .map(|print| {
-            prodrome::event::parse_event(&print)
-                .map_err(|e| refused(format!("event: {e}")))
+            prodrome::event::parse_event(&print).map_err(|e| refused(format!("event: {e}")))
         })
         .transpose()
 }
@@ -692,7 +691,9 @@ pub fn seal(prev: &str, event: Option<String>) -> Result<String, JsError> {
     let envelope = match (parents.len(), event) {
         (0, Some(event)) => prodrome::event::mk_sealed(None, event),
         (1, Some(event)) => prodrome::event::mk_sealed(parents.into_iter().next(), event),
-        (_, event) => prodrome::event::mk_woven(parents, event).map_err(|e| refused(e.to_string()))?,
+        (_, event) => {
+            prodrome::event::mk_woven(parents, event).map_err(|e| refused(e.to_string()))?
+        }
     };
     object_of(&envelope)
 }
