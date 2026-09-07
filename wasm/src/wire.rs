@@ -15,16 +15,20 @@
 //! nothing rewritten in between — a translation step is where a second reading
 //! grows.
 //!
-//! The two places `suzatary/view.py` prints an instant differently are
-//! RENDERINGS and stay with the page that renders them: `json_entry`'s `at` is
-//! `isoformat(" ")`, and `json_authored`'s `created` and `source.date` are
-//! DATES, which is a genuine narrowing of the value and so is done here.
+//! Two places print an instant differently, and both are RENDERINGS.
+//! `json_authored`'s `created` and `source.date` are DATES, a genuine
+//! narrowing of the value, and so are done here. `json_entry`'s `at` is
+//! `isoformat(" ")` and used to be the page's to spell; since §6.7 it is
+//! `Entry::at`, in the core — because the same string now has to come out of
+//! the PyO3 binding too, and one spelling in two crates is one spelling too
+//! many.
 
 use std::collections::BTreeMap;
 
 use prodrome::event::{Authored, Hash, Source, TodoEvent, TodoId};
 use prodrome::fold::{Binding, Env, Untrusted};
 use prodrome::fpl::{self, Instant, Outcome, Term};
+use prodrome::view::Entry;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -167,9 +171,9 @@ impl History {
 /// ONE ENV SHAPE, and this is it — `{kind, at}` with an ISO instant, which is
 /// what `parse_env` reads, what `conformance/fpl.json` holds, and therefore
 /// what a caller can hand straight back to [`crate::fulfillment`] without
-/// rewriting anything. `view.json_entry`'s `state`/`at` is a RENDERING of this
-/// (lowercased, `isoformat(" ")`) and the page does that rendering, the way it
-/// renders every other instant it shows.
+/// rewriting anything. [`json_entry`]'s `state`/`at` is a RENDERING of this
+/// (lowercased, `isoformat(" ")`), which `Entry::state`/`Entry::at` perform in
+/// the core so that both bindings spell it one way.
 pub fn json_binding(binding: Binding) -> Value {
     json!({ "kind": binding.kind(), "at": fpl::iso(binding.at()) })
 }
@@ -241,6 +245,40 @@ pub fn json_content(content: &BTreeMap<TodoId, Authored>) -> Value {
             .map(|(todo, record)| (todo.as_str().to_owned(), json_authored(record)))
             .collect(),
     )
+}
+
+/// One §6.7 entry, in the shape `prodrome/conformance/view.json` holds and the
+/// PyO3 binding's dict carries — one row, one reading, on both hosts.
+///
+/// `spec` is the todo's §6.4 function as its canonical PRINT and not as
+/// `to_json`, which is the exception to this file's "terms travel as JSON"
+/// rule and is deliberate: it is the value's IDENTITY (§3), it is what the
+/// vector compares, and no page reads it. A caller that wants the JSON shape
+/// has [`crate::term_json`], the §2 → §7 door.
+pub fn json_entry(entry: &Entry) -> Value {
+    json!({
+        "todo": entry.todo.as_str(),
+        "state": entry.state(),
+        "at": entry.at(),
+        "claimed": entry.claimed(),
+        "value": entry.value(),
+        "unconfirmed": entry.standing.is_provisional(),
+        "conflicts": Value::Object(
+            entry
+                .conflicts
+                .iter()
+                .map(|(kind, writes)| {
+                    (
+                        kind.as_str().to_owned(),
+                        strings(writes.iter().map(|write| write.as_str().to_owned())),
+                    )
+                })
+                .collect(),
+        ),
+        "content": entry.content.as_ref().map(Hash::as_str),
+        "spec": entry.spec().map(fpl::print_term),
+        "stream": strings(entry.stream.iter().map(|name| name.as_str().to_owned())),
+    })
 }
 
 /// One event's identity on a todo's timeline — `view.json_series`'s marker,

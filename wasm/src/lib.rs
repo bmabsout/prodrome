@@ -22,6 +22,7 @@
 //! | `verify_objects` | §3: do these bytes hash to these names, and do they form one DAG under these heads |
 //! | `fold`           | §6.1–6.5: what does the chain believe at an instant      |
 //! | `registers`      | §6.6: which registers have more than one live write      |
+//! | `entries`        | §6.7: every todo as the folds see it, composed ONCE      |
 //! | `fulfillment`    | §7: what is this term worth now                          |
 //! | `explain`        | §7: what is that number made of                          |
 //! | `series_knots`   | §7 knots: what is that term's curve over a window        |
@@ -50,8 +51,9 @@ use wasm_bindgen::prelude::*;
 mod wire;
 
 use wire::{
-    json_content, json_env, json_marker, json_terms, object, parse_env, parse_instant,
-    parse_moment, parse_objects, parse_term, parse_untrusted, strings, History, ObjectIn, Refusal,
+    json_authored, json_content, json_entry, json_env, json_marker, json_terms, object, parse_env,
+    parse_instant, parse_moment, parse_objects, parse_term, parse_untrusted, strings, History,
+    ObjectIn, Refusal,
 };
 
 /// A refusal, as the exception a JS caller catches. Every entry point returns
@@ -541,6 +543,51 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
             .collect(),
     );
     printed(&object(vec![("conflicts", conflicts)]))
+}
+
+/// §6.7 — every todo the chain has ever mentioned, as the folds see it at `at`
+/// (ISO, or `null` for everything the chain holds), under `untrusted`.
+///
+/// THE COMPOSITION IS THE CORE'S. Until this existed the tab performed it
+/// itself — two [`fold`]s, a [`registers`] call, and `web/src/core.ts` deciding
+/// what a claim is, when an entry is provisional, and which environment prices
+/// it. That was a second reading of §6.7 in a second language (ARCHITECTURE
+/// §4), which is exactly what this crate exists to prevent, and it is gone.
+///
+/// `records` is the lookup an entry's `content` NAME implies: an entry carries
+/// the name of the winning content object and never the record, and a browser
+/// holding those objects as TEXT cannot open one without the §2 parser — which
+/// is here. So the answer carries the `Authored` records the rows actually
+/// name, and nothing else: it is the caller's own lookup done on the caller's
+/// behalf, not the Prodrome deciding what a body is for. The shape is
+/// [`wire::json_authored`], which is `view.json_authored` MINUS `rich`.
+#[wasm_bindgen]
+pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
+    let read = Read::of(objects).map_err(refused)?;
+    let policy = parse_untrusted(untrusted).map_err(refused)?;
+    let moment = read
+        .moment(parse_moment("at", at).map_err(refused)?)
+        .map_err(refused)?;
+    let rows = prodrome::view::entries(&read.nodes(), moment, &policy)
+        .map_err(|e| refused(e.to_string()))?;
+    let records: serde_json::Map<String, Value> = rows
+        .iter()
+        .filter_map(|row| row.content.as_ref())
+        .filter_map(|name| match read.objects[name].event() {
+            Some(TodoEvent::Authored(record)) => {
+                Some((name.as_str().to_owned(), json_authored(record)))
+            }
+            _ => None,
+        })
+        .collect();
+    printed(&object(vec![
+        ("at", Value::String(iso(instant_of(moment)))),
+        (
+            "entries",
+            Value::Array(rows.iter().map(json_entry).collect()),
+        ),
+        ("records", Value::Object(records)),
+    ]))
 }
 
 // --- §7: the evaluator -------------------------------------------------------
