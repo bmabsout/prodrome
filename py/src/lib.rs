@@ -36,6 +36,7 @@ use prodrome_core::fpl::{self, Env as FplEnv, Instant, Outcome, Term};
 use prodrome_core::literal;
 use prodrome_core::registers::{self, Node};
 use prodrome_core::store::EventStore;
+use prodrome_core::view;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList, PyTuple};
@@ -669,6 +670,51 @@ impl PyChain {
                 .collect(),
         }
     }
+
+    /// §6.7 — every todo the DAG has ever mentioned, as the folds see it at
+    /// `t`: one dict per entry, in todo order.
+    ///
+    /// ONE call where `suzatary/view.py` made five (two register folds, a
+    /// `flatten`, a list pricing, and the composition itself in Python). The
+    /// composition is `prodrome_core::view`'s, so the server and the browser
+    /// perform the same one; this binding still decides nothing.
+    ///
+    /// `content` is the NAME of the winning content object and never the
+    /// record: a caller holding the objects looks it up, and 184 whole todo
+    /// bodies reprinted per fold was measured at 1.7 ms (`chosen`, above).
+    /// `spec` is the todo's §6.4 function as its canonical PRINT — every term
+    /// this module hands back is a print, because a print is the value's
+    /// identity and the caller's next move is to hand it back.
+    #[pyo3(signature = (t, untrusted = Vec::new()))]
+    fn entries(&self, py: Python<'_>, t: &str, untrusted: Vec<String>) -> PyResult<Vec<Py<PyAny>>> {
+        view::entries(&self.nodes, moment_of(t)?, &untrusted_of(untrusted)?)
+            .map_err(refuse)?
+            .iter()
+            .map(|entry| entry_wire(py, entry))
+            .collect()
+    }
+}
+
+/// One `view::Entry` as the dict `suzatary/view.py` reads back.
+fn entry_wire(py: Python<'_>, entry: &view::Entry) -> PyResult<Py<PyAny>> {
+    let wire = PyDict::new(py);
+    wire.set_item("todo", entry.todo.as_str())?;
+    wire.set_item("state", entry.state())?;
+    wire.set_item("at", entry.at())?;
+    wire.set_item("claimed", entry.claimed())?;
+    wire.set_item("value", entry.value())?;
+    wire.set_item("unconfirmed", entry.standing.is_provisional())?;
+    let conflicts = PyDict::new(py);
+    for (kind, writes) in &entry.conflicts {
+        let names: Vec<&str> = writes.iter().map(Hash::as_str).collect();
+        conflicts.set_item(kind.as_str(), names)?;
+    }
+    wire.set_item("conflicts", conflicts)?;
+    wire.set_item("content", entry.content.as_ref().map(Hash::as_str))?;
+    wire.set_item("spec", entry.spec().map(print_term))?;
+    let stream: Vec<&str> = entry.stream.iter().map(Hash::as_str).collect();
+    wire.set_item("stream", stream)?;
+    wire.into_py_any(py)
 }
 
 #[pyfunction]
