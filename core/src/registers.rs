@@ -26,6 +26,7 @@
 //! thousands. That is a STATED limit, not a hidden one.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::event::{Authored, Envelope, Hash, TodoEvent, TodoId};
 use crate::fold::{Binding, Env, Untrusted};
@@ -134,10 +135,20 @@ pub struct Key(pub Kind, pub TodoId);
 /// One write to one register: the object that made it and the event it
 /// carried. The object's NAME is what makes a conflict reportable — a person
 /// settling one has to be able to look the write up.
+///
+/// The event is SHARED, not owned. One `Authored` record is a whole todo — two
+/// markup fields, a checklist, a spec TERM TREE — and a write is copied at
+/// least twice on the way into a frontier (once for the write, once per
+/// register kind it writes) and again on every `extend`, which clones the
+/// state it extends. Deep-copying 250 of those per fold was measured at ~1 ms
+/// of a 1.5 ms fold on the live chain (2026-09-07). An `Arc` makes the copies
+/// a refcount bump and changes nothing observable: the event is immutable, and
+/// `PartialEq` on an `Arc` is `PartialEq` on what it holds, so the monoid-action
+/// law is still an equality of values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Write {
     pub at: Hash,
-    pub event: TodoEvent,
+    pub event: Arc<TodoEvent>,
 }
 
 /// The writes to one register that no later write descends from.
@@ -289,7 +300,7 @@ pub fn extend(
         }
         let write = Write {
             at: node.name.clone(),
-            event: event.clone(),
+            event: Arc::new(event.clone()),
         };
         for kind in writes_of(event) {
             let key = Key(*kind, event.todo().clone());
@@ -336,7 +347,7 @@ pub fn env_of(state: &Folded) -> Env {
         if *kind != Kind::State {
             continue;
         }
-        match &state.chosen(frontier).event {
+        match state.chosen(frontier).event.as_ref() {
             TodoEvent::Completed(e) => {
                 env.insert(todo.clone(), Binding::Completed(fpl::instant_of(e.at)));
             }
@@ -356,7 +367,7 @@ pub fn specs_of(state: &Folded) -> BTreeMap<TodoId, Term> {
         if *kind != Kind::Spec {
             continue;
         }
-        let spec = match &state.chosen(frontier).event {
+        let spec = match state.chosen(frontier).event.as_ref() {
             TodoEvent::SpecRevised(e) => Some(e.spec.clone()),
             TodoEvent::Authored(e) => e.spec.clone(),
             _ => None,
@@ -375,7 +386,7 @@ pub fn content_of(state: &Folded) -> BTreeMap<TodoId, Authored> {
         if *kind != Kind::Content {
             continue;
         }
-        if let TodoEvent::Authored(authored) = &state.chosen(frontier).event {
+        if let TodoEvent::Authored(authored) = state.chosen(frontier).event.as_ref() {
             out.insert(todo.clone(), (**authored).clone());
         }
     }

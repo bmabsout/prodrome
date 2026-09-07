@@ -10,7 +10,7 @@
 //! | field       | where it comes from                                        |
 //! | ----------- | ---------------------------------------------------------- |
 //! | `outcome`   | `env_of(registers::fold(nodes, t, untrusted))`              |
-//! | `claim`     | the same, under [`Untrusted::none`], where it DISAGREES     |
+//! | `claim`     | `fold::env_at(events, t, ∅)`, where it DISAGREES            |
 //! | `spec`      | `fold::flatten(events, t, untrusted)`                       |
 //! | `value`     | `fpl::fulfillment(spec, t, evaluation_env(outcomes))`       |
 //! | `content`   | `registers::chosen_of(confirmed, Kind::Content)`            |
@@ -24,11 +24,11 @@
 //! compositions, and two compositions drift; the law in §9 says this one
 //! equals the folds it names, on random DAGs.
 //!
-//! WHY TWO REGISTER FOLDS. The CONFIRMED state is the one that prices and the
-//! one a reader is told; the LOOSE one trusts every writer and exists only to
-//! name what an untrusted actor has claimed and has not bound. The gap between
-//! them is §5's containment asymmetry, made into a value ([`Entry::claim`])
-//! rather than left implicit — displayed, never applied.
+//! WHY TWO ENVIRONMENTS. The CONFIRMED one is what prices and what a reader is
+//! told; the LOOSE one trusts every writer and exists only to name what an
+//! untrusted actor has claimed and has not bound. The gap between them is §5's
+//! containment asymmetry, made into a value ([`Entry::claim`]) rather than
+//! left implicit — displayed, never applied.
 //!
 //! ABSENCE. Three of them, and each is a type rather than a sentinel:
 //!
@@ -218,10 +218,10 @@ fn lowered(binding: Option<Binding>) -> &'static str {
 ///
 /// The composition, spelled once so the law can say "this equals that":
 ///
-/// 1. `confirmed = registers::fold(nodes, Some(t), untrusted)` and
-///    `loose = registers::fold(nodes, Some(t), Untrusted::none())`;
-/// 2. `outcome = env_of(confirmed)[todo]`, `claim = env_of(loose)[todo]` where
-///    the two outcomes name different kinds;
+/// 1. `confirmed = registers::fold(nodes, Some(t), untrusted)`;
+/// 2. `outcome = env_of(confirmed)[todo]`;
+///    `claim = env_at(events, t, ∅)[todo]` where the two outcomes name
+///    different kinds;
 /// 3. `spec = flatten(events of nodes, t, untrusted)[todo]`, and `value` is
 ///    `fulfillment(spec, t, evaluation_env(env_of(confirmed)))` — the
 ///    CONFIRMED environment, because a claim does not price;
@@ -229,6 +229,16 @@ fn lowered(binding: Option<Binding>) -> &'static str {
 ///    `conflicts = conflicts_of(confirmed)[todo]`;
 /// 5. `standing` is `Standing::of(claim.is_some(), the content record's actor
 ///    is untrusted)`.
+///
+/// ONE REGISTER FOLD, NOT TWO. The loose side is asked exactly one question —
+/// what would every writer's events bind — and that question is §6.1's, which
+/// [`fold::env_at`] answers from the linearisation. §9.6 says the two agree on
+/// any DAG (`env_of(fold(nodes, …)) == env_at(events, …)`), so this is the
+/// same value; what it is not is the ancestry bitsets and the frontier
+/// arithmetic, which exist to make CONFLICTS visible, and a claim's conflicts
+/// are not shown. The confirmed side keeps the registers because it IS asked
+/// for conflicts, and for the object each content register chose. Measured on
+/// the live chain (565 objects, 2026-09-07): 1.5 ms against 0.3 ms.
 ///
 /// Returns a `Result` because [`fold::flatten`] does: a fold over stored data
 /// answers with a value, never with an abort.
@@ -238,13 +248,12 @@ pub fn entries(
     untrusted: &Untrusted,
 ) -> Result<Vec<Entry>, ProdromeError> {
     let confirmed = registers::fold(nodes, Some(t), untrusted);
-    let loose = registers::fold(nodes, Some(t), &Untrusted::none());
     let outcomes = registers::env_of(&confirmed);
-    let claims = registers::env_of(&loose);
     let content = registers::chosen_of(&confirmed, Kind::Content);
     let mut conflicts = registers::conflicts_of(&confirmed);
 
     let events: Vec<TodoEvent> = nodes.iter().filter_map(|node| node.event.clone()).collect();
+    let claims = fold::env_at(&events, t, &Untrusted::none());
     let specs = fold::flatten(&events, t, untrusted)?;
     // ONE conversion of the environment for the whole list: §7's `Env` is
     // keyed by event NAME and the fold's by `TodoId`, and converting per todo
