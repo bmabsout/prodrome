@@ -1,0 +1,26 @@
+# One gate, and it is the same command a developer runs: the checks live in
+# flake.nix, so CI needs no Rust toolchain of its own, no cache of crates and
+# no network during the build — the dependency tree is vendored from the
+# committed Cargo.lock.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # `cargo test` over the workspace and clippy at -D warnings, both in the
+      # sandbox (checks.prodrome-core, checks.prodrome-clippy).
+      - run: nix flake check --print-build-logs
+      # The browser's artefact, built purely: bindgen's glue and wasm-opt's
+      # rewrite are outside `cargo test`, so a break there shows up here.
+      - run: nix build .#prodrome-wasm --print-build-logs
