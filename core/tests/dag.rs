@@ -7,10 +7,6 @@
 //! rebuilt here by writing the object files and the heads, which is the honest
 //! way to test a READER: nothing about the order or the findings may depend on
 //! this side having been the writer.
-//!
-//! The live chain (`events/` at the repository root) is checked at the end of
-//! this file — 564 objects, `verify` clean, and `read_dag`'s order equal to the
-//! order `literals.json` was generated in.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -42,14 +38,11 @@ fn conformance(name: &str) -> PathBuf {
         .collect()
 }
 
-fn repo_root() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
-}
-
 fn untrusted() -> BTreeSet<Actor> {
-    // `suzatary/instance.py`: UNTRUSTED = frozenset({"triage"}). The roster is
-    // the deployment's, never the engine's — it arrives as a parameter here
-    // exactly as it does there.
+    // The roster is the DEPLOYMENT's, never the engine's (§5) — it arrives as
+    // a parameter here exactly as it does at every other call site. These
+    // vectors were generated under `{"triage"}`, so that is the policy their
+    // `verify` findings were taken under.
     [Actor::new("triage").expect("valid")].into_iter().collect()
 }
 
@@ -138,56 +131,4 @@ fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
     assert!(forked > 0, "some vectors have two heads");
     assert!(merges > 0, "some vectors hold a merge envelope");
     assert!(findings > 0, "some vectors have verify findings");
-}
-
-/// The live chain, read as the deployment reads it.
-#[test]
-fn the_live_chain_reads_clean_and_in_the_generators_order() {
-    let events = repo_root().join("events");
-    if !events.is_dir() {
-        // The crate is meant to be usable outside this repository; the live
-        // chain is evidence, not a dependency.
-        return;
-    }
-    let store = EventStore::new(&events, untrusted());
-    let read = store.read_dag_named().expect("the live chain reads");
-    assert_eq!(store.verify(), Vec::<String>::new(), "verify is clean");
-
-    #[derive(Deserialize)]
-    struct Literals {
-        objects: Vec<Object>,
-    }
-    #[derive(Deserialize)]
-    struct Object {
-        name: String,
-    }
-    let raw = fs::read_to_string(conformance("literals.json")).expect("literals.json");
-    let literals: Literals =
-        serde_json::from_str(&raw).expect("literals.json is the generator's shape");
-    let generated: Vec<&str> = literals
-        .objects
-        .iter()
-        .map(|object| object.name.as_str())
-        .collect();
-    // The generator wrote the chain as of ITS tip; the chain has grown since
-    // (it does every hour). Read it as of that tip — the last name, this being
-    // a chain — and the two reads must agree exactly, not merely overlap.
-    let last = Hash::new(*generated.last().expect("the generator saw a chain"))
-        .expect("the generator's names are hashes");
-    let then = store
-        .read_dag_at(&BTreeSet::from([last]))
-        .expect("the chain reads at the generator's tip");
-    let ours: Vec<&str> = then.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(ours, generated, "read_dag's order is the generator's");
-    assert!(read.len() >= then.len(), "the chain only grows");
-
-    // One head, no refs/, and `read_chain` agrees with `read_dag` on it — the
-    // chain is the DAG in which every object has one parent.
-    assert_eq!(store.tips().len(), 1);
-    let chain = store.read_chain().expect("the live store is a chain");
-    assert_eq!(chain.len(), read.len());
-    assert!(chain
-        .iter()
-        .zip(read.iter())
-        .all(|(sealed, (_, object))| sealed == object));
 }

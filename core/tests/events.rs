@@ -1,148 +1,142 @@
-//! The same 564 stored objects as `tests/literals.rs`, but through the CLOSED
+//! The same stored objects as `tests/literals.rs`, but through the CLOSED
 //! vocabulary of §4 and as TYPED events: parsed into an `Envelope`, printed
 //! back, and named by `seal_hash`.
 //!
 //! `tests/literals.rs` proves the grammar round-trips; this proves the KINDS
-//! do — that every field the reference declared is read, validated by its
-//! `mk_*`, and printed back in declared order. A shipped field this side
-//! forgot would show up here as a print that is one field short of its name.
+//! do — that every field the spec declares is read, validated by its `mk_*`,
+//! and printed back in declared order. A shipped field this side forgot would
+//! show up here as a print that is one field short of its name.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+mod common;
+
+use std::collections::BTreeSet;
 
 use prodrome::event::{
-    binds, canonical_envelope, parents_of, parse_envelope, seal_hash, Envelope, TodoEvent,
+    binds, canonical_envelope, parents_of, parse_envelope, seal_hash, Actor, Envelope, TodoEvent,
     EVENT_SIGNATURES,
 };
 use prodrome::fpl::TERM_SIGNATURES;
-use serde::Deserialize;
 
-#[derive(Deserialize)]
-struct Vectors {
-    objects: Vec<Object>,
-}
-
-#[derive(Deserialize)]
-struct Object {
-    name: String,
-    text: String,
-}
-
-fn objects() -> Vec<Object> {
-    let path: PathBuf = [
-        env!("CARGO_MANIFEST_DIR"),
-        "..",
-        "conformance",
-        "literals.json",
-    ]
-    .iter()
-    .collect();
-    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let vectors: Vectors =
-        serde_json::from_str(&raw).expect("literals.json is the generator's shape");
-    vectors.objects
+fn untrusted() -> BTreeSet<Actor> {
+    // The roster is the DEPLOYMENT's, never the engine's (§5): it arrives as a
+    // parameter, and this is one.
+    [Actor::new("triage").expect("valid")].into_iter().collect()
 }
 
 #[test]
 fn every_stored_object_is_a_typed_envelope_that_prints_back() {
-    let objects = objects();
-    assert!(objects.len() > 500, "the live chain, not a fragment");
-    for object in &objects {
-        let envelope =
-            parse_envelope(&object.text).unwrap_or_else(|e| panic!("object {}: {e}", object.name));
+    let corpus = common::corpus();
+    assert!(corpus.len() > 5, "a corpus, not a single object");
+    for (name, envelope) in &corpus {
+        let text = canonical_envelope(envelope);
+        let parsed =
+            parse_envelope(&text).unwrap_or_else(|e| panic!("object {}: {e}", name.as_str()));
+        assert_eq!(&parsed, envelope, "object {}", name.as_str());
+        assert_eq!(canonical_envelope(&parsed), text, "object {}", name.as_str());
         assert_eq!(
-            canonical_envelope(&envelope),
-            object.text,
-            "object {}",
-            object.name
-        );
-        assert_eq!(
-            seal_hash(&envelope).as_str(),
-            object.name,
+            seal_hash(&parsed).as_str(),
+            name.as_str(),
             "seal_hash names the object"
         );
     }
 }
 
-/// The chain this box holds is the DAG in which every object has exactly one
-/// parent — genesis alone has none.
+/// §3's envelope shapes, over the corpus: exactly one object rests on nothing,
+/// a `Sealed` has one parent, and a `Woven` has two or more and may carry no
+/// event at all — a merge is structure.
 #[test]
-fn the_live_chain_is_a_chain() {
-    let objects = objects();
-    let mut genesis = 0;
-    for object in &objects {
-        let envelope = parse_envelope(&object.text).expect("parses");
-        match parents_of(&envelope).len() {
-            0 => genesis += 1,
-            1 => {}
-            more => panic!("object {} has {more} parents", object.name),
-        }
-        assert!(matches!(envelope, Envelope::Sealed { .. }));
-    }
-    assert_eq!(genesis, 1, "exactly one object rests on nothing");
-}
-
-/// Every kind the live chain uses, and the trust rule over it. The counts are
-/// evidence about the corpus, not a target: what is pinned is that each kind
-/// present parses as itself.
-#[test]
-fn the_live_chain_uses_the_closed_vocabulary_and_nothing_else() {
-    let untrusted: BTreeSet<prodrome::event::Actor> = ["triage"]
-        .into_iter()
-        .map(|actor| prodrome::event::Actor::new(actor).expect("valid"))
-        .collect();
-    let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut provisional = 0;
-    let mut priced = 0;
-    for object in objects() {
-        let envelope = parse_envelope(&object.text).expect("parses");
-        if let Some(event) = envelope.event() {
-            *kinds.entry(event.kind_name()).or_default() += 1;
-            if !binds(event, &untrusted) {
-                provisional += 1;
-            }
-            // Since the seam closed, a stored spec IS an `fpl::Term`: it has
-            // been through §7's smart constructors, so it can be evaluated.
-            // The placeholder it replaced could only promise it printed back.
-            if let TodoEvent::Authored(authored) = event {
-                if let Some(spec) = &authored.spec {
-                    let now = prodrome::fpl::instant_of(authored.at);
-                    let value = prodrome::fpl::fulfillment(spec, now, &prodrome::fpl::Env::new());
-                    assert!((0.0..=1.0).contains(&value), "todo {:?}", authored.todo);
-                    priced += 1;
+fn the_corpus_holds_every_envelope_shape() {
+    let (mut genesis, mut sealed, mut merges) = (0, 0, 0);
+    for (name, envelope) in common::corpus() {
+        let parents = parents_of(&envelope).len();
+        match &envelope {
+            Envelope::Sealed { .. } => {
+                assert!(parents <= 1, "object {} is a Sealed", name.as_str());
+                if parents == 0 {
+                    genesis += 1;
+                } else {
+                    sealed += 1;
                 }
             }
-            // An `Authored` record binds whatever its actor is (§5).
-            if matches!(event, TodoEvent::Authored(_)) {
-                assert!(binds(event, &untrusted));
+            Envelope::Woven { .. } => {
+                assert!(parents >= 2, "a Woven names at least two parents");
+                if envelope.event().is_none() {
+                    merges += 1;
+                }
             }
         }
     }
-    assert!(
-        kinds.contains_key("Authored"),
-        "the chain holds content since 0.10"
-    );
-    for kind in kinds.keys() {
+    assert_eq!(genesis, 1, "exactly one object rests on nothing");
+    assert!(sealed > 1 && merges > 0);
+}
+
+/// Every kind the corpus uses is a kind SPEC §4 declares, the trust rule (§5)
+/// reads each one, and every spec a stored event carries EVALUATES — not just
+/// prints back, which is what the closed seam between §4 and §7 buys.
+#[test]
+fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
+    let untrusted = untrusted();
+    let mut kinds: BTreeSet<&str> = BTreeSet::new();
+    let (mut provisional, mut priced) = (0, 0);
+    for (_, envelope) in common::corpus() {
+        let Some(event) = envelope.event() else {
+            continue;
+        };
+        kinds.insert(event.kind_name());
+        if !binds(event, &untrusted) {
+            provisional += 1;
+        }
+        if let TodoEvent::Authored(authored) = event {
+            // An `Authored` record binds whatever its actor is (§5).
+            assert!(binds(event, &untrusted));
+            if let Some(spec) = &authored.spec {
+                let now = prodrome::fpl::instant_of(authored.at);
+                let value = prodrome::fpl::fulfillment(spec, now, &prodrome::fpl::Env::new());
+                assert!((0.0..=1.0).contains(&value), "todo {:?}", authored.todo);
+                priced += 1;
+            }
+        }
+    }
+    for kind in &kinds {
         assert!(
             EVENT_SIGNATURES.iter().any(|(name, _)| name == kind),
             "{kind} is outside SPEC §4"
         );
     }
-    // The corpus does hold provisional events; a count of zero would mean the
-    // trust rule was never exercised by this test.
-    assert!(
-        provisional > 0,
-        "the live chain holds triage-actor lifecycle events"
-    );
-    assert!(
-        priced > 0,
-        "the live chain holds specs, and every one of them evaluates"
-    );
+    // Every kind §4 declares an EVENT for is exercised; the records
+    // (`Source`, `Note`, `SubTodo`) and the envelopes ride inside them.
+    for kind in [
+        "Created",
+        "Completed",
+        "Cancelled",
+        "Reopened",
+        "SpecRevised",
+        "Authored",
+    ] {
+        assert!(kinds.contains(kind), "the corpus is missing a {kind}");
+    }
+    assert!(provisional > 0, "the corpus exercises the trust rule");
+    assert!(priced > 0, "the corpus holds specs, and every one evaluates");
+}
+
+/// §4 is a CLOSED vocabulary, so a name outside it is a refusal at the read
+/// boundary — where `literal::Open` would have taken the same text.
+#[test]
+fn a_name_outside_spec_4_is_refused_at_the_envelope() {
+    for text in [
+        "Sealed(prev='', event=Invented(todo='t', at=datetime(2026, 1, 1, 0, 0, 0)))",
+        "Created(todo='t', at=datetime(2026, 1, 1, 0, 0, 0), actor='bassel', text='x', note='')",
+        "Sealed(prev='', event=Completed(todo='t', at=datetime(2026, 1, 1, 0, 0, 0)))",
+        "Sealed(prev='not a hash', event=None)",
+        "Woven(parents=('a',), event=None)",
+        "None",
+    ] {
+        assert!(parse_envelope(text).is_err(), "must refuse {text:?}");
+    }
 }
 
 /// §2: "The names admitted are the closed vocabulary of §4 and §7 plus
-/// `datetime`/`timedelta`." The reference pins the set in
-/// `tests/test_contracts.py`; this is the same pin.
+/// `datetime`/`timedelta`." This is the pin on that set.
 #[test]
 fn the_vocabulary_is_exactly_the_spec_s() {
     let mut names: Vec<&str> = TERM_SIGNATURES
