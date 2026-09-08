@@ -1,9 +1,19 @@
 [package]
 name = "prodrome-wasm"
-description = "Prodrome in the browser: the one evaluator, compiled to WebAssembly (see ../SPEC.md)"
+description = "The Prodrome in the browser: prodrome-core compiled to WebAssembly, one evaluator for every host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "../README.md"
+keywords = ["wasm", "webassembly", "event-sourcing", "database", "temporal"]
+categories = ["wasm", "database-implementations"]
+# NOT for crates.io: this crate is a BOUNDARY, not a library — its product is
+# the `.wasm` and the JS glue `nix build .#prodrome-wasm` emits, and a source
+# package of it on a registry would be a thing nobody can `cargo add`. It goes
+# public when there is a published artefact for it to be the source of.
+publish = false
 
 [lib]
 name = "prodrome_wasm"

@@ -1,9 +1,14 @@
 [package]
 name = "prodrome-core"
-description = "Prodrome: content-addressed event DAG, causal folds, and FPL — the one evaluator (see ../SPEC.md)"
+description = "A temporal, content-addressed event database with fulfillment-priority semantics: plain files, causal folds, and FPL"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "../README.md"
+keywords = ["event-sourcing", "content-addressed", "database", "temporal", "fuzzy-logic"]
+categories = ["database-implementations", "data-structures", "date-and-time"]
 
 [lib]
 name = "prodrome"
