@@ -1,8 +1,8 @@
 //! §6.7 — the entry: one todo as the folds see it at a moment.
 //!
 //! See ../../SPEC.md; the composition this module names is the one
-//! `view.py::entries_of` performed while the application was Python,
-//! and `../../conformance/view.json` is that reference's answers.
+//! the reference's `entries_of` performed before this module existed; its
+//! answers were the differential this module was built against.
 //!
 //! THIS IS NOT A FIFTH FOLD. Every number and every name below comes out of
 //! §6's folds and §7's evaluator, called in one order and written down:

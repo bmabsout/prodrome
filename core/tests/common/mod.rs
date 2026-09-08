@@ -94,13 +94,13 @@ pub fn agrees(path: &str, mine: &Value, theirs: &Value) -> Result<(), String> {
 
 // --- the synthetic corpus ----------------------------------------------------
 //
-// The suites that used to read `conformance/literals.json` read this instead:
-// a chain of stored objects built here, through the crate's own smart
-// constructors, covering every kind of §4 and every production of §2 that a
-// stored object can carry. It is authored rather than generated because the
-// point is COVERAGE OF THE GRAMMAR — the quoting rules, the microsecond
-// argument, the empty tuple, an absent optional field — and a random draw
-// covers what it happens to draw.
+// The suites that used to read a vector file of stored objects read this
+// instead: a chain of stored objects built here, through the crate's own
+// smart constructors, covering every kind of §4 and every production of §2
+// that a stored object can carry. It is authored rather than generated
+// because the point is COVERAGE OF THE GRAMMAR — the quoting rules, the
+// microsecond argument, the empty tuple, an absent optional field — and a
+// random draw covers what it happens to draw.
 //
 // `tests/literals.rs` reads these prints through the OPEN vocabulary (§2 and
 // nothing else); `tests/events.rs` reads the same prints through the CLOSED

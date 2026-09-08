@@ -247,8 +247,8 @@ pub fn json_content(content: &BTreeMap<TodoId, Authored>) -> Value {
     )
 }
 
-/// One §6.7 entry, in the shape `prodrome/conformance/view.json` holds and the
-/// PyO3 binding's dict carries — one row, one reading, on both hosts.
+/// One §6.7 entry, in the shape the reference's row carried and the
+/// wire still carries — one row, one reading, on every host.
 ///
 /// `spec` is the todo's §6.4 function as its canonical PRINT and not as
 /// `to_json`, which is the exception to this file's "terms travel as JSON"
