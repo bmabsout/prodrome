@@ -2,7 +2,7 @@
 //! values.
 //!
 //! See ../../SPEC.md; implemented against ../../conformance/dag.json and
-//! ported from `suzatary/prodrome/registers.py`.
+//! ported from the reference's `registers.py`.
 //!
 //! Every fold in [`crate::fold`] is a last-writer-wins map keyed by todo, and
 //! over a chain "last" is well defined. Over a DAG two writes to one register

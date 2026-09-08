@@ -64,7 +64,7 @@ fn conformance(name: &str) -> PathBuf {
 }
 
 fn untrusted() -> Untrusted {
-    // `suzatary/instance.py`: UNTRUSTED = frozenset({"triage"}), which is what
+    // The deployment's roster was `{"triage"}`, which is what
     // the generator folded these vectors with. The roster arrives as a
     // parameter here exactly as it does there.
     Untrusted::of([Actor::new("triage").expect("valid")])

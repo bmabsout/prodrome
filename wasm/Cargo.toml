@@ -21,7 +21,8 @@ path = "src/lib.rs"
 # A cdylib and nothing else: this crate is a BOUNDARY, not a library anything
 # links against. `rlib` beside it would let the workspace's own tests reach in
 # and pin the wire shapes from Rust, which is the wrong place for them — the
-# shapes exist for a JavaScript reader and web/test/wasm.test.ts is where a
+# shapes exist for a JavaScript reader, and a test that drives the built
+# module under node is where a
 # drift must fail.
 crate-type = ["cdylib"]
 

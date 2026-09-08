@@ -1,6 +1,6 @@
 //! §4 — the events, and §3's envelopes and hashing.
 //!
-//! The closed kinds of `suzatary/prodrome/events.py`, as Rust types. The
+//! The closed kinds of the reference's `events.py`, as Rust types. The
 //! schema-evolution rule is the reference's, word for word: the field set of a
 //! SHIPPED kind is frozen forever, because a new field changes what the
 //! canonical printer emits and would orphan every stored object from its hash.

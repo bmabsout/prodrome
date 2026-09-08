@@ -10,7 +10,7 @@
 //!
 //! THIN ON PURPOSE. Every function here is: parse the arguments, call one
 //! thing in `prodrome`, print the answer. No arithmetic, no policy, and no
-//! shape that `suzatary/view.py` does not already put on the wire. Anything
+//! shape that `view.py` does not already put on the wire. Anything
 //! that needs a decision belongs in the core, where the conformance vectors
 //! can see it.
 //!
@@ -47,7 +47,7 @@
 //! its name and its bytes; they touch no store, because a browser has none.
 //! Every rule about what an object may be is still the core's `mk_*`
 //! constructors, and the box rehashes and re-verifies everything it is given
-//! anyway (`suzatary_core::sync`). What the browser gains is the ability to
+//! anyway on the way in. What the browser gains is the ability to
 //! name a value the same way the box would — which is the one thing a replica
 //! cannot do without §2's printer, and the one thing a second printer in
 //! TypeScript would have got subtly wrong.
@@ -137,7 +137,7 @@ impl Row {
     }
 
     /// What the envelope SAYS about itself — the same four fields
-    /// `view.json_link` puts on the wire, read here out of the object's own
+    /// `json_link` puts on the wire, read here out of the object's own
     /// bytes rather than out of the server's summary of them. A merge is
     /// structure and not a fact about a todo, so its `todo`, `actor` and `at`
     /// stay "" and its `kind` is the envelope's own name; nothing is invented
@@ -191,7 +191,7 @@ impl Row {
 /// 5. nothing sent is left off that walk.
 ///
 /// Each finding's wording is the store's where the store has one and
-/// `web/src/verify.ts`'s where the page already had one, so the sentence a
+/// a page's own where the page already had one, so the sentence a
 /// reader gets does not depend on which checker produced it — only the line
 /// that says which one ran does.
 ///
@@ -388,7 +388,7 @@ impl Read {
     }
 
     /// Per todo, its events in causal order with the object that carries each —
-    /// `view.json_entry`'s `stream` and `view.json_series`'s `markers`, from
+    /// `json_entry`'s `stream` and `json_series`'s `markers`, from
     /// one pass.
     fn streams(&self) -> BTreeMap<String, Vec<(Hash, TodoEvent)>> {
         let mut out: BTreeMap<String, Vec<(Hash, TodoEvent)>> = BTreeMap::new();
@@ -431,12 +431,12 @@ impl Read {
 /// while claiming to fold the same one.
 ///
 /// The answer is the five folds, each keyed by todo id and shaped the way
-/// `suzatary/view.py` already puts it on the wire:
+/// `view.py` already puts it on the wire:
 ///
 /// - `env`      — §6.1, as `{kind, at}` — §7's environment shape, so it is
 ///                also a legal argument to [`fulfillment`] and [`explain`]
 /// - `specs`    — §6.2, each an `fpl.to_json` term
-/// - `content`  — §6.3, each a `view.json_authored` MINUS `rich`
+/// - `content`  — §6.3, each the reference's `json_authored` MINUS `rich`
 /// - `flatten`  — §6.4, each an `fpl.to_json` term: the todo's fulfillment
 ///                FUNCTION, which is what a `value` and a series are read off
 /// - `history`  — §6.5, and the argument [`series_knots`] wants, so that a
@@ -564,10 +564,10 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
 /// (ISO, or `null` for everything the chain holds), under `untrusted`.
 ///
 /// THE COMPOSITION IS THE CORE'S. Until this existed the tab performed it
-/// itself — two [`fold`]s, a [`registers`] call, and `web/src/core.ts` deciding
+/// itself — two [`fold`]s, a [`registers`] call, and the page's TypeScript deciding
 /// what a claim is, when an entry is provisional, and which environment prices
-/// it. That was a second reading of §6.7 in a second language (ARCHITECTURE
-/// §4), which is exactly what this crate exists to prevent, and it is gone.
+/// it. That was a second reading of §6.7 in a second language,
+/// which is exactly what this crate exists to prevent, and it is gone.
 ///
 /// `records` is the lookup an entry's `content` NAME implies: an entry carries
 /// the name of the winning content object and never the record, and a browser
@@ -575,7 +575,7 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
 /// is here. So the answer carries the `Authored` records the rows actually
 /// name, and nothing else: it is the caller's own lookup done on the caller's
 /// behalf, not the Prodrome deciding what a body is for. The shape is
-/// [`wire::json_authored`], which is `view.json_authored` MINUS `rich`.
+/// [`wire::json_authored`], which is the reference's `json_authored` MINUS `rich`.
 #[wasm_bindgen]
 pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
     let read = Read::of(objects).map_err(refused)?;

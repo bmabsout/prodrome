@@ -1,7 +1,7 @@
 //! The JSON shapes that cross the boundary, and nothing else.
 //!
 //! `lib.rs` is the six exported functions; this is what their arguments and
-//! their answers LOOK like, written down once so that `web/src/api.ts`'s
+//! their answers LOOK like, written down once so that a page's own API module's
 //! mirror has a single thing to mirror. Everything is JSON text: a string in,
 //! a string out. That is deliberate — `serde-wasm-bindgen` would let a JS
 //! object cross directly and cost a second serialisation format to keep in
@@ -206,7 +206,7 @@ fn json_source(source: &Source) -> Value {
     })
 }
 
-/// `view.json_authored` MINUS `rich`.
+/// The reference's `json_authored` MINUS `rich`.
 ///
 /// `rich` is typst's HTML, and typst is a compiler this core does not carry
 /// (nor should: `markup.suspicious` and the trust gate around it are the
@@ -281,7 +281,7 @@ pub fn json_entry(entry: &Entry) -> Value {
     })
 }
 
-/// One event's identity on a todo's timeline — `view.json_series`'s marker,
+/// One event's identity on a todo's timeline — `json_series`'s marker,
 /// and what a locally folded entry's `stream` is a list of.
 pub fn json_marker(name: &Hash, event: &TodoEvent) -> Value {
     json!({

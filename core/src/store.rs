@@ -169,13 +169,13 @@ impl EventStore {
 
     /// AN EXCLUSIVE `flock` ON `root/.lock`, HELD FOR ONE WRITE.
     ///
-    /// The same file and the same operation the Python writer takes
-    /// (`suzatary/prodrome/store.py::_flock`), and that is the whole point:
-    /// until stage 4 of `docs/ARCHITECTURE.md` the Python CLI and the MCP
-    /// server still append to the same `events/` this does. Two writers that
-    /// lock different files are two writers that do not lock — an append is
-    /// read-the-heads, write-the-object, move-HEAD, and two of those
-    /// interleaved fork the chain.
+    /// The same file and the same operation the earlier Python writer took
+    /// (the reference's `store.py::_flock`), and that is the whole point: a
+    /// store may be appended to by more than one program, and a second writer
+    /// is not always this crate. Two writers that lock different files are two
+    /// writers that do not lock — an append is read-the-heads,
+    /// write-the-object, move-HEAD, and two of those interleaved fork the
+    /// chain.
     ///
     /// `flock` is per open file description, so this is advisory BETWEEN
     /// PROCESSES and says nothing between the threads of one. An application
@@ -1183,7 +1183,7 @@ mod tests {
     /// What is checked is that a SECOND holder of an exclusive `flock` on that
     /// exact path cannot get it while an append would hold one, and that the
     /// append is possible once that holder lets go — which is what serialises
-    /// this writer against `suzatary/prodrome/store.py::_flock` across
+    /// this writer against the reference's `store.py::_flock` across
     /// processes. The file NAME is the interoperable part: two writers locking
     /// two different files are two writers that do not lock.
     #[cfg(unix)]

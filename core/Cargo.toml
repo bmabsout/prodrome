@@ -25,9 +25,9 @@ thiserror = "2"
 unicode-general-category = "1"
 
 # THE STORE'S LOCK, ON UNIX ONLY. `EventStore::append` takes an exclusive
-# `flock` on `root/.lock` — the same file and the same operation the Python
-# writer takes (`suzatary/prodrome/store.py::_flock`), because both append to
-# one `events/` until stage 4 of `docs/ARCHITECTURE.md`. Target-gated because
+# `flock` on `root/.lock` — the same file and the same operation the earlier
+# Python writer took (the reference's `store.py::_flock`), so two writers of
+# one store serialise whatever language each is in. Target-gated because
 # `prodrome-wasm` compiles this crate for `wasm32-unknown-unknown`, which has no
 # filesystem to lock and whose `errno` will not build.
 [target.'cfg(unix)'.dependencies]

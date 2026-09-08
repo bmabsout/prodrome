@@ -1,7 +1,7 @@
 //! §7 breakpoints and the series a graph draws.
 //!
 //! See ../../SPEC.md. Implemented against ../../conformance/series.json, and
-//! ported from the reference `suzatary/view.py` (`Breaks`, `_breakpoints`,
+//! ported from the reference `view.py` (`Breaks`, `_breakpoints`,
 //! `_operator_breaks`, `_constant`, `series_of`).
 //!
 //! The question this module answers is where a term stops being a straight
