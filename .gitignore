@@ -1,0 +1,4 @@
+# Cargo's build directory, and Nix's symlinks to the store.
+target/
+result
+result-*
