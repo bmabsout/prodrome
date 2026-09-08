@@ -1357,6 +1357,25 @@ mod tests {
             "None None",
             "b'bytes'",
             "1j",
+            // The vectors `tests/test_literals.py`'s adversarial suite drew,
+            // kept when that suite was deleted with the Python (stage 6). They
+            // are refused here BY CONSTRUCTION rather than by a rule — this is
+            // a closed-vocabulary grammar and not a walker over somebody
+            // else's AST, so there is no `__import__` to reach and no
+            // attribute to walk. That is a stronger property than the Python
+            // had; it is pinned anyway, because a reader deciding whether the
+            // parser is a security boundary should be able to see the attacks
+            // it was written against rather than infer them from a design.
+            "__import__('os').system('id')",
+            "Pair(1, 2).__class__",
+            "Pair(1, 2).__class__.__bases__",
+            "f'{1}'",
+            "Pair(**{'left': 1})",
+            "(x := 1)",
+            "Pair(1, 2); Pair(3, 4)",
+            "open('/etc/passwd')",
+            "eval('1')",
+            "Pair(1, 2) if True else None",
         ] {
             assert!(parse_literal(text, &TABLE).is_err(), "must refuse {text:?}");
         }
