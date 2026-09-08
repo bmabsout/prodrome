@@ -1,7 +1,7 @@
 //! §2 — values and the literal grammar: the value model, its canonical
 //! printer, and the strict parser that is the only door into it.
 //!
-//! The doctrine is `suzatary/prodrome/literals.py`'s, unchanged: the whitelist
+//! The doctrine is the reference's `literals.py`'s, unchanged: the whitelist
 //! IS the grammar, and a parser that accepts more than the grammar is not
 //! permissive, it is incorrect. This module is deliberately IGNORANT of what
 //! the constructors MEAN — it knows names, field order and arity through a
@@ -451,7 +451,7 @@ impl Vocabulary for Table {
 
 /// Admits any constructor name in keyword form. NOT a read path: it exists so
 /// a canonical print can be round-tripped without the closed vocabulary
-/// (conformance, `suzatary`-side tooling), and it refuses positional arguments
+/// (conformance, tooling outside this crate), and it refuses positional arguments
 /// precisely because it does not know any field order.
 #[derive(Debug, Clone, Copy)]
 pub struct Open;

@@ -8,7 +8,7 @@
 //! are the folds with the conflicts named exactly, and the entry (§6.7) is the
 //! composition of those folds and nothing else.
 //!
-//! The generators mirror `scripts/conformance.py`'s `a_log`/`an_event` — the
+//! The generators mirror the reference generator's `a_log`/`an_event` — the
 //! same three todos, the same seven kinds in the same proportions, the same
 //! two actors with one of them untrusted — so a failure here is a failure the
 //! vector generator could have produced, and a fix is checkable against it.
@@ -40,7 +40,7 @@ use prodrome::view;
 use proptest::prelude::*;
 
 const TODOS: [&str; 3] = ["alpha", "beta", "gamma"];
-/// `scripts/conformance.py`'s actors, in its proportions: two writes trusted
+/// The reference generator's actors, in its proportions: two writes trusted
 /// for every one that is not.
 const ACTORS: [&str; 3] = ["bassel", "bassel", "triage"];
 /// The generator's window: sixty days from the origin.
@@ -136,7 +136,7 @@ impl Draft {
     }
 }
 
-/// A spec the way `scripts/conformance.py` draws one, shallow: the shapes that
+/// A spec the way the reference's generator draws one, shallow: the shapes that
 /// make `flatten`'s normal form do work — a schedule to splice, a conjunction
 /// to push under one — without the depth `fpl`'s own laws already cover.
 fn a_spec() -> impl Strategy<Value = Term> {
@@ -449,7 +449,7 @@ proptest! {
 /// the event that records the OTHER half for the first time re-heads the curve
 /// at every earlier moment, once each way below.
 ///
-/// `scripts/conformance.py`'s generator draws exactly this — an `Authored`
+/// The reference's generator draws exactly this — an `Authored`
 /// carries a spec 85% of the time and subtodos some of the time, and a
 /// `SpecRevised` prices a todo that has no content record at all — where
 /// `tests/test_laws.py`'s generator never does (its authored records always
@@ -457,7 +457,7 @@ proptest! {
 /// law never meets it.
 ///
 /// This is the REFERENCE's behaviour and not a porting error: every number and
-/// print below was read off `suzatary/prodrome/events.py` on these exact
+/// print below was read off the reference's `events.py` on these exact
 /// inputs. Pinning it keeps the exception a decision instead of a surprise.
 #[test]
 fn a_late_first_half_of_the_head_re_heads_the_curve() {

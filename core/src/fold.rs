@@ -1,7 +1,7 @@
 //! §6.1–6.5 — the causal folds: belief at a moment, as a query over the log.
 //!
 //! See ../../SPEC.md; implemented against ../../conformance/folds.json and
-//! ported from `suzatary/prodrome/events.py`.
+//! ported from the reference's `events.py`.
 //!
 //! ORDER IS CAUSAL, TIME IS DATA (§1). Every fold here reads
 //! [`chronological`] — the events in the order the chain holds them, with the

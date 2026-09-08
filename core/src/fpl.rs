@@ -1,7 +1,7 @@
 //! §7 — FPL: the term language, one evaluator.
 //!
 //! See ../../SPEC.md. Implemented against ../../conformance/fpl.json, and
-//! ported from the reference `suzatary/fpl.py` — the arithmetic ORDER is part
+//! ported from the reference `fpl.py` — the arithmetic ORDER is part
 //! of the port, because the vectors are the reference's floats.
 //!
 //! Types first (§1, §8). `TermF<A>` is ONE LAYER of the term functor with its

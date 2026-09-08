@@ -1,7 +1,7 @@
 //! §6.7 — the entry: one todo as the folds see it at a moment.
 //!
 //! See ../../SPEC.md; the composition this module names is the one
-//! `suzatary/view.py::entries_of` performed while the application was Python,
+//! `view.py::entries_of` performed while the application was Python,
 //! and `../../conformance/view.json` is that reference's answers.
 //!
 //! THIS IS NOT A FIFTH FOLD. Every number and every name below comes out of
@@ -19,10 +19,10 @@
 //!
 //! It lives in the Prodrome because every word of it is the Prodrome's own —
 //! there is no notion here of a page, a briefing or a phone — and because the
-//! server and the browser's offline fold must be the SAME reading of it
-//! (`docs/ARCHITECTURE.md` §4). A composition written twice is two
-//! compositions, and two compositions drift; the law in §9 says this one
-//! equals the folds it names, on random DAGs.
+//! server and a browser's offline fold must be the SAME reading of
+//! it. A composition written twice is two compositions, and two
+//! compositions drift; the law in §9 says this one equals the folds it
+//! names, on random DAGs.
 //!
 //! WHY TWO ENVIRONMENTS. The CONFIRMED one is what prices and what a reader is
 //! told; the LOOSE one trusts every writer and exists only to name what an
@@ -43,7 +43,7 @@
 //!
 //! AN ENTRY CARRIES A NAME, NOT A RECORD. `content` is the [`Hash`] of the
 //! object whose write the content register shows; a consumer holding the
-//! objects looks it up (ARCHITECTURE §4). The Prodrome does not know what a
+//! objects looks it up. The Prodrome does not know what a
 //! body is for, and a whole todo body reprinted per entry per request was
 //! measured at 1.7 ms of a 12 ms fold (`registers::chosen_of`).
 //!
@@ -101,7 +101,7 @@ pub enum Provisional {
 
 /// Whether the chain's answer for this todo is the trusted fold's, whole.
 ///
-/// A SUM and not a bool beside a string (ARCHITECTURE §3): a consumer that
+/// A SUM and not a bool beside a string: a consumer that
 /// wants one flag asks [`Standing::is_provisional`], and a consumer that wants
 /// to say WHICH asymmetry it is looking at can, without a second field to keep
 /// in step.
@@ -183,7 +183,7 @@ impl Entry {
     }
 
     /// The confirmed binding's instant as CPython's `isoformat(" ")` — the
-    /// spelling `view.json_entry` shipped — and `""` for an open todo, which
+    /// spelling `json_entry` shipped — and `""` for an open todo, which
     /// is absence and not an instant.
     pub fn at(&self) -> String {
         self.outcome.map_or_else(String::new, |binding| {
