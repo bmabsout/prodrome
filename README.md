@@ -1,226 +1,251 @@
 # prodrome
 
-The core, in Rust: one evaluator for every host — the box, the browser and the
-phone. Since 2026-09-06 that sentence is literal rather than aspirational, and
-since 2026-09-08 there is no other host left: the Python that held the term and
-event RECORDS is gone (`docs/ARCHITECTURE.md` §8.6), and with it the PyO3
-binding that used to live in `py/`. There is one implementation.
+**A temporal, content-addressed event database with fulfillment-priority
+semantics: a local database of plain files, amenable to a git backing, with no
+git dependency.**
 
-`SPEC.md` is the contract; the laws in SPEC §9 are the tests.
+Everything a Prodrome store holds is an *object*: one file, holding one
+expression of a tiny printable grammar, named by the SHA-256 of exactly those
+bytes. An object names its parents, so a store's history is a DAG rather than a
+log, and a reader re-hashes the bytes before it parses them — tamper-evidence
+on read rather than a promise about who had write access. Order is CAUSAL: an
+object comes after the objects it descends from and is otherwise incomparable,
+and the `at` a writer stamped on an event is *data*, read by the folds and
+never by the merge. No clock decides who wins, because a clock that decides is
+a clock every replica has to agree with.
 
-⚠️ **`conformance/` IS FROZEN.** Those vectors are what the Python reference
-produced WHILE IT WAS STILL A REFERENCE — prints and hashes exactly,
-linearisations and frontiers exactly, fulfillments to 1e-9. They stopped being
-regenerable on 2026-09-06, when the evaluator was deleted and the generator
-started reading this crate through the binding: from that day a regeneration
-RE-STATED the vectors rather than re-deriving them, which is a comparison
-nobody made. `scripts/conformance.py` went with the Python on 2026-09-08, so
-there is no generator at all now, which is the honest end of that story.
+What you get out of a store is a *fold*: the events in causal order, up to a
+moment you name, turned into what is believed at that moment — which todos are
+resolved and when, which specification is in force, which record is current.
+The same DAG read as *registers* answers the question a fold cannot: where two
+replicas wrote concurrently and nothing since descends from both, the register
+holds a frontier rather than a value, and a conflict is something the reader is
+SHOWN instead of something a merge rule quietly resolved. Both readings agree
+wherever there is nothing to disagree about — that is a law, not a convention
+(SPEC §9.6) — and a trust rule sits over them: an actor the deployment does not
+trust can *claim* that a todo is finished, and the claim is stored, shown and
+never folded.
 
-What that means for a change here: **these files are evidence, not output.** A
-diff in one is not a vector to refresh — it is this crate disagreeing with the
-last independent reading of the spec, and the question it asks is which of the
-two is wrong. Adding a NEW vector by hand is fine and says so in its commit;
-rewriting an old one to make a test pass is deleting the evidence the test was
-for.
+The third layer is FPL, a small fuzzy temporal logic in which a todo's spec is
+a function of time into `[0, 1]` — a deadline that decays, a conjunction that
+is only as good as its weakest member (a power mean, so a low member dominates
+without a hard `min`), a window sampled over the days ahead, a term anchored to
+another todo's completion. Evaluating it at an instant, against the environment
+the fold produced, is what makes a *fulfillment*: a number that says how well a
+demand is being met right now, and whose complement is urgency. It is one
+evaluator — every consumer reads numbers this crate produced — and a decorated
+evaluation (`explain`) carries the same shape with a value at every node, so an
+explanation is an annotation of the computation rather than a second reading of
+it. Replicas exchange objects, not deltas: `adopt` takes another store's bytes,
+re-verifies them, and either fast-forwards or grows a second head that a
+`Woven` merge settles later.
 
-    nix develop .#rust -c cargo test --manifest-path prodrome/Cargo.toml
-    nix flake check          # the same suites, plus clippy, from the vendored lock
+## Quick start
 
-## The browser runs it (`wasm/`)
+```rust
+use std::collections::BTreeSet;
 
-`prodrome-wasm` is `core/` compiled to WebAssembly and nothing else: eight
-functions that parse their arguments, call one thing in the core, and print the
-answer. No arithmetic, no policy, and no clock — every moment is an argument,
-because §1 forbids a clock in the core and a browser's is the least trustworthy
-in the system.
+use prodrome::event::{mk_created, mk_spec_revised, TodoId};
+use prodrome::fold::{env_at, evaluation_env, flatten, Untrusted};
+use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, mk_decay};
+use prodrome::literal::Datetime;
+use prodrome::registers::nodes_of;
+use prodrome::store::EventStore;
+use prodrome::view::entries;
 
-    nix build .#prodrome-wasm
+// A store is a directory. The second argument is the deployment's trust
+// policy (§5): the actors whose lifecycle events are claims, not bindings.
+let store = EventStore::new(&dir, BTreeSet::new());
 
-Which gives two glues over one `.wasm` (474,073 bytes; 187 KB gzipped):
-`$out/web/` for the app and `$out/nodejs/` for `scripts/web-test.sh`.
-`scripts/build-web.sh` copies the first beside the bundle from
-`$SUZATARY_PRODROME_WASM`, exactly as it copies uPlot — that script is a
-bundler and Nix is the build.
+// An event carries the instant its writer stamped on it. The store has no
+// clock: `at` is data, and nothing here reads the machine's.
+let at = Datetime::new(2026, 9, 8, 9, 0, 0, 0)?;
+store.append(mk_created("todo-1", at, "bassel", "publish the crate", "")?, None)?;
 
-| export           | asks                                                        |
-| ---------------- | ----------------------------------------------------------- |
+// A spec is an FPL term — what this todo is worth as a function of time.
+let deadline = instant_of(Datetime::new(2026, 9, 15, 17, 0, 0, 0)?);
+let spec = mk_decay(0.55, 0.05, deadline, delta_from_hours(72.0), None)?;
+store.append(mk_spec_revised("todo-1", at, "bassel", spec, "")?, None)?;
+
+// Read the DAG back: every object rehashed on the way in, in causal order.
+let objects = store.read_dag_named()?;
+assert_eq!(objects.len(), 2);
+assert!(store.verify().is_empty(), "no finding against this store");
+
+// Fold at an instant, and price what the fold believes.
+let now = Datetime::new(2026, 9, 14, 9, 0, 0, 0)?;
+let untrusted = Untrusted::none();
+let events = store.events()?;
+let env = env_at(&events, now, &untrusted);
+let functions = flatten(&events, now, &untrusted)?;
+let todo = TodoId::new("todo-1")?;
+let value = fulfillment(&functions[&todo], instant_of(now), &evaluation_env(&env));
+assert!((0.0..=1.0).contains(&value));
+
+// Or the whole composition at once: one row per todo the chain mentions,
+// each with its outcome, its function, its price and its conflicts (§6.7).
+let rows = entries(&nodes_of(&objects), now, &untrusted)?;
+assert_eq!(rows.len(), 1);
+assert_eq!(rows[0].state(), "open");
+assert_eq!(rows[0].value(), Some(value));
+```
+
+That block is `prodrome-core`'s crate documentation, so `cargo test` runs it:
+if a signature here drifts from the crate, the suite says so.
+
+The surface it names, module by module:
+
+| module      | what a caller reaches for |
+| ----------- | ------------------------- |
+| `store`     | `EventStore::new`, `append`, `merge`, `adopt` / `adopt_objects`, `load`, `read_dag` / `read_dag_named` / `read_dag_at`, `read_chain`, `events`, `tip` / `tips`, `ancestors`, `concurrent`, `verify`, and `linearise` over objects already in memory |
+| `event`     | `mk_created`, `mk_completed`, `mk_cancelled`, `mk_reopened`, `mk_spec_revised`, `mk_authored` and the records they hold; `mk_sealed` / `mk_woven`; `parse_envelope`, `canonical_envelope`, `seal_hash`, `parents_of`, `binds`; the identifier types `Hash`, `TodoId`, `Actor` |
+| `literal`   | `Datetime::new`, `parse_literal`, `print_literal`, the `Vocabulary` a parse is checked against (`Open`, `Table`), `ProdromeError` |
+| `fold`      | `env_at`, `specs_at`, `authored_at`, `flatten`, `history`, `evaluation_env`, `chronological`, `Untrusted` |
+| `registers` | `nodes_of`, `fold`, `extend`, `since`, `env_of` / `specs_of` / `content_of` / `chosen_of`, `conflicts_of` |
+| `fpl`       | `mk_flat`, `mk_decay`, `mk_curve`, `mk_conj`, `mk_offset`, `mk_gate`, `mk_shift`, `mk_within`, `mk_importance`, `mk_after`, `mk_offset_by`, `mk_piecewise`, `checklist`; `fulfillment`, `explained` / `explain`, `normalize`, `print_term` / `parse_term`, `to_json` / `from_json`, `instant_of` / `datetime_of` |
+| `breaks`    | `breakpoints`, `series_knots`, `constant` — the curve as knots, for a plot |
+| `view`      | `entries`, and the `Entry` it hands back (§6.7) |
+
+## The store on disk
+
+```
+<root>/
+  objects/<sha256>.py     one object, holding exactly its canonical print
+  HEAD                    the single tip
+  refs/<sha256>           one file per head, only while there is more than one
+  .lock                   an flock an append holds; not part of the data
+```
+
+Nothing is encoded, compressed or packed. A store is greppable, diffable and
+readable by any program that can read a text file, and an object's file name is
+a checksum of its contents, so corruption is detectable without a second copy.
+
+That shape is friendly to a git backing — objects are append-only and never
+rewritten, so a commit is always a fast-forward of files that only ever
+appeared — and it needs no git at all: **content addressing is the
+immutability, and replica sync is the distribution**. Backing a store with git
+is a backup habit somebody may adopt; it is not part of the design, and nothing
+in this crate shells out to git or requires it to be installed.
+
+`.py` is the file extension because an object's print is a Python-literal
+expression: a closed grammar of `None`/`True`/`False`, integers, floats printed
+by CPython's `repr` rules, strings quoted by CPython's rules, `datetime` and
+`timedelta`, tuples, and constructor calls with every field in declared keyword
+form (SPEC §2). Nothing evaluates it — the parser admits that grammar and
+nothing else, with no names, operators, comprehensions or attribute access to
+reach through — but the print is a text a human can read, and `python3 -c` can
+too.
+
+## The browser runs the same evaluator
+
+```console
+$ nix build .#prodrome-wasm
+```
+
+`wasm/` is `core/` compiled to WebAssembly: a dozen exports that parse their
+arguments, call one thing in the core, and print the answer — no arithmetic, no
+policy, and no clock, because every moment is an argument. The build is pure
+(dependencies vendored from `Cargo.lock`, nothing reaches the network) and
+gives two glues over one `.wasm`: `$out/web/` for a bundler and `$out/nodejs/`
+for a script, so the module a browser fetches is the module a node test can
+drive.
+
+| export           | asks                                                          |
+| ---------------- | ------------------------------------------------------------- |
 | `verify_objects` | §3: do these bytes hash to these names, and do they form one DAG under these heads |
-| `fold`           | §6.1–6.5: what does the chain believe at an instant           |
-| `registers`      | §6.6: which registers have more than one live write           |
-| `entries`        | §6.7: every todo as the folds see it — the composition, once  |
-| `fulfillment`    | §7: what is this term worth now                               |
-| `explain`        | §7: what is that number made of                               |
-| `series_knots`   | §7 knots: what is that term's curve over a window             |
-| `term_json`      | §2 → §7: a stored term's canonical print, as the JSON shape   |
+| `fold`           | §6.1–6.5: what does the chain believe at an instant            |
+| `registers`      | §6.6: which registers have more than one live write            |
+| `entries`        | §6.7: every todo as the folds see it — the composition, once   |
+| `fulfillment`    | §7: what is this term worth now                                |
+| `explain`        | §7: what is that number made of                                |
+| `series_knots`   | §7 knots: what is that term's curve over a window              |
+| `term_json`      | §2 → §7: a stored term's canonical print, as the JSON shape    |
+| `lifecycle`, `seal`, `merge_object` | §3–§4 from a replica: build a lifecycle event, seal it onto a parent, join two heads |
 
-JSON and strings at the boundary. `fold`'s answers are `suzatary/view.py`'s
-shapes, so what comes back is the wire the web app already speaks; `env` and
-`history` are §7's own shapes, so a fold's answer is a legal argument to
-`fulfillment` and `series_knots` with nothing rewritten in between — a
-translation step is where a second reading grows.
+## The conformance vectors
 
-### How it is built
+`conformance/*.json` are FROZEN. They are what an independent implementation —
+a Python reference, retired in 2026 — produced while it was still an
+independent reading of `SPEC.md`: prints and hashes exactly, linearisations and
+frontiers exactly, fulfillments to 1e-9. There is no generator any more, and
+that is deliberate: once the generator called this crate, a regeneration would
+have RE-STATED the vectors rather than re-derived them, which is a comparison
+nobody made.
 
-The wasm32 target comes from NIXPKGS: `rustc --print target-list` has
-wasm32-unknown-unknown and `$(rustc --print sysroot)/lib/rustlib/` carries its
-std, so there is no `rust-overlay` and no `fenix` input to keep in step. That
-rustc links wasm with the system `lld`, which the `.#rust` shell carries.
-Dependencies are vendored from `Cargo.lock` (`importCargoLock`), so the build
-is pure and reaches no network. `wasm-bindgen` is pinned on BOTH sides —
-`=0.2.127` in `wasm/Cargo.toml`, `wasm-bindgen-cli_0_2_127` in `flake.nix` —
-because the generator and the runtime negotiate over a schema version compiled
-into each. `[profile.wasm-release]` is the browser's build and nothing else's
-(`opt-level = "s"`, fat LTO, one codegen unit), and `wasm-opt -Os` runs over
-what bindgen emits.
+So these files are **evidence, not output**. A diff in one is not a vector to
+refresh; it is this crate disagreeing with the last independent reading of the
+spec, and the question it asks is which of the two is wrong. Adding a NEW
+vector by hand is fine, and says so in its commit message.
 
-### What the browser now does with it
+| file           | what it pins |
+| -------------- | ------------ |
+| `dag.json`     | 40 DAGs: each linearisation, tips, parents and `verify` finding |
+| `folds.json`   | 120 logs: `env` and `history_at` by kind and instant, `specs`, `content` and `flatten` by canonical print |
+| `fpl.json`     | 150 terms: prints and JSON byte-identical, 900 fulfillment samples, every `normalized` print and every `explain` tree |
+| `series.json`  | 60 windows, 1429 knots: instants and `exact` identical |
 
-- **Verifies the chain.** `#/chain`'s verdict is `verify_objects`, so the tab
-  is no longer a second implementation of §3. It rehashes every object AND
-  parses it as an envelope — which the old hand-written path could not, having
-  no parser — and reports the causal order `linearise` put them in. That path
-  (`web/src/verify.ts`, SubtleCrypto) survives as a labelled FALLBACK, and the
-  page names whichever one ran.
-- **Checks the graph.** `#/graph` folds the objects here and recomputes every
-  drawn knot: same instants, same `exact`, every value within §9.8's 1e-9. The
-  server's numbers, checked by the reader's own machine — one evaluator, run
-  twice.
-- **Folds offline.** With the objects cached (`web/src/objects.ts`, IndexedDB),
-  a browser with no network folds them itself instead of showing yesterday's
-  answer, and the banner says so: the numbers are this moment's, and what may
-  have moved is the chain.
+## The laws
 
-`web/test/wasm.test.ts` runs the same `.wasm` under node against the vectors —
-564 objects rehashed and parsed, 900 fulfillment samples to 1e-9, 1429 knots at
-the reference's instants exactly — because everything between the Rust and the
-tab (bindgen's glue, `wasm-opt`'s rewrite, the JSON shapes and their guards)
-is outside `cargo test`. `web/e2e/core.test.ts` then checks that a real browser
-gets hold of it at all, which is the one thing a silent fallback would hide.
+`SPEC.md` §9 is the contract's teeth, and each law is a test rather than a
+paragraph:
 
-## Status
+1. `print ∘ parse` is the identity on every stored object, and `hash(print)` is
+   its name — `core/tests/literals.rs`, `core/tests/events.rs`.
+2. **Prefix**: appending a later event changes no earlier moment's reading.
+3. Independent events commute; a uniform shift of every `at` changes no winner.
+4. `history.at(t) == env_at(t)`.
+5. `mk_piecewise` is a normal form (unit, join, idempotent, no adjacent
+   repeats) and `normalize` preserves every reading — `core/tests/fpl_laws.rs`.
+6. **Registers equal the folds** on any DAG, conflicts are exactly what both
+   branches wrote, a merge settles nothing and a descending write settles.
+7. Interpolation between series knots equals evaluation on the exact fragment.
+8. Every vector above, to the tolerance it was taken at.
+9. **The view is the composition it names**: every field of every entry equals
+   the fold §6.7 names it by — `core/tests/fold_laws.rs`.
 
-One row per module of the crate, and what it is checked against. A row is
-"done" only where a vector file or the live chain says so — a module with
-tests of its own and no vector behind it is not done, it is untested against
-the reference. What a module CLAIMS is what its tests MEASURE.
+Laws 2, 3, 4, 6 and 9 are properties over generated logs and generated
+two-replica DAGs (`core/tests/fold_laws.rs`), built as REAL stores in temp
+directories and driven the way a second replica would: append, adopt, write
+concurrently, merge. Nothing about a frontier is allowed to depend on this side
+having constructed the graph in memory.
 
-| module       | SPEC     | state | checked against |
-| ------------ | -------- | ----- | --------------- |
-| `literal`    | §2       | done  | `conformance/literals.json` — 39 `values`, 564 `objects` (print∘parse = id, sha256(print) = name); property tests for no-panic and print stability |
-| `event`      | §4, §3   | done  | the same 564 objects through the CLOSED vocabulary as typed envelopes; the vocabulary set itself; every stored spec EVALUATES, not just prints back |
-| `store`      | §3       | done  | `conformance/dag.json` — 40 DAGs, each linearisation, tips, parents and `verify` finding; the live `events/` chain reads 564 objects, verifies clean, and in the generator's order |
-| `fpl`        | §7       | done  | `conformance/fpl.json` — 150 terms, prints and JSON byte-identical, 900 fulfillment samples, every `normalized` print and every `explain` tree; largest float deviation 5.6e-16 against a 1e-9 budget. §9.5's constructor laws on random terms in `tests/fpl_laws.rs` |
-| `fold`       | §6.1–6.5 | done  | `conformance/folds.json` — all 120 logs: `env` and `history_at` by kind and instant, `specs`, `content` and `flatten` by canonical print, byte-exact. §9.2–9.4 as properties in `tests/fold_laws.rs`; the live chain in `tests/live.rs` |
-| `registers`  | §6.6     | done  | `conformance/dag.json`'s `conflicts` and `env` — all 40 DAGs, by exact object hash. §9.6 as properties over real two-replica stores; the registers equal the folds on every DAG, on all 120 logs, and on the live chain |
-| `breaks`     | §7 knots | done  | `conformance/series.json` — 60 windows, 1429 knots, instants and `exact` identical, deviation 3.6e-16; §9.7 checked as a law in `tests/series_vectors.rs` |
-| `view`       | §6.7     | done  | `conformance/view.json` — the LAST derivation in this directory, generated from the Python composition before this module existed: 40 forked DAGs at five instants under both trust policies (400 cases, 1,180 entries; 31 with a refused claim, 93 with a conflicted register), plus the live chain's 250 todos at their own tip. Every field of every row, `value` to 1e-9, largest deviation 1.1e-16. §9.9 as a property in `tests/fold_laws.rs`, stated through the route each field does NOT take |
-| `wasm/`      | the boundary | done | the SAME `.wasm` a browser fetches, loaded under node and driven against the vectors (`web/test/wasm.test.ts`): 564 objects rehashed, parsed and linearised; 900 fulfillment samples within 1e-9; 1429 knots at the reference's instants exactly. A real Chromium reaches it in `web/e2e/core.test.ts` |
+```console
+$ nix flake check                 # the suites, plus clippy at -D warnings
+$ nix develop -c cargo test       # the same suites, with a toolchain in hand
+$ nix build .#prodrome-wasm       # the browser's build
+```
 
-## The Python binding (`py/`)
+## The crates
 
-`prodrome-py` is a second workspace member: a PyO3 module named `prodrome`
-that exposes this crate to the Python layers. It is a CONVERSION LAYER and
-nothing else — every function parses its arguments, calls exactly one thing in
-`prodrome-core`, and prints the answer back. There is no `match` over a
-`TermF` in it and no rule about trust; a body here that decided anything would
-be the second evaluator SPEC §1 forbids.
+```
+core/    prodrome-core — the database. literal (§2), event (§4), store (§3),
+         fpl (§7), fold (§6.1–6.5), registers (§6.6), breaks (§7 knots),
+         view (§6.7). No I/O beyond a store's own directory, and no clock.
+wasm/    prodrome-wasm — that core compiled for the browser, and nothing else:
+         each export parses, calls one thing, and prints the answer.
+conformance/  the frozen vectors.
+SPEC.md       the contract. It is the document; this crate is its implementation.
+```
 
-    nix build .#prodrome-py
-    nix develop .#triage -c python3 -c "import prodrome; print(prodrome.SAMPLES)"
+Dependencies are few and each is named in `core/Cargo.toml` with the reason it
+is there: `chrono` for the arithmetic evaluation needs, `sha2` for the names,
+`serde`/`serde_json` for the JSON shapes, `thiserror` for typed refusals,
+`unicode-general-category` for the printer's `isprintable` tables, and `rustix`
+on unix for the append lock.
 
-The `.#triage` shell's python carries it, so every gate that shell runs — the
-unittest suite included — has `import prodrome` available. Built by
-`buildPythonPackage` + nixpkgs' `maturinBuildHook` from
-`rustPlatform.importCargoLock ./prodrome/Cargo.lock`, so a build fetches
-nothing; `nix flake check` runs `cargo test` and clippy over the workspace the
-same way. NOT abi3: Nix builds it against the exact interpreter the shell
-carries, and portability nothing consumes is not worth the fast paths the
-stable ABI forbids.
+## Licence
 
-Everything crosses the boundary as the value's OWN IDENTITY, so a
-disagreement between the two implementations is a disagreement in a string:
+Licensed under either of
 
-| Python sees            | is                                                     |
-| ---------------------- | ------------------------------------------------------ |
-| an object, event, term | its canonical §2 print, a `str`                         |
-| an instant             | `datetime.isoformat()`, µs only when non-zero           |
-| an environment         | `{todo: {"kind": "Completed"\|"Cancelled", "at": iso}}` |
-| `explain` / `to_json`  | the §7 wire dicts                                       |
-| a refusal              | `ValueError`                                            |
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
 
-The surface: `parse_literal`/`print_literal`/`seal_hash` (§2–3);
-`Store(root, untrusted)` with `read_dag`/`objects`/`events`/`tips`/`tip`/
-`verify`/`append`/`merge`/`adopt` (§3); `env_at`, `specs_at`, `authored_at`,
-`flatten`, `history_at`, a `History` handle and `fold_registers` returning a
-`Folded` with `env_of`/`specs_of`/`content_of`/`conflicts_of`/`extend` (§6);
-`fulfillment`, `fulfillments`, `explain`, `normalize`, `to_json`, `from_json`,
-`checklist`, `series_knots` (§7).
+at your option.
 
-`fulfillments` is `fulfillment` for a LIST, and it exists for one reason: the
-environment is converted out of Python per call, so pricing 184 todos against
-177 bindings parsed 177 instants 184 times — 31.5 ms of a 37 ms fold. It
-decides nothing the singular does not (the same core call per term, in the
-order given); it converts the environment first. `suzatary/fpl.py`'s `prices`
-is the caller, and `tests/test_fpl.py::PricingAList` pins the two against each
-other term for term, because speed is all it may buy.
+### Contribution
 
-One deliberate narrowing: `parse_literal(text)` reads a stored OBJECT, not any
-value of the grammar. The reference's parser DISPATCHES INTO the `mk_*`
-validators, so `Flat(value=2.0)` is a refusal there; `literal::parse_literal`
-alone knows names and arity and would hand back a value §7 forbids. Going
-through `parse_envelope` is what makes the two refuse the same texts — which
-`tests/test_differential.py` checks against the reference directly.
-
-### The differential test was the switch's gate, and the switch is thrown
-
-`tests/test_differential.py` (in the parent repository) ran the Python
-reference and this crate in ONE process, on the same generated inputs and on
-the live chain, and compared what each answered NOW — a stronger claim than
-the vectors make, because a vector file pins the core against numbers the
-reference produced once and a reference that has changed since is a reference
-nothing is checking. Prints, hashes, linearisations, register frontiers and
-`verify` findings byte for byte; fulfillments, `explain` trees and knot values
-to 1e-9. It passed, and on 2026-09-06 the Python evaluator was deleted.
-
-So most of that file is gone with it. What is left is what still HAS two
-sides: the §2 printer (`suzatary/literals.py` prints, this crate parses and
-prints back), the `mk_*` bounds (both parsers dispatch into their validators,
-so a refusal must be a refusal on both hosts), and §3's linearisation, read
-and write path (`store.linearise` and `read_dag` are still Python — this crate
-exposes a linearisation only through a `Store` on disk — and so is the append
-that holds the flock). Running both sides of a DELEGATED function would be
-running one side twice and calling the agreement evidence.
-
-What checks this crate now: `conformance/*.json`, SPEC §9's laws in
-`core/tests/`, `tests/live.rs` on the box's own chain, and the parent
-repository's `tests/test_laws.py` and `tests/test_registers.py`, which state
-the same laws through the Python surface and therefore state them about this
-crate.
-
-`conformance/live.json` is the one vector that is not seeded: this box's own
-564-object chain, folded by the reference at a recorded instant, with the tip
-it was folded over written beside it. `tests/live.rs` reproduces all five
-folds and the registers on it and refuses loudly when the chain has moved —
-regenerate with `scripts/conformance.py` when it does.
-
-### The one seam between the layers, closed
-
-A stored `SpecRevised` or `Authored` carries a §7 `Term`, and since the halves
-met that field IS `fpl::Term` — no wrapper, because a wrapper is a second name
-for one value and a place for a second reading to grow. `literal` owns the
-grammar: one printer (`print_literal`, `print_float`, `print_str`) and one
-parser (`parse_literal` against a `Vocabulary`), and `fpl` reaches it through
-`Term::{to_value,from_value}` while contributing `fpl::TERM_SIGNATURES` — the
-§7 half of the vocabulary `event::EVENT_VOCABULARY` reads a stored object
-against. So §7's per-field bounds now travel with a stored spec: a spec that
-parses is a spec that evaluates, which the placeholder could not promise.
-
-Two types did NOT merge, deliberately. `literal::Datetime`/`Timedelta` are the
-grammar's records — CPython's field bounds and normalisation, no arithmetic —
-while evaluation needs `now + δ`, `done − anchor` and a window cut into 64, and
-takes those from `chrono`. `fpl::instant_of`/`datetime_of` are the two total
-conversions, and `fold` reads an event's `at` through the first of them. And
-`Term` holds `f64`, so the event kinds that carry one are `PartialEq` and no
-longer `Eq`: an `Envelope`'s identity is its print and its hash, never a
-derived `Eq`, so nothing was using it.
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this crate by you, as defined in the Apache-2.0 licence, shall
+be dual licensed as above, without any additional terms or conditions.
