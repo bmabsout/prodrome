@@ -4,12 +4,17 @@ Prodrome is the temporal-logic database under Suzatary: content-addressed
 event objects in a DAG, folds that turn them into belief at a moment, and
 FPL, a fuzzy temporal logic whose terms are a todo's fulfillment as a
 function of time. This document is the contract an implementation meets. The
-Rust crate in this directory is THE implementation as of 2026-09-06; the
-Python package `suzatary/prodrome` + `suzatary/fpl.py` was the reference and
-is now records, smart constructors and a printer that call it.
-`prodrome/conformance/*.json` are vectors generated from that reference while
-it was one, and the laws in §9 are what any implementation must pass, bit for
-bit where the spec says so and to 1e-9 where it says so. Bassel, 2026-09-06: "build it
+Rust crate in this directory is THE implementation, and since 2026-09-08 the
+only one: the Python package `suzatary/prodrome` + `suzatary/fpl.py` was the
+reference, became records and a printer that called this crate on 2026-09-06,
+and was deleted with the rest of the Python on 2026-09-08
+(`docs/ARCHITECTURE.md` §8.6).
+`prodrome/conformance/*.json` are vectors generated from that reference WHILE
+IT WAS ONE, and they are now FROZEN — there is no generator, they are evidence
+rather than output, and a disagreement with one is a finding rather than a file
+to refresh (`README.md` says what to do about it). The laws in §9 are what any
+implementation must pass, bit for bit where the spec says so and to 1e-9 where
+it says so. Bassel, 2026-09-06: "build it
 in rust", "keep in mind our type driven development", and "the typst docs
 are a decoration (à la annotating using Cofree)".
 
