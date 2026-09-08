@@ -184,7 +184,10 @@ pub fn events() -> Vec<TodoEvent> {
             at(1, 9, 0),
             "= A heading\n\nBody with \\@escapes and #strong[markup].",
             Some(a_spec()),
-            vec!["because it is the contract".to_owned(), "'quoted'".to_owned()],
+            vec![
+                "because it is the contract".to_owned(),
+                "'quoted'".to_owned(),
+            ],
             "writing",
             "review from Bassel",
             "The detail, on its own line.",
