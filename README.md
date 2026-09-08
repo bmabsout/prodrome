@@ -1,18 +1,28 @@
 # prodrome
 
-The core, in Rust: one evaluator for every host — the box (through the Python
-binding in `py/`), the browser and the phone. Since 2026-09-06 that sentence
-is literal rather than aspirational: the parent repository's Python holds the
-term and event RECORDS, the `mk_*` smart constructors and the canonical
-printer, and every number, fold, normal form and knot it answers with came
-from here. There is no second implementation to fall back to.
+The core, in Rust: one evaluator for every host — the box, the browser and the
+phone. Since 2026-09-06 that sentence is literal rather than aspirational, and
+since 2026-09-08 there is no other host left: the Python that held the term and
+event RECORDS is gone (`docs/ARCHITECTURE.md` §8.6), and with it the PyO3
+binding that used to live in `py/`. There is one implementation.
 
-`SPEC.md` is the contract; `conformance/` are the vectors the Python reference
-produced WHILE IT WAS STILL A REFERENCE (`scripts/conformance.py` in the parent
-repository regenerates them, but regeneration now reads this crate through the
-binding, so it re-states the vectors rather than re-deriving them — they are
-frozen evidence of what the reference said, and that is their value); the laws
-in SPEC §9 are the tests.
+`SPEC.md` is the contract; the laws in SPEC §9 are the tests.
+
+⚠️ **`conformance/` IS FROZEN.** Those vectors are what the Python reference
+produced WHILE IT WAS STILL A REFERENCE — prints and hashes exactly,
+linearisations and frontiers exactly, fulfillments to 1e-9. They stopped being
+regenerable on 2026-09-06, when the evaluator was deleted and the generator
+started reading this crate through the binding: from that day a regeneration
+RE-STATED the vectors rather than re-deriving them, which is a comparison
+nobody made. `scripts/conformance.py` went with the Python on 2026-09-08, so
+there is no generator at all now, which is the honest end of that story.
+
+What that means for a change here: **these files are evidence, not output.** A
+diff in one is not a vector to refresh — it is this crate disagreeing with the
+last independent reading of the spec, and the question it asks is which of the
+two is wrong. Adding a NEW vector by hand is fine and says so in its commit;
+rewriting an old one to make a test pass is deleting the evidence the test was
+for.
 
     nix develop .#rust -c cargo test --manifest-path prodrome/Cargo.toml
     nix flake check          # the same suites, plus clippy, from the vendored lock
