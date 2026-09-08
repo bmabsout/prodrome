@@ -32,7 +32,12 @@ fn every_stored_object_is_a_typed_envelope_that_prints_back() {
         let parsed =
             parse_envelope(&text).unwrap_or_else(|e| panic!("object {}: {e}", name.as_str()));
         assert_eq!(&parsed, envelope, "object {}", name.as_str());
-        assert_eq!(canonical_envelope(&parsed), text, "object {}", name.as_str());
+        assert_eq!(
+            canonical_envelope(&parsed),
+            text,
+            "object {}",
+            name.as_str()
+        );
         assert_eq!(
             seal_hash(&parsed).as_str(),
             name.as_str(),
@@ -116,7 +121,10 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
         assert!(kinds.contains(kind), "the corpus is missing a {kind}");
     }
     assert!(provisional > 0, "the corpus exercises the trust rule");
-    assert!(priced > 0, "the corpus holds specs, and every one evaluates");
+    assert!(
+        priced > 0,
+        "the corpus holds specs, and every one evaluates"
+    );
 }
 
 /// §4 is a CLOSED vocabulary, so a name outside it is a refusal at the read
