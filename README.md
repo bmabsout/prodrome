@@ -1,35 +1,37 @@
 # prodrome
 
-**A temporal, content-addressed event database with fulfillment-priority
-semantics.**
+A temporal, content-addressed event database with fulfillment-priority
+semantics.
 
-A store is a directory of *objects*: one file each, holding one expression of
-a small printable grammar, named by the SHA-256 of exactly those bytes. Each
-object names its parents, so the history is a DAG, and every read re-hashes
-the bytes before parsing them. Order is causal: an object comes after what it
-descends from and is otherwise incomparable. The `at` a writer stamps on an
-event is data for the folds, never an input to the merge. No clock decides who
-wins.
+[![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-A *fold* turns the events up to a moment into what is believed at that moment:
-which todos are resolved, which specification is in force, which record is
-current. *Registers* read the same DAG and answer what a fold cannot: where
-two replicas wrote concurrently, a register holds both writes and the reader is
-shown a conflict rather than a chosen winner. The two readings agree wherever
-there is nothing to disagree about, and that agreement is one of the laws in
-`SPEC.md`. A trust policy sits over both: an untrusted actor's claim that a
-todo is done is stored and shown, never folded.
+- **Content-addressed.** Every object is one file named by the SHA-256 of its
+  bytes. Reads re-hash before they parse.
+- **Causal, not clocked.** Objects name their parents; history is a DAG. A
+  writer's timestamp is data for queries and never decides a merge.
+- **Time-travelling queries.** A fold answers what was believed at any
+  instant. Registers expose concurrent writes as conflicts instead of picking
+  a winner.
+- **Fulfillment as a function of time.** FPL, a small fuzzy temporal logic,
+  gives each todo a spec whose value in `[0, 1]` at an instant is how well it
+  is being met; the complement is urgency.
+- **Replicas.** Stores exchange objects and merge heads; a trust policy decides
+  which writers' claims bind.
+- **Runs in the browser.** The same core compiles to WebAssembly.
 
-FPL is the third layer: a small fuzzy temporal logic in which a todo's spec is
-a function from time into `[0, 1]`. A deadline decays, a conjunction is as
-good as its weakest member, a window is sampled over the days ahead, a term can
-anchor to another todo's completion. Evaluating a spec at an instant against
-the fold's environment gives a *fulfillment*; its complement is urgency.
-`explain` returns the same computation with a value at every node. Replicas
-exchange objects: `adopt` re-verifies another store's bytes and either
-fast-forwards or grows a second head that a later merge settles.
+## Installation
 
-## Quick start
+The crate is not on crates.io yet. Depend on it by revision:
+
+```toml
+[dependencies]
+prodrome = { package = "prodrome-core", git = "https://github.com/bmabsout/prodrome", rev = "<commit>" }
+```
+
+Requires Rust 1.85 or later.
+
+## Usage
 
 ```rust
 use std::collections::BTreeSet;
@@ -79,38 +81,51 @@ assert_eq!(rows[0].state(), "open");
 assert_eq!(rows[0].value(), Some(value));
 ```
 
-This block is the crate's documentation, so `cargo test` compiles and runs it.
+This example is the crate's doctest; `cargo test` compiles and runs it.
 
-| module      | what a caller reaches for |
-| ----------- | ------------------------- |
-| `store`     | `EventStore::new`, `append`, `merge`, `adopt` / `adopt_objects`, `load`, `read_dag` / `read_dag_named` / `read_dag_at`, `read_chain`, `events`, `tip` / `tips`, `ancestors`, `concurrent`, `verify`, `linearise` |
-| `event`     | `mk_created`, `mk_completed`, `mk_cancelled`, `mk_reopened`, `mk_spec_revised`, `mk_authored`; `mk_sealed` / `mk_woven`; `parse_envelope`, `canonical_envelope`, `seal_hash`, `parents_of`, `binds`; `Hash`, `TodoId`, `Actor` |
-| `literal`   | `Datetime::new`, `parse_literal`, `print_literal`, `Open` / `Table`, `ProdromeError` |
-| `fold`      | `env_at`, `specs_at`, `authored_at`, `flatten`, `history`, `evaluation_env`, `chronological`, `Untrusted` |
-| `registers` | `nodes_of`, `fold`, `extend`, `since`, `env_of` / `specs_of` / `content_of` / `chosen_of`, `conflicts_of` |
-| `fpl`       | the `mk_*` constructors, `checklist`; `fulfillment`, `explained` / `explain`, `normalize`, `print_term` / `parse_term`, `to_json` / `from_json`, `instant_of` / `datetime_of` |
-| `breaks`    | `breakpoints`, `series_knots`, `constant` |
-| `view`      | `entries` and `Entry` (§6.7) |
+## Concepts
 
-## The store on disk
+**Objects and the DAG.** An object is a `Sealed(prev, event)` with one parent
+or a `Woven(parents, event)` merge with several. Its name is the hash of its
+canonical print. `verify` reports anything that does not hash to its name,
+rest on a missing parent, or form a cycle.
+
+**Folds.** `env_at` gives each todo's outcome at an instant, `specs_at` its
+spec in force, `authored_at` its current record, and `flatten` its whole
+history as one function of time. `history` is the environment as a function
+of time.
+
+**Registers.** The same DAG read per `(kind, todo)`: a register holds the
+frontier of writes nothing later descends from. One write is a value, more is
+a conflict the caller is shown. On any DAG the registers agree with the folds.
+
+**Trust.** A set of untrusted actor names. Their lifecycle events are stored
+and shown as claims and never folded; their content records still bind.
+
+**FPL.** Terms such as `Flat`, `Decay`, `Conj` (a power mean, so the weakest
+member dominates), `Within` (sampled over a window), `After` (anchored to
+another todo's completion) and `Piecewise`. `fulfillment` evaluates a term at
+an instant; `explain` returns the same computation with a value at every node;
+`series_knots` gives a term's curve over a window.
+
+**View.** `entries` composes the above into one row per todo: outcome, claim,
+function, value, current content, conflicts, and the objects that mention it.
+
+The precise semantics are in [`SPEC.md`](SPEC.md).
+
+## Storage format
 
 ```
 <root>/
-  objects/<sha256>.py     one object, holding exactly its canonical print
+  objects/<sha256>.py     one object, its canonical print
   HEAD                    the single tip
   refs/<sha256>           one file per head, only while there is more than one
-  .lock                   held by an append; not data
+  .lock                   held during an append
 ```
 
-Nothing is encoded, compressed or packed. Objects are append-only and never
-rewritten, and a file's name is a checksum of its contents, so a store can be
-read, diffed and checked with ordinary tools, and corruption is detectable
-without a second copy.
-
-An object's print is a Python-literal expression from a closed grammar
-(SPEC §2), hence the extension. The parser admits that grammar and nothing
-else: no names, operators, comprehensions or attribute access, and nothing is
-ever evaluated.
+Objects are append-only and never rewritten. A print is a Python-literal
+expression from a closed grammar (SPEC §2); the parser admits that grammar and
+nothing else, and nothing is evaluated.
 
 ## WebAssembly
 
@@ -118,74 +133,41 @@ ever evaluated.
 $ nix build .#prodrome-wasm
 ```
 
-`wasm/` is `core/` compiled to WebAssembly. Each export parses its arguments,
-calls one function in the core, and prints the answer; every moment is an
-argument, so there is no clock. The build yields two glues over one `.wasm`,
-`$out/web/` for a bundler and `$out/nodejs/` for a script.
+Produces `result/web/` for a bundler and `result/nodejs/` for a script. The
+exports (`verify_objects`, `fold`, `registers`, `entries`, `fulfillment`,
+`explain`, `series_knots`, `term_json`, `lifecycle`, `seal`, `merge_object`)
+each parse their arguments, call the core, and return JSON.
 
-| export           | asks |
-| ---------------- | ---- |
-| `verify_objects` | §3: do these bytes hash to these names and form one DAG under these heads |
-| `fold`           | §6.1–6.5: what the chain believes at an instant |
-| `registers`      | §6.6: which registers hold more than one live write |
-| `entries`        | §6.7: every todo as the folds see it |
-| `fulfillment`, `explain` | §7: what a term is worth now, and what that number is made of |
-| `series_knots`   | §7: a term's curve over a window, as knots |
-| `term_json`      | a stored term's print as the JSON shape |
-| `lifecycle`, `seal`, `merge_object` | §3–§4 from a replica: build an event, seal it onto a parent, join heads |
+## Documentation
 
-## Conformance vectors
+- [`SPEC.md`](SPEC.md): the contract, with the laws in §9.
+- `cargo doc --open`: the API.
 
-`conformance/*.json` are fixed inputs an implementation must reproduce, to
-the tolerances `SPEC.md` §9 states. New vectors may be added; existing ones
-are not regenerated.
-
-| file          | pins |
-| ------------- | ---- |
-| `dag.json`    | 40 DAGs: linearisation, tips, parents, `verify` findings |
-| `folds.json`  | 120 logs: environment and history by instant; specs, content and `flatten` by print |
-| `fpl.json`    | 150 terms: prints, JSON, 900 fulfillment samples, `normalize`, `explain` |
-| `series.json` | 60 windows, 1429 knots: instants and exactness |
-
-## Laws
-
-SPEC §9, each a test:
-
-1. `print ∘ parse` is the identity on every object, and `hash(print)` is its name.
-2. Prefix: a later event changes no earlier moment's reading.
-3. Independent events commute; a uniform shift of every `at` changes no winner.
-4. `history.at(t) == env_at(t)`.
-5. `mk_piecewise` is a normal form and `normalize` preserves every reading.
-6. Registers equal the folds on any DAG; conflicts are exactly what both branches wrote; a merge settles nothing; a descending write settles.
-7. Interpolation between series knots equals evaluation on the exact fragment.
-8. Every vector, to the tolerance it was taken at.
-9. The view is the composition it names: every field of every entry equals the fold §6.7 names it by.
-
-Laws 2, 3, 4, 6 and 9 are property tests over generated logs and generated
-two-replica DAGs, built as real stores in temporary directories.
+## Testing
 
 ```console
-$ nix flake check              # the suites, plus clippy at -D warnings
-$ nix develop -c cargo test    # the same, with a toolchain in hand
-$ nix build .#prodrome-wasm    # the browser's build
+$ nix flake check              # tests and clippy, in the sandbox
+$ nix develop -c cargo test    # the same with a toolchain in hand
 ```
 
-## Layout
+`conformance/` holds vectors an implementation must reproduce; the laws in
+SPEC §9 are property tests over generated logs and two-replica stores.
+
+## Repository layout
 
 ```
-core/         prodrome-core: literal (§2), event (§4), store (§3), fpl (§7),
-              fold (§6.1–6.5), registers (§6.6), breaks (§7 knots), view (§6.7).
-              No I/O beyond a store's own directory, and no clock.
-wasm/         prodrome-wasm: the core compiled for the browser, nothing else.
-conformance/  the frozen vectors.
-SPEC.md       the contract; this crate is its implementation.
+core/         prodrome-core: literal, event, store, fpl, fold, registers, breaks, view
+wasm/         prodrome-wasm: the core compiled for the browser
+conformance/  the vectors
+SPEC.md       the specification
 ```
 
-Dependencies are few and each is named in `core/Cargo.toml` with its reason:
-`chrono`, `sha2`, `serde` / `serde_json`, `thiserror`,
-`unicode-general-category`, and `rustix` on unix for the append lock.
+## Contributing
 
-## Licence
+Issues and pull requests are welcome. Changes to semantics need a change to
+`SPEC.md` in the same pull request, and a law or a vector that pins them.
+
+## License
 
 Licensed under either of
 
@@ -196,8 +178,6 @@ Licensed under either of
 
 at your option.
 
-### Contribution
-
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in this crate by you, as defined in the Apache-2.0 licence, shall
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
