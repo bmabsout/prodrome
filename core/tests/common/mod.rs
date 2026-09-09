@@ -280,8 +280,8 @@ pub fn corpus() -> Vec<(Hash, Object)> {
 
 /// The reference generator's three todos.
 pub const TODOS: [&str; 3] = ["alpha", "beta", "gamma"];
-/// The reference generator's actors, in its proportions: two writes trusted
-/// for every one that is not.
+/// The reference generator's actors, in its proportions: two writes off the
+/// reference policy's roster for every one on it.
 pub const ACTORS: [&str; 3] = ["bassel", "bassel", "triage"];
 /// The generator's window: sixty days from the origin.
 pub const WINDOW: i64 = 60 * 86_400;
@@ -491,7 +491,7 @@ pub fn json_entry(entry: &prodrome::view::Entry) -> Value {
         "at": entry.at(),
         "claimed": entry.claimed(),
         "value": entry.value(),
-        "unconfirmed": entry.standing.is_provisional(),
+        "unconfirmed": entry.confidence.is_provisional(),
         "conflicts": Value::Object(
             entry
                 .conflicts

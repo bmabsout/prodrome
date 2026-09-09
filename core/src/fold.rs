@@ -12,43 +12,17 @@
 //!
 //! Each fold is a last-write-wins map keyed by todo. They differ in exactly
 //! two ways, and those two are the whole of §5 and §6: WHICH kinds write, and
-//! WHICH actors may. [`Untrusted`] is that second question as a type, so a
-//! call site cannot inherit a trust policy it never considered.
+//! WHICH events the host's [`Policy`] says bind. The policy is a parameter, so
+//! a call site cannot inherit an answer it never considered — and nothing here
+//! reads an actor name.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::event::{binds, Actor, Authored, TodoEvent, TodoId};
+use crate::event::{Authored, TodoEvent, TodoId};
 use crate::fpl::{self, FplError, Instant, Term};
 use crate::literal::Datetime;
 use crate::payload::Payload;
-
-/// The actors whose lifecycle and repricing events are PROVISIONAL (§5):
-/// stored, shown as claims, never folded. A newtype rather than a bare set
-/// because it is a POLICY — the deployment's whole trust roster — and passing
-/// one set of actor names where another was meant is the failure it prevents.
-/// `Untrusted::none()` is a deployment that trusts every writer, said out loud.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Untrusted(BTreeSet<Actor>);
-
-impl Untrusted {
-    /// A deployment that trusts every writer.
-    pub fn none() -> Untrusted {
-        Untrusted(BTreeSet::new())
-    }
-
-    pub fn of(actors: impl IntoIterator<Item = Actor>) -> Untrusted {
-        Untrusted(actors.into_iter().collect())
-    }
-
-    /// THE trust rule (§5), asked through the policy that holds it.
-    pub fn binds<P: Payload>(&self, event: &TodoEvent<P>) -> bool {
-        binds(event, &self.0)
-    }
-
-    pub fn actors(&self) -> &BTreeSet<Actor> {
-        &self.0
-    }
-}
+use crate::policy::Policy;
 
 /// What history says about a todo: the two ways it can be over, which mean
 /// OPPOSITE things downstream (a cancellation prices as moot, a completion
@@ -109,15 +83,15 @@ pub fn chronological<P: Payload>(
 }
 
 /// §6.1 — fold history into the environment as of `t`: last binding write
-/// wins, `Reopened` clears, and only events that [`Untrusted::binds`] write at
+/// wins, `Reopened` clears, and only the events the policy binds write at
 /// all. `Created`, `SpecRevised` and `Authored` have no env effect.
 ///
 /// This is what makes `fulfillment(term, t, env_at(…, t))` a time machine: the
 /// belief at any past moment is a query over the log, never a stored snapshot.
-pub fn env_at<P: Payload>(events: &[TodoEvent<P>], t: Datetime, untrusted: &Untrusted) -> Env {
+pub fn env_at<P: Payload>(events: &[TodoEvent<P>], t: Datetime, policy: &impl Policy<P>) -> Env {
     let mut env = Env::new();
     for event in chronological(events, t) {
-        if !untrusted.binds(event) {
+        if policy.standing(event).claims() {
             continue;
         }
         match event {
@@ -140,21 +114,21 @@ pub fn env_at<P: Payload>(events: &[TodoEvent<P>], t: Datetime, untrusted: &Untr
 ///
 /// An `Authored` record's spec counts from ANY actor, and that is a decision:
 /// writing content is what the agent is for, and a todo authored without its
-/// price is not a todo. `SpecRevised` stays trusted-only — it is the narrow
+/// price is not a todo. `SpecRevised` is asked of the POLICY — it is the narrow
 /// "reprice without rewriting" override, and an injected repricing is exactly
-/// the threat §5 exists for.
+/// the threat a host keeps a policy for.
 ///
 /// ABSENCE IS NOT ZERO: a todo missing here means the chain has no opinion
 /// about its price, not that it is worth nothing.
 pub fn specs_at<P: Payload>(
     events: &[TodoEvent<P>],
     t: Datetime,
-    untrusted: &Untrusted,
+    policy: &impl Policy<P>,
 ) -> BTreeMap<TodoId, Term> {
     let mut specs = BTreeMap::new();
     for event in chronological(events, t) {
         match event {
-            TodoEvent::SpecRevised(e) if untrusted.binds(event) => {
+            TodoEvent::SpecRevised(e) if policy.standing(event).binds() => {
                 specs.insert(e.todo.clone(), e.spec.clone());
             }
             TodoEvent::Authored(e) => {
@@ -174,10 +148,11 @@ pub fn specs_at<P: Payload>(
 
 /// §6.3 — the chain's CONTENT as of `t`: the latest `Authored` per todo.
 ///
-/// No trust parameter, deliberately, where the other two folds require one:
-/// content from every actor renders. A fold that hid the agent's writes would
+/// No policy parameter, deliberately, where the other two folds take one:
+/// content renders whoever wrote it. A fold that hid a writer's records would
 /// not be containment, it would be an outage that reports success; the reader
-/// marks a provisional record instead.
+/// marks the row instead ([`crate::view::Provisional::Content`], off
+/// [`Policy::confirms`]).
 pub fn authored_at<P: Payload>(
     events: &[TodoEvent<P>],
     t: Datetime,
@@ -249,13 +224,14 @@ impl History {
     }
 }
 
-/// Fold the whole log into a [`History`]. Same writers and the same trust rule
-/// as [`env_at`]: `Completed`/`Cancelled` bind, `Reopened` clears, the rest
-/// and every untrusted actor's lifecycle event do nothing.
-pub fn history<P: Payload>(events: &[TodoEvent<P>], untrusted: &Untrusted) -> History {
+/// Fold the whole log into a [`History`]. Same writers and the same policy
+/// question as [`env_at`]: `Completed`/`Cancelled` bind, `Reopened` clears, and
+/// the rest — every other kind, and every event the policy only lets CLAIM —
+/// do nothing.
+pub fn history<P: Payload>(events: &[TodoEvent<P>], policy: &impl Policy<P>) -> History {
     let mut bindings: BTreeMap<TodoId, Vec<(Instant, Option<Binding>)>> = BTreeMap::new();
     for event in events {
-        if !untrusted.binds(event) {
+        if policy.standing(event).claims() {
             continue;
         }
         let (todo, at, binding) = match event {
@@ -285,11 +261,12 @@ pub fn history<P: Payload>(events: &[TodoEvent<P>], untrusted: &Untrusted) -> Hi
 /// it says — this says what it demanded at every instant. Every transition on
 /// the chain is a piece:
 ///
-/// - an `Authored` spec (any actor) or a trusted `SpecRevised` puts that spec
-///   in force from its instant, and the curve before it is untouched;
-/// - a trusted `Completed` or `Cancelled` puts a flat 1.0 in force, because
-///   nothing is demanded of a resolved todo;
-/// - a trusted `Reopened` puts the spec in force again.
+/// - an `Authored` spec (whoever wrote it) or a `SpecRevised` the policy binds
+///   puts that spec in force from its instant, and the curve before it is
+///   untouched;
+/// - a `Completed` or `Cancelled` the policy binds puts a flat 1.0 in force,
+///   because nothing is demanded of a resolved todo;
+/// - a `Reopened` the policy binds puts the spec in force again.
 ///
 /// The HEAD — the function before the first transition — is the first spec
 /// ever recorded and the first checklist ever recorded, even when a resolution
@@ -311,7 +288,7 @@ pub fn history<P: Payload>(events: &[TodoEvent<P>], untrusted: &Untrusted) -> Hi
 pub fn flatten<P: Payload>(
     events: &[TodoEvent<P>],
     t: Datetime,
-    untrusted: &Untrusted,
+    policy: &impl Policy<P>,
 ) -> Result<BTreeMap<TodoId, Term>, FplError> {
     let mut specs: BTreeMap<TodoId, Vec<(Instant, Term)>> = BTreeMap::new();
     // (at, checklist length) — CONTENT, so from any actor, like `authored_at`.
@@ -333,19 +310,19 @@ pub fn flatten<P: Payload>(
                         .push((at, spec.clone()));
                 }
             }
-            TodoEvent::SpecRevised(e) if untrusted.binds(event) => {
+            TodoEvent::SpecRevised(e) if policy.standing(event).binds() => {
                 specs
                     .entry(e.todo.clone())
                     .or_default()
                     .push((fpl::instant_of(e.at), e.spec.clone()));
             }
-            TodoEvent::Completed(e) | TodoEvent::Cancelled(e) if untrusted.binds(event) => {
+            TodoEvent::Completed(e) | TodoEvent::Cancelled(e) if policy.standing(event).binds() => {
                 states
                     .entry(e.todo.clone())
                     .or_default()
                     .push((fpl::instant_of(e.at), true));
             }
-            TodoEvent::Reopened(e) if untrusted.binds(event) => {
+            TodoEvent::Reopened(e) if policy.standing(event).binds() => {
                 states
                     .entry(e.todo.clone())
                     .or_default()
@@ -417,8 +394,9 @@ fn flatten_one(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_reopened};
+    use crate::event::{mk_completed, mk_reopened, Actor};
     use crate::fpl::{fulfillment, mk_flat, print_term};
+    use crate::policy::Untrusted;
     use crate::reference::{mk_authored, mk_subtodo, Todo};
 
     type Event = TodoEvent<Todo>;
@@ -451,7 +429,7 @@ mod tests {
         .expect("valid")
     }
 
-    fn trusted() -> Untrusted {
+    fn roster() -> Untrusted {
         Untrusted::of([Actor::new("triage").expect("valid")])
     }
 
@@ -461,7 +439,7 @@ mod tests {
             mk_completed("alpha", at(2), "bassel", "").expect("valid"),
             mk_reopened("alpha", at(4), "bassel", "").expect("valid"),
         ];
-        let policy = trusted();
+        let policy = roster();
         assert_eq!(env_at(&log, at(3), &policy).len(), 1);
         assert!(env_at(&log, at(5), &policy).is_empty());
         // And the history reads the same at both moments, which is §9.4.
@@ -471,9 +449,9 @@ mod tests {
     }
 
     #[test]
-    fn an_untrusted_completion_is_a_claim_and_not_a_binding() {
+    fn a_claiming_completion_is_a_claim_and_not_a_binding() {
         let log: Vec<Event> = vec![mk_completed("alpha", at(2), "triage", "").expect("valid")];
-        assert!(env_at(&log, at(3), &trusted()).is_empty());
+        assert!(env_at(&log, at(3), &roster()).is_empty());
         assert_eq!(env_at(&log, at(3), &Untrusted::none()).len(), 1);
     }
 
@@ -483,7 +461,7 @@ mod tests {
             authored("alpha", 1, "bassel", Some(mk_flat(0.2).expect("valid")), 0),
             mk_completed("alpha", at(3), "bassel", "").expect("valid"),
         ];
-        let policy = trusted();
+        let policy = roster();
         let flat = flatten(&log, at(9), &policy).expect("folds");
         let term = &flat[&TodoId::new("alpha").expect("valid")];
         let env = evaluation_env(&env_at(&log, at(9), &policy));
@@ -500,7 +478,7 @@ mod tests {
             Some(mk_flat(0.5).expect("valid")),
             2,
         )];
-        let flat = flatten(&log, at(9), &trusted()).expect("folds");
+        let flat = flatten(&log, at(9), &roster()).expect("folds");
         let term = &flat[&TodoId::new("alpha").expect("valid")];
         assert_eq!(
             print_term(term),
@@ -514,6 +492,6 @@ mod tests {
             authored("alpha", 1, "bassel", None, 0),
             mk_completed("alpha", at(3), "bassel", "").expect("valid"),
         ];
-        assert!(flatten(&log, at(9), &trusted()).expect("folds").is_empty());
+        assert!(flatten(&log, at(9), &roster()).expect("folds").is_empty());
     }
 }

@@ -19,12 +19,11 @@
 //! # Quick start
 //!
 //! ```
-//! use std::collections::BTreeSet;
-//!
 //! use prodrome::event::{mk_created, mk_spec_revised, TodoId};
-//! use prodrome::fold::{env_at, evaluation_env, flatten, Untrusted};
+//! use prodrome::fold::{env_at, evaluation_env, flatten};
 //! use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, mk_decay};
 //! use prodrome::literal::Datetime;
+//! use prodrome::policy::Untrusted;
 //! use prodrome::reference::Todo;
 //! use prodrome::registers::nodes_of;
 //! use prodrome::store::EventStore;
@@ -33,12 +32,14 @@
 //! # fn main() -> Result<(), prodrome::literal::ProdromeError> {
 //! # let dir = std::env::temp_dir().join("prodrome-quick-start");
 //! # let _ = std::fs::remove_dir_all(&dir);
-//! // A store is a directory. The type parameter is the HOST's record shape
-//! // (§4): what this deployment attaches to a todo, as a `payload::Payload`.
-//! // `reference::Todo` is the one this repository's vectors were taken with;
-//! // a host implements its own. The second argument is the deployment's trust
-//! // policy (§5): the actors whose lifecycle events are claims, not bindings.
-//! let store = EventStore::<Todo>::new(&dir, BTreeSet::new());
+//! // A store is a directory. The first type parameter is the HOST's record
+//! // shape (§4): what this deployment attaches to a todo, as a
+//! // `payload::Payload`. `reference::Todo` is the one this repository's vectors
+//! // were taken with; a host implements its own. The second argument is the
+//! // deployment's STANDING policy (§5) — which events bind and which only
+//! // claim. `Untrusted` is the reference policy: a roster of actor names whose
+//! // lifecycle events are claims.
+//! let store = EventStore::<Todo>::new(&dir, Untrusted::none());
 //!
 //! // An event carries the instant its writer stamped on it. The store has no
 //! // clock: `at` is data, and nothing here reads the machine's.
@@ -57,17 +58,17 @@
 //!
 //! // Fold at an instant, and price what the fold believes.
 //! let now = Datetime::new(2026, 9, 14, 9, 0, 0, 0)?;
-//! let untrusted = Untrusted::none();
+//! let policy = store.policy();
 //! let events = store.events()?;
-//! let env = env_at(&events, now, &untrusted);
-//! let functions = flatten(&events, now, &untrusted)?;
+//! let env = env_at(&events, now, policy);
+//! let functions = flatten(&events, now, policy)?;
 //! let todo = TodoId::new("todo-1")?;
 //! let value = fulfillment(&functions[&todo], instant_of(now), &evaluation_env(&env));
 //! assert!((0.0..=1.0).contains(&value));
 //!
 //! // Or the whole composition at once: one row per todo the chain mentions,
 //! // each with its outcome, its function, its price and its conflicts (§6.7).
-//! let rows = entries(&nodes_of(&objects), now, &untrusted)?;
+//! let rows = entries(&nodes_of(&objects), now, policy)?;
 //! assert_eq!(rows.len(), 1);
 //! assert_eq!(rows[0].state(), "open");
 //! assert_eq!(rows[0].value(), Some(value));
@@ -82,6 +83,7 @@
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `store`    — §3: objects on disk, heads, linearisation, verify, adopt/merge
 //! - `fpl`      — §7: `TermF`, `Term`, evaluation, normal form, explain (Cofree)
+//! - `policy`   — §5: `Standing`, the `Policy` trait, and the reference policy
 //! - `fold`     — §6.1–6.5: causal folds, flatten, history
 //! - `registers`— §6.6: frontiers over the DAG, the fold as a monoid action
 //! - `breaks`   — §7 breakpoints and series knots
@@ -94,6 +96,7 @@ pub mod fold;
 pub mod fpl;
 pub mod literal;
 pub mod payload;
+pub mod policy;
 /// The reference payload — the record shape `conformance/*.json` was taken
 /// with. A host defines its own; this one is behind a default feature so a
 /// host that wants none of it can turn it off.

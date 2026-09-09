@@ -85,8 +85,8 @@ newtype_str! {
 
 newtype_str! {
     /// Who wrote an event. SYNTACTIC only (`^[a-z][a-z0-9_-]*$`): WHICH actors
-    /// exist, and which are trusted, is instance data — the engine knows the
-    /// mechanism, never the roster.
+    /// exist, and what a host makes of each, is instance data — the engine
+    /// knows the mechanism, never the roster (§5, [`crate::policy`]).
     Actor
 }
 
@@ -729,7 +729,7 @@ fn event_from_value<P: Payload>(value: &Value) -> Result<TodoEvent<P>, ProdromeE
     }
 }
 
-// --- hashing, printing, trust ------------------------------------------------
+// --- hashing and printing -----------------------------------------------------
 
 /// `print_literal` of an event — what every fold that needs a deterministic
 /// tiebreak sorts by.
@@ -770,20 +770,10 @@ pub fn parse_event<P: Payload>(text: &str) -> Result<TodoEvent<P>, ProdromeError
     event_from_value(&parse_literal(text, &vocabulary)?)
 }
 
-/// THE trust rule, stated once (§5): may this event change what the system
-/// believes? An untrusted actor's lifecycle and repricing events are
-/// PROVISIONAL — stored, shown as claims, never folded — because that actor
-/// reads attacker-controlled input. Its CONTENT records DO bind: writing
-/// content is what such a writer is for, and a fold that hid its writes would
-/// not be containment, it would be an outage that reports success.
-pub fn binds<P: Payload>(event: &TodoEvent<P>, untrusted: &BTreeSet<Actor>) -> bool {
-    matches!(event, TodoEvent::Authored(_)) || !untrusted.contains(event.actor())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reference::{mk_authored, Todo};
+    use crate::reference::Todo;
 
     type Event = TodoEvent<Todo>;
 
@@ -835,36 +825,5 @@ mod tests {
         // that evaluates.
         let out_of_range = parse_literal("Flat(value=1.5)", &vocabulary).expect("parses");
         assert!(Term::from_value(&out_of_range).is_err());
-    }
-
-    #[test]
-    fn trust_is_a_set_of_names_and_a_record_always_binds() {
-        let untrusted: BTreeSet<Actor> =
-            [Actor::new("triage").expect("valid")].into_iter().collect();
-        let completed: Event = mk_completed("alpha", at(), "triage", "").expect("valid");
-        assert!(!binds(&completed, &untrusted));
-        let authored = mk_authored(
-            "alpha",
-            at(),
-            "triage",
-            "todo",
-            at(),
-            "body",
-            None,
-            vec![],
-            "",
-            "",
-            "",
-            None,
-            vec![],
-            vec![],
-            "",
-        )
-        .expect("valid");
-        assert!(binds(&authored, &untrusted));
-        assert!(binds(
-            &mk_completed::<Todo>("alpha", at(), "bassel", "").expect("valid"),
-            &untrusted
-        ));
     }
 }

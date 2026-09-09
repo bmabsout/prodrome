@@ -10,7 +10,8 @@
 //!
 //! The generators mirror the reference generator's `a_log`/`an_event` — the
 //! same three todos, the same seven kinds in the same proportions, the same
-//! two actors with one of them untrusted — so a failure here is a failure the
+//! two actors with one of them on the reference policy's roster — so a failure
+//! here is a failure the
 //! vector generator could have produced, and a fix is checkable against it.
 //!
 //! The DAG laws build REAL stores in temp directories and drive them the way a
@@ -25,11 +26,10 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::event::{mk_completed, mk_spec_revised, Actor, TodoEvent, TodoId};
-use prodrome::fold::{
-    authored_at, env_at, flatten, history, specs_at, Binding, Env, History, Untrusted,
-};
+use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env, History};
 use prodrome::fpl::{self, print_term, Term};
 use prodrome::literal::Datetime;
+use prodrome::policy::{Everything, Policy, Untrusted};
 use prodrome::reference::{mk_authored, mk_subtodo, Todo};
 use prodrome::registers::{
     conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Kind, Node,
@@ -44,7 +44,7 @@ use common::{a_draft, a_log, a_schedule, chain_of, far, moment, realise, WINDOW}
 /// they run under is the reference one — the shape the vector generator drew.
 type Event = TodoEvent<Todo>;
 type Chain = Node<Todo>;
-type Store = EventStore<Todo>;
+type Store = EventStore<Todo, Untrusted>;
 type State = Folded<Todo>;
 
 /// The random log generator (`TODOS`, `ACTORS`, `WINDOW`, `origin`, `moment`,
@@ -53,7 +53,7 @@ type State = Folded<Todo>;
 /// `examples/generate_view_vectors.rs` draws `conformance/view/*.json` from,
 /// over a fixed seed, and a generator a vector file was taken from and a
 /// property runs against had to be the same one.
-fn untrusted() -> Untrusted {
+fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
 }
 
@@ -69,7 +69,7 @@ struct Folds {
     history: History,
 }
 
-fn folds(log: &[Event], t: Datetime, policy: &Untrusted) -> Folds {
+fn folds(log: &[Event], t: Datetime, policy: &impl Policy<Todo>) -> Folds {
     Folds {
         env: env_at(log, t, policy),
         specs: specs_at(log, t, policy)
@@ -104,7 +104,7 @@ proptest! {
         log in a_log(),
         asked in prop::collection::vec(0i64..WINDOW, 1..6),
     ) {
-        let policy = untrusted();
+        let policy = roster();
         let past = history(&log, &policy);
         for seconds in asked {
             let t = moment(seconds);
@@ -132,7 +132,7 @@ proptest! {
         gap in 1i64..3600,
         asked in prop::collection::vec(0i64..WINDOW, 1..6),
     ) {
-        let policy = untrusted();
+        let policy = roster();
         let log = realise(&schedule, 0);
         let last = schedule.last().expect("a non-empty schedule").1;
         let tau = moment(last + gap);
@@ -195,7 +195,7 @@ proptest! {
         keys in prop::collection::vec(0u32..1000, 0..25),
         at in 0i64..WINDOW,
     ) {
-        let policy = untrusted();
+        let policy = roster();
         let t = moment(at);
         // A permutation of the positions, from keys the shrinker can shrink.
         let mut order: Vec<usize> = (0..log.len()).collect();
@@ -231,7 +231,7 @@ proptest! {
         shift in -(WINDOW / 2)..(WINDOW / 2),
         at in 0i64..WINDOW,
     ) {
-        let policy = untrusted();
+        let policy = roster();
         let here = realise(&schedule, 0);
         let there = realise(&schedule, shift);
         let t = moment(at);
@@ -263,7 +263,7 @@ proptest! {
     /// with what is already folded changes nothing.
     #[test]
     fn extending_is_a_monoid_action(log in a_log(), split in 0usize..25) {
-        let policy = untrusted();
+        let policy = roster();
         let nodes = chain_of(&log);
         let split = split.min(nodes.len());
         let whole = fold(&nodes, None, &policy);
@@ -277,6 +277,7 @@ proptest! {
             nodes[split..].iter().collect::<Vec<_>>()
         );
     }
+
 }
 
 /// THE ONE PLACE A LATER EVENT REACHES BACK, named with its witnesses.
@@ -299,7 +300,7 @@ proptest! {
 /// inputs. Pinning it keeps the exception a decision instead of a surprise.
 #[test]
 fn a_late_first_half_of_the_head_re_heads_the_curve() {
-    let policy = untrusted();
+    let policy = roster();
     let start = moment(0);
     let tau = moment(1);
     let env = prodrome::fpl::Env::new();
@@ -426,12 +427,11 @@ fn diverged(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, St
     ));
     let _ = fs::remove_dir_all(&root);
     let guard = Replicas(root.clone());
-    let policy: BTreeSet<Actor> = [Actor::new("triage").expect("valid")].into_iter().collect();
-    let here = Store::new(root.join("here"), policy.clone());
+    let here = Store::new(root.join("here"), roster());
     for event in shared {
         here.append(event.clone(), None).expect("appends");
     }
-    let there = Store::new(root.join("there"), policy);
+    let there = Store::new(root.join("there"), roster());
     if let Some(tip) = here.tip() {
         there.adopt(&here, &tip).expect("adopts");
     }
@@ -458,7 +458,7 @@ fn events_from(nodes: &[Chain]) -> Vec<Event> {
 fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     events
         .iter()
-        .filter(|event| policy.binds(event))
+        .filter(|event| policy.standing(event).binds())
         .flat_map(|event| {
             prodrome::registers::writes_of(event)
                 .iter()
@@ -489,7 +489,7 @@ proptest! {
         mine in a_schedule(1..6),
         theirs in a_schedule(1..6),
     ) {
-        let policy = untrusted();
+        let policy = roster();
         let mine: Vec<Event> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
         let theirs: Vec<Event> =
             theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
@@ -516,7 +516,7 @@ proptest! {
         mine in a_schedule(1..6),
         theirs in a_schedule(1..6),
     ) {
-        let policy = untrusted();
+        let policy = roster();
         let mine: Vec<Event> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
         let theirs: Vec<Event> =
             theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
@@ -550,7 +550,8 @@ proptest! {
     /// reads the confirmed outcome, the content and the conflicts off the
     /// REGISTERS, so those are checked against the event folds (`env_at`,
     /// `authored_at`); it reads the claim off `env_at`, so that one is checked
-    /// against the loose REGISTERS. The two routes meet only through §9.6, so
+    /// against the REGISTERS under [`Everything`]. The two routes meet only
+    /// through §9.6, so
     /// this is a second path to each answer and not the same code run twice.
     /// Under conflict the register projection picks the linearisation's last
     /// write, which is the write the event folds pick, so the routes agree on
@@ -566,7 +567,7 @@ proptest! {
         theirs in a_schedule(1..6),
         when in 0i64..WINDOW,
     ) {
-        let policy = untrusted();
+        let policy = roster();
         let mine: Vec<Event> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
         let theirs: Vec<Event> =
             theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
@@ -578,7 +579,7 @@ proptest! {
         let rows = view::entries(&nodes, t, &policy).expect("the DAG folds");
 
         // The ROWS: one per todo any event mentions, in id order — no filter
-        // on `t`, none on trust.
+        // on `t`, none on standing.
         let mentioned: BTreeSet<&TodoId> = events.iter().map(TodoEvent::todo).collect();
         prop_assert_eq!(
             rows.iter().map(|row| &row.todo).collect::<Vec<_>>(),
@@ -586,8 +587,9 @@ proptest! {
         );
 
         let bound = env_at(&events, t, &policy);
-        // The claim, by the route `entries` does NOT take: the loose registers.
-        let loose = env_of(&fold(&nodes, Some(t), &Untrusted::none()));
+        // The claim, by the route `entries` does NOT take: the registers under
+        // the policy that binds everything.
+        let claimed_side = env_of(&fold(&nodes, Some(t), &Everything));
         let specs = flatten(&events, t, &policy).expect("the DAG flattens");
         let records = authored_at(&events, t);
         let conflicts = conflicts_of(&fold(&nodes, Some(t), &policy));
@@ -602,12 +604,12 @@ proptest! {
             let todo = &row.todo;
             prop_assert_eq!(row.outcome, bound.get(todo).copied(), "outcome");
 
-            // The CLAIM is the loose fold where the two name different
+            // The CLAIM is the CLAIMED reading where the two name different
             // outcomes, and absent where they agree — the instants alone do
             // not disagree.
             let kinds = |b: Option<Binding>| b.map_or("open", Binding::kind);
-            let disputed = kinds(loose.get(todo).copied()) != kinds(bound.get(todo).copied());
-            prop_assert_eq!(row.claim, if disputed { loose.get(todo).copied() } else { None }, "claim");
+            let disputed = kinds(claimed_side.get(todo).copied()) != kinds(bound.get(todo).copied());
+            prop_assert_eq!(row.claim, if disputed { claimed_side.get(todo).copied() } else { None }, "claim");
 
             // The PRICE: §6.4's function, valued at `t` under the CONFIRMED
             // environment, and absent exactly where the function is.
@@ -638,10 +640,12 @@ proptest! {
                 .unwrap_or_default();
             prop_assert_eq!(&row.conflicts, &by_kind, "conflicts");
 
-            // The STANDING is the two asymmetries and nothing else.
+            // The CONFIDENCE is the two asymmetries and nothing else: a claim
+            // refused, and a winning content record the policy does not
+            // confirm.
             let provisional = disputed
-                || named.is_some_and(|record| policy.actors().contains(&record.actor));
-            prop_assert_eq!(row.standing.is_provisional(), provisional, "standing");
+                || row.content.as_ref().is_some_and(|name| !policy.confirms(carried[name]));
+            prop_assert_eq!(row.confidence.is_provisional(), provisional, "confidence");
 
             // The STREAM is every object whose event names this todo, in the
             // DAG's own order.

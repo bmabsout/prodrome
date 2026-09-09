@@ -12,17 +12,19 @@ mod common;
 use std::collections::BTreeSet;
 
 use prodrome::event::{
-    binds, canonical_envelope, parents_of, parse_envelope, seal_hash, Actor, Envelope, TodoEvent,
+    canonical_envelope, parents_of, parse_envelope, seal_hash, Actor, Envelope, TodoEvent,
     EVENT_SIGNATURES,
 };
 use prodrome::fpl::TERM_SIGNATURES;
 use prodrome::payload::Payload;
+use prodrome::policy::{Policy, Untrusted};
 use prodrome::reference::Todo;
 
-fn untrusted() -> BTreeSet<Actor> {
+fn roster() -> Untrusted {
     // The roster is the DEPLOYMENT's, never the engine's (§5): it arrives as a
-    // parameter, and this is one.
-    [Actor::new("triage").expect("valid")].into_iter().collect()
+    // parameter, and this is one — the reference policy, which is what the
+    // corpus was written under.
+    Untrusted::of([Actor::new("triage").expect("valid")])
 }
 
 #[test]
@@ -77,12 +79,13 @@ fn the_corpus_holds_every_envelope_shape() {
     assert!(sealed > 1 && merges > 0);
 }
 
-/// Every kind the corpus uses is a kind SPEC §4 declares, the trust rule (§5)
-/// reads each one, and every spec a stored event carries EVALUATES — not just
+/// Every kind the corpus uses is a kind SPEC §4 declares, the reference policy
+/// (§5) has a standing for each one, and every spec a stored event carries
+/// EVALUATES — not just
 /// prints back, which is what the closed seam between §4 and §7 buys.
 #[test]
 fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
-    let untrusted = untrusted();
+    let policy = roster();
     let mut kinds: BTreeSet<&str> = BTreeSet::new();
     let (mut provisional, mut priced) = (0, 0);
     for (_, envelope) in common::corpus() {
@@ -90,12 +93,13 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
             continue;
         };
         kinds.insert(event.kind_name());
-        if !binds(event, &untrusted) {
+        if policy.standing(event).claims() {
             provisional += 1;
         }
         if let TodoEvent::Authored(authored) = event {
-            // A content record binds whatever its actor is (§5).
-            assert!(binds(event, &untrusted));
+            // A content record binds whoever wrote it (§5) — and is still shown
+            // as its writer's, which is what `confirms` is for.
+            assert!(policy.standing(event).binds());
             if let Some(spec) = &authored.payload.spec {
                 let now = prodrome::fpl::instant_of(authored.at);
                 let value = prodrome::fpl::fulfillment(spec, now, &prodrome::fpl::Env::new());
@@ -122,7 +126,7 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
     ] {
         assert!(kinds.contains(kind), "the corpus is missing a {kind}");
     }
-    assert!(provisional > 0, "the corpus exercises the trust rule");
+    assert!(provisional > 0, "the corpus exercises the standing rule");
     assert!(
         priced > 0,
         "the corpus holds specs, and every one evaluates"

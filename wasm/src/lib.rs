@@ -439,10 +439,11 @@ impl Read {
 // --- §6: the folds -----------------------------------------------------------
 
 /// §6.1–6.5 at `at` (ISO, or `null` for everything the chain holds), under
-/// `untrusted` — a list of actor names, the deployment's whole §5 policy,
-/// which arrives from the server because WHICH actors are provisional is
+/// `untrusted` — a list of actor names, read as the REFERENCE policy (§5),
+/// which arrives from the server because WHICH actors a host stands behind is
 /// instance knowledge and a core that guessed it would fold a different chain
-/// while claiming to fold the same one.
+/// while claiming to fold the same one. The wire is what it always was; since
+/// 0.3 the core takes a `policy::Policy` and this array becomes one.
 ///
 /// The answer is the five folds, each keyed by todo id and shaped the way
 /// `view.py` already puts it on the wire:

@@ -17,8 +17,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::event::{parse_envelope, Actor, Envelope, Hash, TodoEvent};
-use prodrome::fold::{authored_at, env_at, specs_at, Env, Untrusted};
+use prodrome::fold::{authored_at, env_at, specs_at, Env};
 use prodrome::fpl::{iso, print_term};
+use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::registers::{
     conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Node,
@@ -70,7 +71,7 @@ fn conformance(name: &str) -> PathBuf {
         .collect()
 }
 
-fn untrusted() -> Untrusted {
+fn roster() -> Untrusted {
     // The deployment's roster was `{"triage"}`, which is what
     // the generator folded these vectors with. The roster arrives as a
     // parameter here exactly as it does there.
@@ -104,10 +105,7 @@ fn materialise(dag: &Dag) -> Store {
         }
     }
     fs::write(root.join("HEAD"), &dag.tips[0]).expect("writes HEAD");
-    Store::new(
-        root,
-        [Actor::new("triage").expect("valid")].into_iter().collect(),
-    )
+    Store::new(root, roster())
 }
 
 fn outcomes(env: &Env) -> BTreeMap<String, Outcome> {
@@ -158,7 +156,7 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
             .read_dag_named()
             .unwrap_or_else(|e| panic!("seed {}: {e}", dag.seed));
         let nodes = nodes_of(&objects);
-        let state = fold(&nodes, None, &untrusted());
+        let state = fold(&nodes, None, &roster());
 
         let found: BTreeMap<String, BTreeMap<String, Vec<String>>> = conflicts_of(&state)
             .iter()
@@ -198,7 +196,7 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
 fn on_every_dag_the_registers_are_the_folds() {
     let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
     let vectors: Dags = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
-    let policy = untrusted();
+    let policy = roster();
     for dag in &vectors.dags {
         let store = materialise(dag);
         let objects = store.read_dag_named().expect("the DAG reads");
@@ -284,7 +282,7 @@ fn on_every_log_the_registers_are_the_folds_and_nothing_conflicts() {
 fn the_fold_is_a_monoid_action_on_every_dag() {
     let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
     let vectors: Dags = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
-    let policy = untrusted();
+    let policy = roster();
     for dag in &vectors.dags {
         let store = materialise(dag);
         let objects = store.read_dag_named().expect("the DAG reads");
@@ -327,7 +325,7 @@ fn the_fold_is_a_monoid_action_on_every_dag() {
 fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
     let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
     let vectors: Dags = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
-    let policy = untrusted();
+    let policy = roster();
     let mut pairs = 0;
     for dag in &vectors.dags {
         let store = materialise(dag);
@@ -363,7 +361,7 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
 /// "no writes" an absent key rather than an empty frontier.
 #[test]
 fn the_empty_state_is_the_unit() {
-    let policy = untrusted();
+    let policy = roster();
     let empty = Folded::<Todo>::empty();
     assert!(empty.frontiers().is_empty());
     assert_eq!(extend(&empty, &[], None, &policy), empty);
