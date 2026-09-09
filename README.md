@@ -1,7 +1,7 @@
 # prodrome
 
 **A temporal, content-addressed event database with fulfillment-priority
-semantics. Plain files, amenable to a git backing, no git dependency.**
+semantics.**
 
 A store is a directory of *objects*: one file each, holding one expression of
 a small printable grammar, named by the SHA-256 of exactly those bytes. Each
@@ -15,20 +15,19 @@ A *fold* turns the events up to a moment into what is believed at that moment:
 which todos are resolved, which specification is in force, which record is
 current. *Registers* read the same DAG and answer what a fold cannot: where
 two replicas wrote concurrently, a register holds both writes and the reader is
-shown a conflict rather than a quietly chosen winner. The two readings agree
-wherever there is nothing to disagree about; that is a law, not a convention.
-A trust policy sits over both: an untrusted actor's claim that a todo is done
-is stored and shown, and never folded.
+shown a conflict rather than a chosen winner. The two readings agree wherever
+there is nothing to disagree about, and that agreement is one of the laws in
+`SPEC.md`. A trust policy sits over both: an untrusted actor's claim that a
+todo is done is stored and shown, never folded.
 
 FPL is the third layer: a small fuzzy temporal logic in which a todo's spec is
 a function from time into `[0, 1]`. A deadline decays, a conjunction is as
 good as its weakest member, a window is sampled over the days ahead, a term can
 anchor to another todo's completion. Evaluating a spec at an instant against
-the fold's environment gives a *fulfillment*; its complement is urgency. There
-is one evaluator, and `explain` decorates its computation with a value at every
-node instead of re-reading the semantics. Replicas exchange objects, not
-deltas: `adopt` re-verifies another store's bytes and either fast-forwards or
-grows a second head that a later merge settles.
+the fold's environment gives a *fulfillment*; its complement is urgency.
+`explain` returns the same computation with a value at every node. Replicas
+exchange objects: `adopt` re-verifies another store's bytes and either
+fast-forwards or grows a second head that a later merge settles.
 
 ## Quick start
 
@@ -103,30 +102,26 @@ This block is the crate's documentation, so `cargo test` compiles and runs it.
   .lock                   held by an append; not data
 ```
 
-Nothing is encoded, compressed or packed. A store is greppable and diffable,
-and a file's name is a checksum of its contents, so corruption is detectable
-without a second copy. Objects are append-only and never rewritten, which is
-why a git backing works as a backup habit: every commit is a fast-forward of
-files that only ever appeared. Nothing in this crate shells out to git or needs
-it installed. Content addressing is the immutability; replica sync is the
-distribution.
+Nothing is encoded, compressed or packed. Objects are append-only and never
+rewritten, and a file's name is a checksum of its contents, so a store can be
+read, diffed and checked with ordinary tools, and corruption is detectable
+without a second copy.
 
-The `.py` extension is honest: an object's print is a Python-literal expression
-from a closed grammar (SPEC §2), readable by a person or by `python3 -c`.
-Nothing evaluates it. The parser admits that grammar and nothing else: no
-names, operators, comprehensions or attribute access.
+An object's print is a Python-literal expression from a closed grammar
+(SPEC §2), hence the extension. The parser admits that grammar and nothing
+else: no names, operators, comprehensions or attribute access, and nothing is
+ever evaluated.
 
-## The browser runs the same evaluator
+## WebAssembly
 
 ```console
 $ nix build .#prodrome-wasm
 ```
 
 `wasm/` is `core/` compiled to WebAssembly. Each export parses its arguments,
-calls one thing in the core, and prints the answer: no arithmetic, no policy,
-no clock, because every moment is an argument. The build is pure and yields two
-glues over one `.wasm`, `$out/web/` for a bundler and `$out/nodejs/` for a
-script.
+calls one function in the core, and prints the answer; every moment is an
+argument, so there is no clock. The build yields two glues over one `.wasm`,
+`$out/web/` for a bundler and `$out/nodejs/` for a script.
 
 | export           | asks |
 | ---------------- | ---- |
@@ -141,11 +136,9 @@ script.
 
 ## Conformance vectors
 
-`conformance/*.json` are frozen. An earlier, independent implementation
-produced them while it was still an independent reading of `SPEC.md`; there is
-no generator any more, on purpose. A diff in one is not a vector to refresh, it
-is this crate disagreeing with the last independent reading, and the question
-is which of the two is wrong. New vectors may be added by hand.
+`conformance/*.json` are fixed inputs an implementation must reproduce, to
+the tolerances `SPEC.md` §9 states. New vectors may be added; existing ones
+are not regenerated.
 
 | file          | pins |
 | ------------- | ---- |
@@ -156,7 +149,7 @@ is which of the two is wrong. New vectors may be added by hand.
 
 ## Laws
 
-SPEC §9, each a test rather than a paragraph:
+SPEC §9, each a test:
 
 1. `print ∘ parse` is the identity on every object, and `hash(print)` is its name.
 2. Prefix: a later event changes no earlier moment's reading.
@@ -168,9 +161,8 @@ SPEC §9, each a test rather than a paragraph:
 8. Every vector, to the tolerance it was taken at.
 9. The view is the composition it names: every field of every entry equals the fold §6.7 names it by.
 
-Laws 2, 3, 4, 6 and 9 are properties over generated logs and generated
-two-replica DAGs, built as real stores in temporary directories and driven the
-way a second replica would be.
+Laws 2, 3, 4, 6 and 9 are property tests over generated logs and generated
+two-replica DAGs, built as real stores in temporary directories.
 
 ```console
 $ nix flake check              # the suites, plus clippy at -D warnings

@@ -4,9 +4,9 @@ Prodrome is a temporal, content-addressed event database: event objects in a
 DAG, folds that turn them into belief at a moment, and FPL, a fuzzy temporal
 logic whose terms are a todo's fulfillment as a function of time. This
 document is the contract; the crates in this repository are its reference
-implementation. `conformance/*.json` are frozen vectors from an earlier
-independent implementation, and §9 lists the laws every implementation must
-pass: bit for bit where this text says so, to 1e-9 where it says so.
+implementation. §9 lists the laws every implementation must pass, bit for bit
+where this text says so and to 1e-9 where it says so, and `conformance/*.json`
+holds the vectors they are checked against.
 
 ## 1. Principles
 
@@ -209,7 +209,7 @@ code never calls a raw constructor.
 
 ## 9. Laws
 
-Every implementation, against `conformance/*.json` and on generated inputs:
+Against `conformance/*.json` and on generated inputs:
 
 1. `print ∘ parse` is the identity on every stored object, and `hash(print)`
    is its name.
