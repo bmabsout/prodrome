@@ -42,6 +42,7 @@ use crate::payload::{
 
 // --- the names, as types ----------------------------------------------------
 
+#[macro_export]
 macro_rules! newtype_str {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
