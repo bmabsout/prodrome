@@ -6,6 +6,15 @@ semantics.
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+- **Fulfillment as a function of time.** Each objective carries a spec in
+  FPL, a small fuzzy temporal logic, whose value in `[0, 1]` says how well the
+  objective is being met at any instant; the complement is its urgency. A
+  deadline decays, a conjunction is as good as its weakest member, a window
+  is sampled over the days ahead, a term can anchor to another objective's
+  completion.
+- **Time-based queries.** Ask at any time `t` for the objectives that were
+  open then and their priorities then, and the answer is what was believed at
+  `t`.
 - **A CRDT.** Every store is a full replica. Write offline, exchange objects
   with any other store, and all of them converge on the same history without
   a clock to agree on. Concurrent writes to the same field stay visible as a
@@ -13,11 +22,6 @@ semantics.
 - **Content-addressed.** Each object is one file named by the SHA-256 of its
   bytes, so a store is tamper-evident and can be verified from the files
   alone.
-- **Queryable at any instant.** Ask what was believed at any past moment and
-  get the answer as of then.
-- **Fulfillment as a function of time.** FPL, a small fuzzy temporal logic,
-  gives each todo a spec whose value in `[0, 1]` says how well it is being
-  met right now; the complement is urgency.
 - **Trust as policy.** Untrusted writers' claims are stored and shown but do
   not change what is believed.
 - **Runs in the browser.** The same core compiles to WebAssembly.
