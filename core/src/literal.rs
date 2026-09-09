@@ -417,10 +417,15 @@ impl Value {
 
 /// What a constructor name admits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Signature {
+pub enum Signature<'a> {
     /// The declared field order. Positional arguments bind to it in turn, a
     /// keyword must name one of these, and no field may be given twice.
-    Fields(&'static [&'static str]),
+    ///
+    /// BORROWED FROM THE VOCABULARY, not `'static`: a vocabulary whose field
+    /// order is not a compile-time table — SPEC §4's record kind, whose fields
+    /// are the core's three plus the host payload's — owns its own slice and
+    /// lends it. A static table lends `'static`, which coerces.
+    Fields(&'a [&'a str]),
     /// Any keyword field, no positional arguments — for reading a canonical
     /// print back without knowing the kind. Used by conformance tests and by
     /// tooling that inspects an object; the shipped read path never uses it,
@@ -433,19 +438,28 @@ pub enum Signature {
 /// trait is how `literal` stays ignorant of what those kinds mean: `event`
 /// supplies §4's and §7's, and nothing else can widen it.
 pub trait Vocabulary {
-    fn signature(&self, name: &str) -> Option<Signature>;
+    fn signature(&self, name: &str) -> Option<Signature<'_>>;
 }
 
 /// A vocabulary over a static table — what `event` builds its own from.
 #[derive(Debug, Clone, Copy)]
 pub struct Table(pub &'static [(&'static str, &'static [&'static str])]);
 
-impl Vocabulary for Table {
-    fn signature(&self, name: &str) -> Option<Signature> {
+impl Table {
+    /// The lookup, keeping the `'static` the table's own data has — so a
+    /// vocabulary composed of several tables ([`crate::event::EventVocabulary`])
+    /// is not handed a signature borrowed from a temporary.
+    pub fn find(&self, name: &str) -> Option<Signature<'static>> {
         self.0
             .iter()
             .find(|(key, _)| *key == name)
             .map(|(_, fields)| Signature::Fields(fields))
+    }
+}
+
+impl Vocabulary for Table {
+    fn signature(&self, name: &str) -> Option<Signature<'_>> {
+        self.find(name)
     }
 }
 
@@ -457,7 +471,7 @@ impl Vocabulary for Table {
 pub struct Open;
 
 impl Vocabulary for Open {
-    fn signature(&self, _name: &str) -> Option<Signature> {
+    fn signature(&self, _name: &str) -> Option<Signature<'_>> {
         Some(Signature::AnyKeywords)
     }
 }
@@ -1106,7 +1120,7 @@ impl<'a> Parser<'a> {
 /// canonical however the text was written.
 fn bind(
     name: &str,
-    order: &'static [&'static str],
+    order: &[&str],
     positional: Vec<Value>,
     keywords: Vec<(String, Value)>,
 ) -> Result<Vec<(String, Value)>, ProdromeError> {

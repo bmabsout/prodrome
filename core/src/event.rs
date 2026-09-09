@@ -696,7 +696,7 @@ pub const EVENT_SIGNATURES: &[(&str, &[&str])] = &[
 pub struct EventVocabulary;
 
 impl crate::literal::Vocabulary for EventVocabulary {
-    fn signature(&self, name: &str) -> Option<crate::literal::Signature> {
+    fn signature(&self, name: &str) -> Option<crate::literal::Signature<'_>> {
         // §7's half is `fpl`'s, imported rather than restated: the layer that
         // knows what a `Conj` MEANS is the one that declares its fields.
         Table(TERM_SIGNATURES)
