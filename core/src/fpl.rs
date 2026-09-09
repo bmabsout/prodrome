@@ -8,13 +8,17 @@
 //! child positions as `A`; `Term` is its fixed point and `Explanation` is the
 //! same shape carrying an annotation — the Cofree the spec calls "decoration,
 //! not evaluation". Invariants live in the `mk_*` smart constructors; a `Term`
-//! that exists came through one of them (or through `from_json`/`parse_term`,
-//! which call them).
+//! that exists came through one of them (or through `parse_term`, which calls
+//! them).
+//!
+//! NO JSON HERE. A term has ONE serialization and it is §2's literal print;
+//! the JSON shape a browser reads is `prodrome-wasm`'s `json` module, built on
+//! the types below, because JSON is JavaScript's literal grammar and this crate
+//! has its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
-use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::literal::{self, print_literal, Call, Finite, ProdromeError, Table};
@@ -193,7 +197,9 @@ impl<A> TermF<A> {
         }
     }
 
-    /// The `to_json` kind tag.
+    /// The kind TAG — the name `prodrome-wasm`'s JSON shape puts on this
+    /// layer, and the one word of that shape the core still owns, because an
+    /// explanation's notes are keyed beside it.
     pub fn kind(&self) -> &'static str {
         match self {
             TermF::Flat { .. } => "flat",
@@ -541,7 +547,8 @@ fn iso_note(t: Instant) -> Note {
     Note::One(Scalar::Text(iso(t)))
 }
 
-/// The term's own fields as `to_json` prints them, minus the subterms.
+/// The term's own fields, as notes: every scalar of this layer, keyed the way
+/// the wire keys it, and none of its subterms.
 fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
     let mut n = BTreeMap::new();
     match term.out() {
@@ -629,7 +636,7 @@ fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
     n
 }
 
-/// A `to_json`-shaped tree where every node also carries its own fulfillment.
+/// The term's own shape, with every node carrying its own fulfillment.
 ///
 /// ⚠️ CHILDREN ARE ANNOTATED AT THE TIME THE PARENT ACTUALLY USED: Shift,
 /// Within and After re-anchor time for their subterm, and a child evaluated at
@@ -753,77 +760,6 @@ pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
         notes,
         node: Box::new(node),
     }
-}
-
-fn scalar_json(s: &Scalar) -> Value {
-    match s {
-        Scalar::Text(t) => Value::String(t.clone()),
-        Scalar::Float(f) => Value::from(*f),
-        Scalar::Int(i) => Value::from(*i),
-        Scalar::Bool(b) => Value::Bool(*b),
-    }
-}
-
-fn note_json(n: &Note) -> Value {
-    match n {
-        Note::One(s) => scalar_json(s),
-        Note::Many(xs) => Value::Array(xs.iter().map(scalar_json).collect()),
-        Note::Maps(ms) => Value::Array(
-            ms.iter()
-                .map(|m| {
-                    Value::Object(m.iter().map(|(k, v)| (k.clone(), scalar_json(v))).collect())
-                })
-                .collect(),
-        ),
-    }
-}
-
-/// The wire: `to_json`'s shape with a `value` on every node, the notes beside
-/// it, and each part explained in place of its printed subterm.
-pub fn explanation_json(node: &Explanation) -> Value {
-    let mut out = Map::new();
-    out.insert("kind".into(), Value::String(node.node.kind().to_string()));
-    out.insert("value".into(), Value::from(node.value));
-    for (k, n) in &node.notes {
-        out.insert(k.clone(), note_json(n));
-    }
-    match &*node.node {
-        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } => {}
-        TermF::Conj { terms, .. } => {
-            out.insert(
-                "terms".into(),
-                Value::Array(terms.iter().map(explanation_json).collect()),
-            );
-        }
-        TermF::Offset { term, .. }
-        | TermF::Importance { term, .. }
-        | TermF::Shift { term, .. }
-        | TermF::Within { term, .. } => {
-            out.insert("term".into(), explanation_json(term));
-        }
-        TermF::Gate { gate, body } => {
-            out.insert("gate".into(), explanation_json(gate));
-            out.insert("body".into(), explanation_json(body));
-        }
-        TermF::OffsetBy { delta, term } => {
-            out.insert("delta".into(), explanation_json(delta));
-            out.insert("term".into(), explanation_json(term));
-        }
-        TermF::After { term, pending, .. } => {
-            out.insert("term".into(), explanation_json(term));
-            out.insert("pending".into(), explanation_json(pending));
-        }
-        // The piece in force rides in the `head` slot; it prints as "term".
-        TermF::Piecewise { head, .. } => {
-            out.insert("term".into(), explanation_json(head));
-        }
-    }
-    Value::Object(out)
-}
-
-/// `explained`, printed — the name every consumer already reads.
-pub fn explain(term: &Term, now: Instant, env: &Env) -> Value {
-    explanation_json(&explained(term, now, env))
 }
 
 // --- Smart constructors (§1: records are dumb data; these are the only path) -
@@ -1205,7 +1141,7 @@ fn pointwise(parts: Vec<Term>, rebuild: &dyn Fn(&[Term]) -> Term) -> Term {
     piecewise(head, pieces)
 }
 
-// --- §7 JSON boundary (parse, don't validate — via the smart constructors) ---
+// --- ISO instants: the one instant SPELLING every boundary shares ------------
 
 /// Python's `datetime.isoformat()`: microseconds only when non-zero.
 pub fn iso(t: Instant) -> String {
@@ -1216,7 +1152,7 @@ pub fn iso(t: Instant) -> String {
     }
 }
 
-/// `iso`'s inverse, for anything reading the JSON wire.
+/// `iso`'s inverse, for anything reading an instant off a wire.
 pub fn parse_iso(s: &str) -> Result<Instant, FplError> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
         .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S"))
@@ -1225,223 +1161,6 @@ pub fn parse_iso(s: &str) -> Result<Instant, FplError> {
                 .map(|d| d.and_hms_opt(0, 0, 0).expect("midnight is a time"))
         })
         .map_err(|e| FplError(format!("not an ISO instant: {s:?} ({e})")))
-}
-
-pub fn to_json(term: &Term) -> Value {
-    let mut out = Map::new();
-    out.insert("kind".into(), Value::String(term.out().kind().to_string()));
-    match term.out() {
-        TermF::Flat { value } => {
-            out.insert("value".into(), Value::from(*value));
-        }
-        TermF::Decay {
-            start,
-            end,
-            end_date,
-            lead_up,
-            start_date,
-        } => {
-            out.insert("start".into(), Value::from(*start));
-            out.insert("end".into(), Value::from(*end));
-            out.insert("endDate".into(), Value::String(iso(*end_date)));
-            out.insert(
-                "leadUpHours".into(),
-                Value::from(total_seconds(*lead_up) / 3600.0),
-            );
-            if let Some(sd) = start_date {
-                out.insert("startDate".into(), Value::String(iso(*sd)));
-            }
-        }
-        TermF::Curve { points } => {
-            out.insert(
-                "points".into(),
-                Value::Array(
-                    points
-                        .iter()
-                        .map(|pt| {
-                            let mut m = Map::new();
-                            m.insert("at".into(), Value::String(iso(pt.at)));
-                            m.insert("value".into(), Value::from(pt.value));
-                            if !pt.label.is_empty() {
-                                m.insert("label".into(), Value::String(pt.label.clone()));
-                            }
-                            Value::Object(m)
-                        })
-                        .collect(),
-                ),
-            );
-        }
-        TermF::Conj { terms, p } => {
-            out.insert("p".into(), Value::from(*p));
-            out.insert(
-                "terms".into(),
-                Value::Array(terms.iter().map(to_json).collect()),
-            );
-        }
-        TermF::Offset { delta, term } => {
-            out.insert("delta".into(), Value::from(*delta));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Gate { gate, body } => {
-            out.insert("gate".into(), to_json(gate));
-            out.insert("body".into(), to_json(body));
-        }
-        TermF::Shift { delta, term } => {
-            out.insert(
-                "deltaHours".into(),
-                Value::from(total_seconds(*delta) / 3600.0),
-            );
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Within { window, p, term } => {
-            out.insert(
-                "windowHours".into(),
-                Value::from(total_seconds(*window) / 3600.0),
-            );
-            out.insert("p".into(), Value::from(*p));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Importance { w, term } => {
-            out.insert("w".into(), Value::from(*w));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::After {
-            event,
-            anchor,
-            term,
-            pending,
-            needs,
-        } => {
-            out.insert("event".into(), Value::String(event.clone()));
-            out.insert("anchor".into(), Value::String(iso(*anchor)));
-            out.insert("term".into(), to_json(term));
-            out.insert("pending".into(), to_json(pending));
-            if let Some(n) = needs {
-                out.insert("needsHours".into(), Value::from(total_seconds(*n) / 3600.0));
-            }
-        }
-        TermF::OffsetBy { delta, term } => {
-            out.insert("delta".into(), to_json(delta));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Piecewise { head, pieces } => {
-            out.insert("head".into(), to_json(head));
-            out.insert(
-                "pieces".into(),
-                Value::Array(
-                    pieces
-                        .iter()
-                        .map(|(at, t)| {
-                            let mut m = Map::new();
-                            m.insert("at".into(), Value::String(iso(*at)));
-                            m.insert("term".into(), to_json(t));
-                            Value::Object(m)
-                        })
-                        .collect(),
-                ),
-            );
-        }
-    }
-    Value::Object(out)
-}
-
-fn field<'a>(d: &'a Value, key: &str) -> Result<&'a Value, FplError> {
-    d.get(key)
-        .ok_or_else(|| FplError(format!("term json missing {key:?}")))
-}
-
-fn num(d: &Value, key: &str) -> Result<f64, FplError> {
-    field(d, key)?
-        .as_f64()
-        .ok_or_else(|| FplError(format!("term json {key:?} is not a number")))
-}
-
-fn text(d: &Value, key: &str) -> Result<String, FplError> {
-    Ok(field(d, key)?
-        .as_str()
-        .ok_or_else(|| FplError(format!("term json {key:?} is not a string")))?
-        .to_string())
-}
-
-fn list<'a>(d: &'a Value, key: &str) -> Result<&'a Vec<Value>, FplError> {
-    field(d, key)?
-        .as_array()
-        .ok_or_else(|| FplError(format!("term json {key:?} is not a list")))
-}
-
-pub fn from_json(d: &Value) -> Result<Term, FplError> {
-    match d.get("kind").and_then(Value::as_str).unwrap_or("") {
-        "flat" => mk_flat(num(d, "value")?),
-        "decay" => mk_decay(
-            num(d, "start")?,
-            num(d, "end")?,
-            parse_iso(&text(d, "endDate")?)?,
-            delta_from_hours(num(d, "leadUpHours")?),
-            match d.get("startDate") {
-                Some(_) => Some(parse_iso(&text(d, "startDate")?)?),
-                None => None,
-            },
-        ),
-        "curve" => {
-            let mut points = vec![];
-            for pt in list(d, "points")? {
-                points.push(CurvePoint {
-                    at: parse_iso(&text(pt, "at")?)?,
-                    value: num(pt, "value")?,
-                    label: pt
-                        .get("label")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                });
-            }
-            mk_curve(points)
-        }
-        "conj" => {
-            let mut terms = vec![];
-            for t in list(d, "terms")? {
-                terms.push(from_json(t)?);
-            }
-            mk_conj(
-                terms,
-                d.get("p").and_then(Value::as_f64).unwrap_or(PRIORITY_POWER),
-            )
-        }
-        "offset" => mk_offset(num(d, "delta")?, from_json(field(d, "term")?)?),
-        "gate" => mk_gate(from_json(field(d, "gate")?)?, from_json(field(d, "body")?)?),
-        "shift" => mk_shift(
-            delta_from_hours(num(d, "deltaHours")?),
-            from_json(field(d, "term")?)?,
-        ),
-        "within" => mk_within(
-            delta_from_hours(num(d, "windowHours")?),
-            num(d, "p")?,
-            from_json(field(d, "term")?)?,
-        ),
-        "importance" => mk_importance(num(d, "w")?, from_json(field(d, "term")?)?),
-        "after" => mk_after(
-            text(d, "event")?,
-            parse_iso(&text(d, "anchor")?)?,
-            from_json(field(d, "term")?)?,
-            from_json(field(d, "pending")?)?,
-            match d.get("needsHours") {
-                Some(_) => Some(delta_from_hours(num(d, "needsHours")?)),
-                None => None,
-            },
-        ),
-        "offsetBy" => mk_offset_by(
-            from_json(field(d, "delta")?)?,
-            from_json(field(d, "term")?)?,
-        ),
-        "piecewise" => {
-            let mut pieces = vec![];
-            for p in list(d, "pieces")? {
-                pieces.push((parse_iso(&text(p, "at")?)?, from_json(field(p, "term")?)?));
-            }
-            mk_piecewise(from_json(field(d, "head")?)?, pieces)
-        }
-        other => err(format!("unknown term kind: {other:?}")),
-    }
 }
 
 // --- §2 the literal bridge: `literal` is the grammar ------------------------

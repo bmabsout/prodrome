@@ -87,7 +87,7 @@ pub fn parse_moment(field: &str, text: Option<String>) -> Result<Option<Instant>
 pub fn parse_term(field: &str, json_text: &str) -> Result<Term, Refusal> {
     let value: Value =
         serde_json::from_str(json_text).map_err(|e| format!("{field}: not JSON ({e})"))?;
-    fpl::from_json(&value).map_err(|e| format!("{field}: {e}"))
+    crate::json::from_json(&value).map_err(|e| format!("{field}: {e}"))
 }
 
 /// `{"<name>": {"kind": "Completed" | "Cancelled", "at": "<iso>"}}` — §7's
@@ -202,7 +202,7 @@ pub fn json_terms(terms: &BTreeMap<TodoId, Term>) -> Value {
     Value::Object(
         terms
             .iter()
-            .map(|(todo, term)| (todo.as_str().to_owned(), fpl::to_json(term)))
+            .map(|(todo, term)| (todo.as_str().to_owned(), crate::json::to_json(term)))
             .collect(),
     )
 }
@@ -221,7 +221,7 @@ pub fn json_terms(terms: &BTreeMap<TodoId, Term>) -> Value {
 /// tag, because a reader is after the value; the core kinds and the reference
 /// payload have no such field, and a host that adds one should expect it.
 ///
-/// A TERM ARRIVES AS ITS LITERAL SHAPE HERE, not as `fpl::to_json`'s — this
+/// A TERM ARRIVES AS ITS LITERAL SHAPE HERE, not as [`crate::json::to_json`]'s — this
 /// mapping is a payload's, and a payload's fields are opaque to this crate. A
 /// caller that wants a term as `to_json` reads `fold`'s `specs`/`flatten`, or
 /// hands the print to [`crate::term_json`].
@@ -345,4 +345,95 @@ pub fn object(pairs: Vec<(&str, Value)>) -> Value {
 
 pub fn strings(items: impl IntoIterator<Item = String>) -> Value {
     Value::Array(items.into_iter().map(Value::String).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prodrome::event::Hash;
+    use prodrome::fold::Binding;
+    use prodrome::fpl::{instant_of, mk_flat};
+    use prodrome::literal::Datetime;
+    use prodrome::registers::Kind;
+    use prodrome::view::{Confidence, Priced, Provisional};
+
+    fn at(day: u32) -> Datetime {
+        Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
+    }
+
+    fn name(byte: char) -> Hash {
+        Hash::new(byte.to_string().repeat(64)).expect("64 hex")
+    }
+
+    /// THE ENTRY'S WIRE SHAPE (§6.7), pinned here rather than inferred from
+    /// the struct: `conformance/view/*.py` freezes the same ten fields' VALUES
+    /// in the core, and this freezes the JSON keys and forms the browser reads
+    /// them under — the lowercased state, `isoformat(" ")`, `""` for an absent
+    /// claim, `null` for an absent value, and a term as its §2 PRINT and never
+    /// as `to_json`'s shape.
+    #[test]
+    fn an_entry_crosses_as_the_ten_keys_the_page_reads() {
+        let entry = Entry {
+            todo: TodoId::new("alpha").expect("valid"),
+            outcome: Some(Binding::Completed(instant_of(at(3)))),
+            claim: None,
+            confidence: Confidence::Provisional(Provisional::Content),
+            priced: Some(Priced {
+                spec: mk_flat(0.25).expect("valid"),
+                value: 0.25,
+            }),
+            content: Some(name('a')),
+            conflicts: [(Kind::State, vec![name('b'), name('c')])]
+                .into_iter()
+                .collect(),
+            stream: vec![name('a'), name('b')],
+        };
+        assert_eq!(
+            json_entry(&entry),
+            json!({
+                "todo": "alpha",
+                "state": "completed",
+                "at": "2026-09-03 12:00:00",
+                "claimed": "",
+                "value": 0.25,
+                "unconfirmed": true,
+                "conflicts": {"state": ["b".repeat(64), "c".repeat(64)]},
+                "content": "a".repeat(64),
+                "spec": "Flat(value=0.25)",
+                "stream": ["a".repeat(64), "b".repeat(64)],
+            })
+        );
+    }
+
+    /// The absences, which are the half a shape test usually misses: an OPEN
+    /// todo with no record and no price is `"open"`, `""`, `null`, `null`,
+    /// `null` — never a zero and never a missing key.
+    #[test]
+    fn an_open_unpriced_todo_crosses_as_absences_and_not_as_zeroes() {
+        let entry = Entry {
+            todo: TodoId::new("beta").expect("valid"),
+            outcome: None,
+            claim: Some(Binding::Cancelled(instant_of(at(5)))),
+            confidence: Confidence::Provisional(Provisional::Claimed),
+            priced: None,
+            content: None,
+            conflicts: BTreeMap::new(),
+            stream: vec![],
+        };
+        assert_eq!(
+            json_entry(&entry),
+            json!({
+                "todo": "beta",
+                "state": "open",
+                "at": "",
+                "claimed": "cancelled",
+                "value": Value::Null,
+                "unconfirmed": true,
+                "conflicts": {},
+                "content": Value::Null,
+                "spec": Value::Null,
+                "stream": [],
+            })
+        );
+    }
 }
