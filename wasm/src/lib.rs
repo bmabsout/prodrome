@@ -63,6 +63,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
+mod json;
 mod wire;
 
 use wire::{
@@ -450,9 +451,9 @@ impl Read {
 ///
 /// - `env`      — §6.1, as `{kind, at}` — §7's environment shape, so it is
 ///                also a legal argument to [`fulfillment`] and [`explain`]
-/// - `specs`    — §6.2, each an `fpl.to_json` term
+/// - `specs`    — §6.2, each a [`json::to_json`] term
 /// - `content`  — §6.3, each the reference's `json_authored` MINUS `rich`
-/// - `flatten`  — §6.4, each an `fpl.to_json` term: the todo's fulfillment
+/// - `flatten`  — §6.4, each a [`json::to_json`] term: the todo's fulfillment
 ///                FUNCTION, which is what a `value` and a series are read off
 /// - `history`  — §6.5, and the argument [`series_knots`] wants, so that a
 ///                knot in the past is evaluated against the environment as of
@@ -769,10 +770,10 @@ pub fn fulfillment(term: &str, now: &str, env: &str) -> Result<f64, JsError> {
 #[wasm_bindgen]
 pub fn term_json(literal: &str) -> Result<String, JsError> {
     let term = prodrome::fpl::parse_term(literal).map_err(|e| refused(format!("term: {}", e.0)))?;
-    printed(&prodrome::fpl::to_json(&term))
+    printed(&crate::json::to_json(&term))
 }
 
-/// §7's explain tree — `Cofree TermF Annotation` as `fpl.explain`'s JSON: the
+/// §7's explain tree — `Cofree TermF Annotation` as [`json::explain`] writes it: the
 /// term's own shape, each node carrying the value it had at the moment its
 /// parent used it. A DECORATION, never a second reading.
 #[wasm_bindgen]
@@ -780,7 +781,7 @@ pub fn explain(term: &str, now: &str, env: &str) -> Result<String, JsError> {
     let term = parse_term("term", term).map_err(refused)?;
     let now = parse_instant("now", now).map_err(refused)?;
     let env = parse_env(env).map_err(refused)?;
-    printed(&prodrome::fpl::explain(&term, now, &env))
+    printed(&crate::json::explain(&term, now, &env))
 }
 
 /// §7's knots — the curve a graph draws over `[from, to]`, and whether the

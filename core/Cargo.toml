@@ -27,8 +27,6 @@ path = "src/lib.rs"
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 sha2 = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 thiserror = "2"
 # `str.isprintable`'s Unicode categories, which the string printer needs to
 # reproduce CPython's `repr` byte for byte (SPEC section 2). Data tables only.
@@ -45,3 +43,9 @@ rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 proptest = "1"
+# THE MIGRATION ONLY. `conformance/*.json` is read, once, by
+# `examples/migrate_vectors.rs` and `tests/migration.rs` while both formats
+# are in the tree; the library has had no JSON in it since 0.4, and these two
+# go with the JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
