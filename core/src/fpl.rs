@@ -1486,7 +1486,8 @@ pub const TERM_SIGNATURES: &[(&str, &[&str])] = &[
 ];
 
 /// The vocabulary of a BARE term — what [`parse_term`] reads against. A stored
-/// object is read against `event::EVENT_VOCABULARY`, which is this and §4's.
+/// object is read against `event::EventVocabulary<P>`, which is this, §4's own
+/// kinds, and the host payload's.
 pub const TERM_VOCABULARY: Table = Table(TERM_SIGNATURES);
 
 /// A term's refusal, as the store's refusal. The two layers keep their own

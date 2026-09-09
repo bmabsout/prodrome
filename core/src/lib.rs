@@ -86,6 +86,7 @@
 //! - `registers`— §6.6: frontiers over the DAG, the fold as a monoid action
 //! - `breaks`   — §7 breakpoints and series knots
 //! - `view`     — §6.7: the entry, the composition of the folds above
+//! - `reference`— the payload the vectors were taken with (feature `reference`)
 
 pub mod breaks;
 pub mod event;
