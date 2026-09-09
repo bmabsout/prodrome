@@ -185,6 +185,13 @@ $ nix develop -c cargo test    # the same with a toolchain in hand
 
 `conformance/` holds vectors an implementation must reproduce; the laws in
 SPEC §9 are property tests over generated logs and two-replica stores.
+`conformance/view/*.json` (§6.7) is the one exception to "taken from the
+reference": there is no reference to take it from any more, so it is SEEDED
+instead — this crate's own log generator (`core/tests/common/mod.rs`'s
+`a_log`), under a fixed seed. It is still FROZEN: `cargo test` only reads it,
+and regenerating it is a separate, manual step —
+`cargo run --example generate_view_vectors -p prodrome-core` — that `nix
+flake check` and CI never run.
 
 ## Repository layout
 
