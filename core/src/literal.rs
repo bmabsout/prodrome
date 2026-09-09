@@ -42,11 +42,11 @@ pub enum ProdromeError {
 }
 
 impl ProdromeError {
-    pub(crate) fn parse(message: impl Into<String>) -> Self {
+    pub fn parse(message: impl Into<String>) -> Self {
         ProdromeError::Parse(message.into())
     }
 
-    pub(crate) fn invalid(message: impl Into<String>) -> Self {
+    pub fn invalid(message: impl Into<String>) -> Self {
         ProdromeError::Invalid(message.into())
     }
 }
