@@ -22,8 +22,9 @@ semantics.
 - **Content-addressed.** Each object is one file named by the SHA-256 of its
   bytes, so a store is tamper-evident and can be verified from the files
   alone.
-- **Trust as policy.** Untrusted writers' claims are stored and shown but do
-  not change what is believed.
+- **Standing is the host's.** The database does not decide whom to believe: it
+  asks your policy whether an event binds or only claims, and keeps both
+  readings either way.
 - **Runs in the browser.** The same core compiles to WebAssembly.
 
 ## Installation
@@ -45,26 +46,32 @@ its checklist length). Every type below is generic over it. The default
 `conformance/` was taken with and a worked example; a host with its own can
 turn it off with `default-features = false`.
 
+A host also supplies a `policy::Policy` — one function from an event to
+`Binds` or `Claims`, which is the whole of §5. `policy::Untrusted` is the
+reference one (a roster of actor names whose lifecycle events claim) and
+`Untrusted::none()` stands behind every writer; a deployment with a different
+rule implements the trait instead.
+
 ## Usage
 
 ```rust
-use std::collections::BTreeSet;
-
 use prodrome::event::{mk_created, mk_spec_revised, TodoId};
-use prodrome::fold::{env_at, evaluation_env, flatten, Untrusted};
+use prodrome::fold::{env_at, evaluation_env, flatten};
 use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, mk_decay};
 use prodrome::literal::Datetime;
+use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::registers::nodes_of;
 use prodrome::store::EventStore;
 use prodrome::view::entries;
 
-// A store is a directory. The type parameter is the HOST's record shape: what
-// this deployment attaches to a todo, as a `payload::Payload`. `reference::Todo`
-// is the one this repository's vectors were taken with; a host implements its
-// own. The second argument is the deployment's trust policy (§5): the actors
-// whose lifecycle events are claims, not bindings.
-let store = EventStore::<Todo>::new(&dir, BTreeSet::new());
+// A store is a directory. The first type parameter is the HOST's record shape:
+// what this deployment attaches to a todo, as a `payload::Payload`.
+// `reference::Todo` is the one this repository's vectors were taken with; a
+// host implements its own. The second argument is the deployment's STANDING
+// policy (§5) — which events bind and which only claim. `Untrusted` is the
+// reference policy: a roster of actor names whose lifecycle events are claims.
+let store = EventStore::<Todo>::new(&dir, Untrusted::none());
 
 // An event carries the instant its writer stamped on it. The store has no
 // clock: `at` is data, and nothing here reads the machine's.
@@ -83,17 +90,17 @@ assert!(store.verify().is_empty(), "no finding against this store");
 
 // Fold at an instant, and price what the fold believes.
 let now = Datetime::new(2026, 9, 14, 9, 0, 0, 0)?;
-let untrusted = Untrusted::none();
+let policy = store.policy();
 let events = store.events()?;
-let env = env_at(&events, now, &untrusted);
-let functions = flatten(&events, now, &untrusted)?;
+let env = env_at(&events, now, policy);
+let functions = flatten(&events, now, policy)?;
 let todo = TodoId::new("todo-1")?;
 let value = fulfillment(&functions[&todo], instant_of(now), &evaluation_env(&env));
 assert!((0.0..=1.0).contains(&value));
 
 // Or the whole composition at once: one row per todo the chain mentions,
 // each with its outcome, its function, its price and its conflicts (§6.7).
-let rows = entries(&nodes_of(&objects), now, &untrusted)?;
+let rows = entries(&nodes_of(&objects), now, policy)?;
 assert_eq!(rows.len(), 1);
 assert_eq!(rows[0].state(), "open");
 assert_eq!(rows[0].value(), Some(value));
@@ -125,8 +132,13 @@ of time.
 frontier of writes nothing later descends from. One write is a value, more is
 a conflict the caller is shown. On any DAG the registers agree with the folds.
 
-**Trust.** A set of untrusted actor names. Their lifecycle events are stored
-and shown as claims and never folded; their content records still bind.
+**Standing.** The database does not decide whom to believe. It asks the host's
+`Policy` one question per event — does this BIND, or does it only CLAIM — and
+keeps both readings: the confirmed one, under that policy, and the claimed one,
+under the policy where everything binds. A claim is stored and shown and never
+folded. `Untrusted`, the reference policy, is a set of actor names whose
+lifecycle events claim; a host with a different rule writes six lines of its
+own.
 
 **FPL.** Terms such as `Flat`, `Decay`, `Conj` (a power mean, so the weakest
 member dominates), `Within` (sampled over a window), `After` (anchored to
@@ -193,7 +205,7 @@ flake check` and CI never run.
 ## Repository layout
 
 ```
-core/         prodrome-core: literal, payload, event, store, fpl, fold, registers, breaks, view
+core/         prodrome-core: literal, payload, policy, event, store, fpl, fold, registers, breaks, view
               plus `reference`, the payload the vectors were taken with
 wasm/         prodrome-wasm: the core compiled for the browser, built with that payload
 conformance/  the vectors

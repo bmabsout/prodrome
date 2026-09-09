@@ -8,18 +8,86 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-09
+
+### Changed
+
+- **Standing is the host's** (SPEC §5, rewritten). The core carried one
+  deployment's trust policy: a set of untrusted actor names, plus a
+  kind-dependent rule (their lifecycle events did not bind, their content
+  records did), plus a `verify` clock rule keyed on the same set. None of that
+  is a fact about a DAG of events — it is the same move 0.2 made for the
+  record. The database now asks the HOST, one event at a time, and gets a
+  `policy::Standing`: `Binds` (the folds take it) or `Claims` (stored, shown,
+  never folded). Nothing in the core reads an actor name to decide anything.
+- `policy::Policy<P>` is that question as a trait. One required method,
+  `standing(&self, event: &TodoEvent<P>) -> Standing`; one provided method,
+  `confirms(&self, event) -> bool` ("is this the host's own word"), whose
+  default is `standing(event) == Binds`. Not sealed: a host implements it.
+- `fold::Untrusted` is now `policy::Untrusted`, the REFERENCE policy — the
+  rule `conformance/` was taken under, in the core rather than behind the
+  `reference` feature, because it is a policy over the core's own event kinds
+  and needs no payload. `Untrusted::none()`, `::of` and `::actors` are
+  unchanged; `Untrusted::binds` is gone (ask `standing`). `policy::Everything`
+  is new: the policy under which every event binds, which is what §6.7's
+  CLAIMED reading is taken under.
+- Every fold takes `&impl Policy<P>` where it took `&Untrusted`:
+  `fold::{env_at, specs_at, flatten, history}`, `registers::{extend, fold}`,
+  `view::entries`. `EventStore<P>` is now `EventStore<P, Pol = Untrusted>` and
+  holds the policy by value, so `EventStore::<Todo>::new(root, policy)` takes
+  an `Untrusted` where it took a `BTreeSet<Actor>`; `EventStore::policy()`
+  hands it back.
+- `event::binds(event, &BTreeSet<Actor>)` is gone. It was §5 hardcoded; the
+  rule is `Untrusted`'s `Policy` impl now.
+- `view::Standing` is `view::Confidence` and `Entry::standing` is
+  `Entry::confidence` — the name went to the event-level sum, which is what
+  §5 is about. `Provisional` and `Confidence::{of, is_provisional}` are
+  unchanged, and `Provisional::Content` now means "the winning content record
+  is one the policy does not `confirm`" rather than "its actor is untrusted".
+- §3's `verify` states its clock rule through the policy: an event the policy
+  does not `confirm`, dated behind any of its ancestors. Same rule, same
+  findings, same wording — the reference policy `confirms` exactly the actors
+  off its roster, whatever the kind, which is why it overrides the default.
+- SPEC §5 is rewritten as STANDING; §3, §6.1–6.5, §6.7 and §8 quantify over
+  the policy.
+
 ### Added
 
+- SPEC §9.10–9.12, the laws that make "the host decides" honest, as proptests
+  over generated logs in `core/tests/fold_laws.rs`:
+  - **9.10** under the policy that binds everything, the claimed and confirmed
+    readings are equal — every fold answers alike, no entry carries a claim,
+    no entry is provisional (`the_two_readings_agree_under_a_policy_that_binds_everything`);
+  - **9.11** a claiming event never moves the confirmed reading — append one
+    and every confirmed answer at every moment is the answer it was
+    (`a_claiming_event_never_moves_the_confirmed_reading`);
+  - **9.12** standing selects events, not positions — folding under a policy
+    is folding the sub-log of the events it binds, under any permutation of
+    the log (`standing_selects_events_and_not_positions`).
 - `conformance/view/*.json` (SPEC §6.7): `view::entries` had no frozen
   vectors — they were scrubbed when this crate went public, taken as they
   were on a private chain. SEEDED instead: random logs from this crate's own
   generator (`core/tests/common/mod.rs`'s `a_log`, the same one
   `core/tests/fold_laws.rs`'s properties draw from), under a fixed seed,
-  folded at several instants under two trust policies (untrusting `"triage"`
-  and, inverted, `"bassel"`). `core/tests/conformance_view.rs` replays them;
-  `core/examples/generate_view_vectors.rs` is the only thing that
-  regenerates them, run by hand, never by `cargo test` or CI. No stored byte
-  and no public API changed.
+  folded at several instants under two reference policies (rostering
+  `"triage"` and, inverted, `"bassel"`). `core/tests/conformance_view.rs`
+  replays them; `core/examples/generate_view_vectors.rs` is the only thing
+  that regenerates them, run by hand, never by `cargo test` or CI.
+
+### Unchanged
+
+- **The stored bytes.** No constructor, field or print changed; every object
+  written by 0.1.0 and 0.2.0 parses, prints back byte for byte and hashes to
+  the same name.
+- **The wasm wire.** `fold`, `registers` and `entries` still take `untrusted`
+  as a JSON array of actor names; `wire::parse_untrusted` turns that array
+  into the reference policy, which is the rule the argument always meant.
+  Every exported function's arguments and answers are the shapes they were,
+  `entries`' `unconfirmed` included.
+- **Every conformance vector**, byte for byte. `conformance/*.json`'s
+  `untrusted` fields are read through the reference policy; the prints,
+  hashes, linearisations, frontiers, fulfillments, entries and `verify`
+  findings are the ones the vectors held.
 
 ## [0.2.0] — 2026-09-09
 

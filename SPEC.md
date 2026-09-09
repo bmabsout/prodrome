@@ -76,8 +76,10 @@ fuzzed.
   when neither is an ancestor of the other.
 - **`verify`** reports an object not hashing to its name, a missing parent, a
   cycle, an unreachable object, a HEAD inconsistent with the objects, a
-  malformed `Woven`, a stale head, and an untrusted actor's event dated
-  before any of its parents (§5).
+  malformed `Woven`, a stale head, and an event the policy does not `confirm`
+  (§5) dated before any of its ancestors — a writer whose stamp the host
+  forces cannot legitimately be dated behind what it was written on top of,
+  where a backfill can.
 - **`adopt(source, tip)`** copies verified objects in. A tip already contained
   changes nothing; a tip containing every head fast-forwards; otherwise it
   becomes a second head. The source may be another store or a map of prints
@@ -119,27 +121,58 @@ lines)` with `on` a site literal. `MarkupSource` and `StringSource` are opaque
 text in that host's two rendering languages; the database stores and prints
 them and never interprets them.
 
-## 5. Trust
+## 5. Standing
 
-`untrusted` is a set of actor names and is the whole policy. `binds(event,
-untrusted)` holds when the event is a content record, from any actor, or its
-actor is trusted. An untrusted actor's lifecycle and `SpecRevised` events are
-provisional: stored, shown as claims, never folded.
+The database does not decide whom to believe. It asks the HOST, about one
+event at a time, and the answer is a `Standing`:
+
+- **`Binds`** — the folds take it. It writes its registers and it is what the
+  store believes.
+- **`Claims`** — the folds refuse it. It is stored and it is SHOWN, beside the
+  answer that stands, and it changes no confirmed reading.
+
+A **policy** is that function: `standing(event) : Standing`, of the EVENT and
+nothing else — not of the log, not of the position, not of the moment. Every
+fold in §6 takes one, §6.7 takes one, and §3's `verify` takes one; nothing in
+the database reads an actor name to decide anything.
+
+A policy answers one further question, whose default is the reading above:
+`confirms(event)`, "is this the host's own word", which is `standing(event) ==
+Binds` unless the policy says otherwise. Two readers ask it and neither is a
+fold — §6.7's `confidence` field, and §3's clock rule — and a policy that folds a
+writer's events while still marking them as that writer's is why it is asked
+separately. `Claims` implies not `confirms`.
+
+**The reference policy** — the one `conformance/*.json`'s `untrusted` fields
+name, and the one this repository's vectors were taken under — is a set of
+actor names. An event `Claims` when its actor is on the set and it is a
+lifecycle or `SpecRevised` event; everything else `Binds`, a content record
+included, because writing content is what such a writer is for and a fold that
+hid its writes would be an outage that reports success. It `confirms` an event
+exactly when the actor is not on the set — so a content record from a named
+actor binds and is still shown as that actor's. The empty set is the policy
+under which everything binds and nothing is a claim.
+
+**Both readings stay in the database** (§6.7): the CONFIRMED one, under the
+host's policy, and the CLAIMED one, under the policy where everything binds. A
+store that kept only the filtered reading could not show a claim at all, and
+showing one is the whole point of storing it.
 
 ## 6. Folds
 
-Every fold takes the linearised events and a moment `t`, and reads the events
-with `at <= t` in causal order.
+Every fold takes the linearised events, a moment `t` and a §5 POLICY, and reads
+the events with `at <= t` in causal order.
 
-1. `env_at(events, t, untrusted) : TodoId → Completed(at) | Cancelled(at)`.
-   The last binding write wins; `Reopened` clears; only events that bind
-   write.
-2. `specs_at`: the latest spec per todo, from a record's payload (any actor)
-   or a trusted `SpecRevised`.
-3. `authored_at`: the latest record per todo, any actor.
-4. `flatten(events, t, untrusted) : TodoId → Term`: one function per todo. Its
+1. `env_at(events, t, policy) : TodoId → Completed(at) | Cancelled(at)`.
+   The last binding write wins; `Reopened` clears; only events the policy
+   says `Binds` write.
+2. `specs_at`: the latest spec per todo, from a record's payload (whoever
+   wrote it) or a `SpecRevised` the policy binds.
+3. `authored_at`: the latest record per todo, whoever wrote it — no policy
+   parameter: content renders, and §6.7 marks the row instead.
+4. `flatten(events, t, policy) : TodoId → Term`: one function per todo. Its
    head is `checklist(first spec ever, first checklist length ever)`; at every
-   moment a spec, a checklist length or the trusted state changed there is a
+   moment a spec, a checklist length or the bound state changed there is a
    `Piece(at, term)`: a flat 1.0 while resolved, else `checklist(spec in
    force, items in force)`; assembled by `mk_piecewise`. "Spec" and "items"
    are the payload's two readings (§4) and the whole of what a record
@@ -152,7 +185,7 @@ with `at <= t` in causal order.
    late first half re-heads the curve before it. Absent when there was never
    a spec or a checklist. `checklist(own, n)` is `own` when `n == 0`;
    `Conj(n × Flat(0.5))` when `own` is `None`; else `OffsetBy(own, Conj(…))`.
-5. `history(events, untrusted)`: the environment as a function of time; per
+5. `history(events, policy)`: the environment as a function of time; per
    todo, the sequence of `(at, binding | None)`; `history.at(t)` equals
    `env_at(events, t)`.
 6. **Registers** over nodes `(name, parents, event)`: one register per `(kind
@@ -161,11 +194,12 @@ with `at <= t` in causal order.
    `extend(state, nodes)` is a monoid action. Projections pick the write
    latest in the linearisation, so on any DAG `env_of`, `specs_of` and
    `content_of` equal folds 1–3, and `conflicts_of` names the rest.
-7. **The entry.** `entries(nodes, t, untrusted) : [Entry]`, one row per todo
+7. **The entry.** `entries(nodes, t, policy) : [Entry]`, one row per todo
    any event mentions, ordered by id. It is the composition of the folds and
    §7, stated once so every consumer performs it once. With `confirmed =
-   fold(nodes, t, untrusted)`: `outcome = env_of(confirmed)[todo]`; `claim =
-   env_at(events, t, ∅)[todo]` where it names a different outcome than
+   fold(nodes, t, policy)`: `outcome = env_of(confirmed)[todo]`; `claim =
+   env_at(events, t, everything-binds)[todo]` where it names a different
+   outcome than
    `outcome`, absent where they agree; `spec = flatten(…)[todo]` and `value`
    its fulfillment at `t` under `confirmed`'s environment, absent together;
    `content = chosen_of(confirmed, content)[todo]`, the name of the winning
@@ -173,13 +207,15 @@ with `at <= t` in causal order.
    object up, because what a record MEANS is the host's; `conflicts = conflicts_of(confirmed)[todo]`;
    `stream` is every node whose event names the todo, in causal order. A todo
    whose events are all dated after `t` is still a row, open and unpriced:
-   `t` asks what is believed, not what exists. `standing` says whether the
-   answer is the trusted fold's whole: a claim refused, an untrusted actor's
-   content, or both. Checked against `conformance/view/*.json` — SEEDED, not
+   `t` asks what is believed, not what exists. `confidence` says whether the
+   answer is the confirmed reading whole: a claim refused, a winning content
+   record the policy does not `confirm`, or both. Checked against `conformance/view/*.json` — SEEDED, not
    taken from the reference like the rest of `conformance/`: random logs
    drawn from this crate's own generator (`core/tests/common/mod.rs`'s
    `a_log`, the one `core/tests/fold_laws.rs`'s properties draw from too)
-   under a fixed seed, folded at several instants under two trust policies.
+   under a fixed seed, folded at several instants under two reference
+   policies. Their `untrusted` fields are read through the reference policy;
+   the stored bytes and every expected answer are unchanged.
    `core/examples/generate_view_vectors.rs` regenerates them by hand; nothing
    under `cargo test` or CI ever does.
 
@@ -230,11 +266,14 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
 `Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Payload`, §4's record kind as a
 parameter — a constructor name, a field order, a vocabulary, a parse, a print,
 `spec` and a checklist length — carried by value and never as an existential,
-since one store holds one record shape; `Envelope = Sealed | Woven`;
+since one store holds one record shape; `Standing = Binds | Claims` and
+`Policy`, §5's standing as a parameter — one function of an event, carried by
+value like the payload and for the same reason, since one store reads under one
+policy; `Envelope = Sealed | Woven`;
 `TodoEvent`; `Term` as `Fix TermF`;
 `Explanation = Cofree TermF Annotation`; `Frontier`, a non-empty ordered set
 of writes; `Folded`; `Breaks`; `Entry` (§6.7), whose price and function are
-absent together and whose `Standing` is a sum with no "provisional for no
+absent together and whose `Confidence` is a sum with no "provisional for no
 reason" inhabitant. Smart constructors validate; records are data; engine
 code never calls a raw constructor.
 
@@ -266,6 +305,28 @@ Against `conformance/*.json` and on generated inputs:
    are exactly the todos the events mention. Against `conformance/view/*.json`
    (seeded, §6.7) on linear chains and against `core/tests/fold_laws.rs`'s
    property on random DAGs.
+
+Laws 10–12 QUANTIFY OVER THE POLICY (§5). They are what makes "the host
+decides" honest: the database is a two-reading fold with a parameter, and these
+say the parameter cannot do anything but select.
+
+10. **The two readings are one under the policy that binds everything.** With
+    every event binding, the claimed reading and the confirmed reading are
+    equal at every moment: every fold answers the same, no entry carries a
+    claim, and no entry is provisional. The empty reference roster is that
+    policy and answers alike.
+11. **A claiming event never moves the confirmed reading.** Append an event the
+    policy only lets `Claim`, at any instant and about any todo, and every
+    confirmed answer at every moment is the answer it was — the environment,
+    the specs, the content, the functions, the whole history. It is stored and
+    it is shown; it is not folded.
+12. **Standing selects events, not positions.** Because `standing` is a
+    function of the event alone, folding under a policy equals folding the
+    sub-log of the events it binds under the policy that binds everything —
+    and that stays true under any permutation of the log, since filtering
+    commutes with reordering. Which events count is a function of the event
+    SET; law 3 is the other half, that only which of them WINS is a function
+    of the order.
 
 ## 10. Non-goals
 
