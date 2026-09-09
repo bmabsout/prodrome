@@ -6,6 +6,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) for its
 API. THE STORED BYTES ARE A SEPARATE PROMISE and a stricter one: a shipped
 constructor's fields never change, in any release.
 
+## [Unreleased]
+
+### Added
+
+- `conformance/view/*.json` (SPEC §6.7): `view::entries` had no frozen
+  vectors — they were scrubbed when this crate went public, taken as they
+  were on a private chain. SEEDED instead: random logs from this crate's own
+  generator (`core/tests/common/mod.rs`'s `a_log`, the same one
+  `core/tests/fold_laws.rs`'s properties draw from), under a fixed seed,
+  folded at several instants under two trust policies (untrusting `"triage"`
+  and, inverted, `"bassel"`). `core/tests/conformance_view.rs` replays them;
+  `core/examples/generate_view_vectors.rs` is the only thing that
+  regenerates them, run by hand, never by `cargo test` or CI. No stored byte
+  and no public API changed.
+
 ## [0.2.0] — 2026-09-09
 
 ### Changed

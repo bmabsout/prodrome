@@ -175,7 +175,13 @@ with `at <= t` in causal order.
    whose events are all dated after `t` is still a row, open and unpriced:
    `t` asks what is believed, not what exists. `standing` says whether the
    answer is the trusted fold's whole: a claim refused, an untrusted actor's
-   content, or both.
+   content, or both. Checked against `conformance/view/*.json` — SEEDED, not
+   taken from the reference like the rest of `conformance/`: random logs
+   drawn from this crate's own generator (`core/tests/common/mod.rs`'s
+   `a_log`, the one `core/tests/fold_laws.rs`'s properties draw from too)
+   under a fixed seed, folded at several instants under two trust policies.
+   `core/examples/generate_view_vectors.rs` regenerates them by hand; nothing
+   under `cargo test` or CI ever does.
 
 ## 7. FPL
 
@@ -257,7 +263,9 @@ Against `conformance/*.json` and on generated inputs:
    linearisations, frontiers and `verify` findings exactly.
 9. **The view is the composition** (§6.7): on any DAG and at any moment,
    every field of every entry equals the fold it is named by, and the rows
-   are exactly the todos the events mention.
+   are exactly the todos the events mention. Against `conformance/view/*.json`
+   (seeded, §6.7) on linear chains and against `core/tests/fold_laws.rs`'s
+   property on random DAGs.
 
 ## 10. Non-goals
 
