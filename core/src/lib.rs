@@ -25,6 +25,7 @@
 //! use prodrome::fold::{env_at, evaluation_env, flatten, Untrusted};
 //! use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, mk_decay};
 //! use prodrome::literal::Datetime;
+//! use prodrome::reference::Todo;
 //! use prodrome::registers::nodes_of;
 //! use prodrome::store::EventStore;
 //! use prodrome::view::entries;
@@ -32,9 +33,12 @@
 //! # fn main() -> Result<(), prodrome::literal::ProdromeError> {
 //! # let dir = std::env::temp_dir().join("prodrome-quick-start");
 //! # let _ = std::fs::remove_dir_all(&dir);
-//! // A store is a directory. The second argument is the deployment's trust
+//! // A store is a directory. The type parameter is the HOST's record shape
+//! // (§4): what this deployment attaches to a todo, as a `payload::Payload`.
+//! // `reference::Todo` is the one this repository's vectors were taken with;
+//! // a host implements its own. The second argument is the deployment's trust
 //! // policy (§5): the actors whose lifecycle events are claims, not bindings.
-//! let store = EventStore::new(&dir, BTreeSet::new());
+//! let store = EventStore::<Todo>::new(&dir, BTreeSet::new());
 //!
 //! // An event carries the instant its writer stamped on it. The store has no
 //! // clock: `at` is data, and nothing here reads the machine's.
@@ -89,6 +93,11 @@ pub mod fold;
 pub mod fpl;
 pub mod literal;
 pub mod payload;
+/// The reference payload — the record shape `conformance/*.json` was taken
+/// with. A host defines its own; this one is behind a default feature so a
+/// host that wants none of it can turn it off.
+#[cfg(feature = "reference")]
+pub mod reference;
 pub mod registers;
 pub mod store;
 pub mod view;

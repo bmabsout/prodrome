@@ -19,11 +19,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use prodrome::event::{parse_envelope, Actor, Envelope, Hash, TodoEvent};
 use prodrome::fold::{authored_at, env_at, specs_at, Env, Untrusted};
 use prodrome::fpl::{iso, print_term};
+use prodrome::reference::Todo;
 use prodrome::registers::{
     conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Node,
 };
 use prodrome::store::EventStore;
 use serde::Deserialize;
+
+/// The vectors were taken with the reference payload, so that is the record
+/// shape they are read back under.
+type Event = TodoEvent<Todo>;
+type Chain = Node<Todo>;
+type Store = EventStore<Todo>;
 
 #[derive(Deserialize)]
 struct Dags {
@@ -79,7 +86,7 @@ fn far() -> prodrome::literal::Datetime {
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-fn materialise(dag: &Dag) -> EventStore {
+fn materialise(dag: &Dag) -> Store {
     let root = std::env::temp_dir().join(format!(
         "prodrome-registers-{}-{}",
         std::process::id(),
@@ -97,7 +104,7 @@ fn materialise(dag: &Dag) -> EventStore {
         }
     }
     fs::write(root.join("HEAD"), &dag.tips[0]).expect("writes HEAD");
-    EventStore::new(
+    Store::new(
         root,
         [Actor::new("triage").expect("valid")].into_iter().collect(),
     )
@@ -117,19 +124,20 @@ fn outcomes(env: &Env) -> BTreeMap<String, Outcome> {
         .collect()
 }
 
-fn events_of(nodes: &[Node]) -> Vec<TodoEvent> {
+fn events_of(nodes: &[Chain]) -> Vec<Event> {
     nodes.iter().filter_map(|node| node.event.clone()).collect()
 }
 
 /// A log's events as a CHAIN of nodes, each sealed on the one before — which
 /// is the DAG a single writer builds, and the shape the registers must agree
 /// with the folds on.
-fn chain_of(log: &Log) -> Vec<Node> {
+fn chain_of(log: &Log) -> Vec<Chain> {
     let mut prev = String::new();
     let mut nodes = Vec::new();
     for text in &log.events {
         let object = format!("Sealed(prev='{prev}', event={text})");
-        let envelope = parse_envelope(&object).unwrap_or_else(|e| panic!("seed {}: {e}", log.seed));
+        let envelope: Envelope<Todo> =
+            parse_envelope(&object).unwrap_or_else(|e| panic!("seed {}: {e}", log.seed));
         let name = prodrome::event::seal_hash(&envelope);
         prev = name.as_str().to_owned();
         nodes.push(Node::of(name, &envelope));
@@ -146,7 +154,7 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
     let mut registers = 0;
     for dag in &vectors.dags {
         let store = materialise(dag);
-        let objects: Vec<(Hash, Envelope)> = store
+        let objects: Vec<(Hash, Envelope<Todo>)> = store
             .read_dag_named()
             .unwrap_or_else(|e| panic!("seed {}: {e}", dag.seed));
         let nodes = nodes_of(&objects);
@@ -293,7 +301,7 @@ fn the_fold_is_a_monoid_action_on_every_dag() {
             // And the prefix that is already folded is exactly what `since`
             // declines to hand back.
             let prefix = fold(&nodes[..split], None, &policy);
-            let left: Vec<&Node> = since(&prefix, &nodes);
+            let left: Vec<&Chain> = since(&prefix, &nodes);
             assert_eq!(
                 left,
                 nodes[split..].iter().collect::<Vec<_>>(),
@@ -356,7 +364,7 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
 #[test]
 fn the_empty_state_is_the_unit() {
     let policy = untrusted();
-    let empty = Folded::empty();
+    let empty = Folded::<Todo>::empty();
     assert!(empty.frontiers().is_empty());
     assert_eq!(extend(&empty, &[], None, &policy), empty);
     assert_eq!(fold(&[], None, &policy), empty);

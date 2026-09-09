@@ -14,7 +14,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::event::{parents_of, seal_hash, Actor, Hash};
+use prodrome::reference::Todo;
 use prodrome::store::EventStore;
+
+/// The vectors were taken with the reference payload, so the store these read
+/// them into holds that record shape.
+type Store = EventStore<Todo>;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -51,7 +56,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// Write a vector's objects and heads out as a store on disk. `refs/` exists
 /// only while there is more than one head, and HEAD names one of them — the
 /// shape `EventStore::set_heads` would have produced.
-fn materialise(dag: &Dag) -> EventStore {
+fn materialise(dag: &Dag) -> Store {
     let root = std::env::temp_dir().join(format!(
         "prodrome-dag-{}-{}",
         std::process::id(),
@@ -69,7 +74,7 @@ fn materialise(dag: &Dag) -> EventStore {
         }
     }
     fs::write(root.join("HEAD"), &dag.tips[0]).expect("writes HEAD");
-    EventStore::new(root, untrusted())
+    Store::new(root, untrusted())
 }
 
 #[test]
@@ -82,7 +87,7 @@ fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
     let mut findings = 0;
     for dag in &vectors.dags {
         let store = materialise(dag);
-        let read: Vec<(Hash, prodrome::event::Envelope)> = store
+        let read: Vec<(Hash, prodrome::event::Envelope<Todo>)> = store
             .read_dag_named()
             .unwrap_or_else(|e| panic!("seed {}: {e}", dag.seed));
 

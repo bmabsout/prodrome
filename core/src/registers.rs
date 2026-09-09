@@ -32,6 +32,7 @@ use crate::event::{Authored, Envelope, Hash, TodoEvent, TodoId};
 use crate::fold::{Binding, Env, Untrusted};
 use crate::fpl::{self, Term};
 use crate::literal::Datetime;
+use crate::payload::Payload;
 
 /// A set of small non-negative integers as a bitmap.
 ///
@@ -83,14 +84,14 @@ impl BitSet {
 /// the store hands it over as a `(Hash, Envelope)` pair, and a trait here would
 /// be a seam with one implementation on either side of it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Node {
+pub struct Node<P> {
     pub name: Hash,
     pub parents: Vec<Hash>,
-    pub event: Option<TodoEvent>,
+    pub event: Option<TodoEvent<P>>,
 }
 
-impl Node {
-    pub fn of(name: Hash, envelope: &Envelope) -> Node {
+impl<P: Payload> Node<P> {
+    pub fn of(name: Hash, envelope: &Envelope<P>) -> Node<P> {
         Node {
             name,
             parents: crate::event::parents_of(envelope),
@@ -101,7 +102,7 @@ impl Node {
 
 /// The store's read, as nodes — `EventStore::read_dag_named`'s output in the
 /// shape [`extend`] takes, in the linearisation's order (parents first).
-pub fn nodes_of(objects: &[(Hash, Envelope)]) -> Vec<Node> {
+pub fn nodes_of<P: Payload>(objects: &[(Hash, Envelope<P>)]) -> Vec<Node<P>> {
     objects
         .iter()
         .map(|(name, envelope)| Node::of(name.clone(), envelope))
@@ -146,9 +147,9 @@ pub struct Key(pub Kind, pub TodoId);
 /// `PartialEq` on an `Arc` is `PartialEq` on what it holds, so the monoid-action
 /// law is still an equality of values.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Write {
+pub struct Write<P> {
     pub at: Hash,
-    pub event: Arc<TodoEvent>,
+    pub event: Arc<TodoEvent<P>>,
 }
 
 /// The writes to one register that no later write descends from.
@@ -159,20 +160,20 @@ pub struct Write {
 /// with no writes is an ABSENT KEY in [`Folded::frontiers`], so "no writes"
 /// and "a frontier that happens to be empty" cannot both exist to be confused.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Frontier(Vec<Write>);
+pub struct Frontier<P>(Vec<Write<P>>);
 
-impl Frontier {
+impl<P: Payload> Frontier<P> {
     /// `kept` (the writes this one did not supersede) together with `write`.
     /// Takes the new write by value, which is what makes the result non-empty
     /// without a check.
-    fn joining(kept: Vec<Write>, write: Write) -> Frontier {
+    fn joining(kept: Vec<Write<P>>, write: Write<P>) -> Frontier<P> {
         let mut writes = kept;
         writes.push(write);
         writes.sort_by(|a, b| a.at.as_str().cmp(b.at.as_str()));
         Frontier(writes)
     }
 
-    pub fn writes(&self) -> &[Write] {
+    pub fn writes(&self) -> &[Write<P>] {
         &self.0
     }
 
@@ -188,9 +189,11 @@ impl Frontier {
 /// carries one; the lifecycle kinds write the state; `SpecRevised` writes the
 /// spec. `Created` writes nothing a register holds — it is the todo's birth,
 /// folded elsewhere.
-pub fn writes_of(event: &TodoEvent) -> &'static [Kind] {
+pub fn writes_of<P: Payload>(event: &TodoEvent<P>) -> &'static [Kind] {
     match event {
-        TodoEvent::Authored(authored) if authored.spec.is_some() => &[Kind::Content, Kind::Spec],
+        TodoEvent::Authored(authored) if authored.payload.spec().is_some() => {
+            &[Kind::Content, Kind::Spec]
+        }
         TodoEvent::Authored(_) => &[Kind::Content],
         TodoEvent::Completed(_) | TodoEvent::Cancelled(_) | TodoEvent::Reopened(_) => {
             &[Kind::State]
@@ -203,16 +206,29 @@ pub fn writes_of(event: &TodoEvent) -> &'static [Kind] {
 /// The state the fold carries. Compared by value, so the monoid-action law is
 /// an equality. `position` and `ancestry` are the STRUCTURE — every object,
 /// event or not — and `frontiers` are the registers.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Folded {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Folded<P> {
     position: BTreeMap<Hash, usize>,
     ancestry: BTreeMap<Hash, BitSet>,
-    frontiers: BTreeMap<Key, Frontier>,
+    frontiers: BTreeMap<Key, Frontier<P>>,
 }
 
-impl Folded {
+/// Hand-written rather than derived: the empty state exists for every payload,
+/// and `#[derive(Default)]` would ask the payload for one it has no reason to
+/// have.
+impl<P> Default for Folded<P> {
+    fn default() -> Folded<P> {
+        Folded {
+            position: BTreeMap::new(),
+            ancestry: BTreeMap::new(),
+            frontiers: BTreeMap::new(),
+        }
+    }
+}
+
+impl<P: Payload> Folded<P> {
     /// The empty state — `fold`'s unit.
-    pub fn empty() -> Folded {
+    pub fn empty() -> Folded<P> {
         Folded::default()
     }
 
@@ -226,11 +242,11 @@ impl Folded {
     }
 
     /// The frontier of one register, or `None` where nothing has written it.
-    pub fn frontier(&self, kind: Kind, todo: &TodoId) -> Option<&Frontier> {
+    pub fn frontier(&self, kind: Kind, todo: &TodoId) -> Option<&Frontier<P>> {
         self.frontiers.get(&Key(kind, todo.clone()))
     }
 
-    pub fn frontiers(&self) -> &BTreeMap<Key, Frontier> {
+    pub fn frontiers(&self) -> &BTreeMap<Key, Frontier<P>> {
         &self.frontiers
     }
 
@@ -247,7 +263,7 @@ impl Folded {
     /// deterministic and clock-free, and arbitrary between concurrent writes,
     /// which is why [`conflicts_of`] exists beside it: the choice is shown,
     /// never hidden.
-    fn chosen<'a>(&self, frontier: &'a Frontier) -> &'a Write {
+    fn chosen<'a>(&self, frontier: &'a Frontier<P>) -> &'a Write<P> {
         frontier
             .0
             .iter()
@@ -265,12 +281,12 @@ impl Folded {
 /// otherwise it is skipped exactly as `chronological` and the folds skip it.
 /// A write supersedes every frontier member it descends from and joins the
 /// rest.
-pub fn extend(
-    state: &Folded,
-    nodes: &[Node],
+pub fn extend<P: Payload>(
+    state: &Folded<P>,
+    nodes: &[Node<P>],
     t: Option<Datetime>,
     untrusted: &Untrusted,
-) -> Folded {
+) -> Folded<P> {
     let mut position = state.position.clone();
     let mut ancestry = state.ancestry.clone();
     let mut frontiers = state.frontiers.clone();
@@ -304,7 +320,7 @@ pub fn extend(
         };
         for kind in writes_of(event) {
             let key = Key(*kind, event.todo().clone());
-            let kept: Vec<Write> = frontiers.get(&key).map_or_else(Vec::new, |frontier| {
+            let kept: Vec<Write<P>> = frontiers.get(&key).map_or_else(Vec::new, |frontier| {
                 frontier
                     .0
                     .iter()
@@ -323,13 +339,17 @@ pub fn extend(
 }
 
 /// `extend` from the empty state — the monoid action at its unit.
-pub fn fold(nodes: &[Node], t: Option<Datetime>, untrusted: &Untrusted) -> Folded {
+pub fn fold<P: Payload>(
+    nodes: &[Node<P>],
+    t: Option<Datetime>,
+    untrusted: &Untrusted,
+) -> Folded<P> {
     extend(&Folded::empty(), nodes, t, untrusted)
 }
 
 /// The nodes `state` has not folded yet, in their given order — what [`extend`]
 /// will actually apply. The incremental step's input.
-pub fn since<'a>(state: &Folded, nodes: &'a [Node]) -> Vec<&'a Node> {
+pub fn since<'a, P: Payload>(state: &Folded<P>, nodes: &'a [Node<P>]) -> Vec<&'a Node<P>> {
     nodes
         .iter()
         .filter(|node| !state.holds(&node.name))
@@ -341,7 +361,7 @@ pub fn since<'a>(state: &Folded, nodes: &'a [Node]) -> Vec<&'a Node> {
 /// The lifecycle bindings — [`crate::fold::env_at`]'s answer, from the state
 /// registers. A chosen `Reopened` means the todo is open, which is an ABSENT
 /// key and not a third binding.
-pub fn env_of(state: &Folded) -> Env {
+pub fn env_of<P: Payload>(state: &Folded<P>) -> Env {
     let mut env = Env::new();
     for (Key(kind, todo), frontier) in &state.frontiers {
         if *kind != Kind::State {
@@ -361,7 +381,7 @@ pub fn env_of(state: &Folded) -> Env {
 }
 
 /// The prices — [`crate::fold::specs_at`]'s answer.
-pub fn specs_of(state: &Folded) -> BTreeMap<TodoId, Term> {
+pub fn specs_of<P: Payload>(state: &Folded<P>) -> BTreeMap<TodoId, Term> {
     let mut out = BTreeMap::new();
     for (Key(kind, todo), frontier) in &state.frontiers {
         if *kind != Kind::Spec {
@@ -369,7 +389,7 @@ pub fn specs_of(state: &Folded) -> BTreeMap<TodoId, Term> {
         }
         let spec = match state.chosen(frontier).event.as_ref() {
             TodoEvent::SpecRevised(e) => Some(e.spec.clone()),
-            TodoEvent::Authored(e) => e.spec.clone(),
+            TodoEvent::Authored(e) => e.payload.spec().cloned(),
             _ => None,
         };
         if let Some(spec) = spec {
@@ -380,7 +400,7 @@ pub fn specs_of(state: &Folded) -> BTreeMap<TodoId, Term> {
 }
 
 /// The content — [`crate::fold::authored_at`]'s answer.
-pub fn content_of(state: &Folded) -> BTreeMap<TodoId, Authored> {
+pub fn content_of<P: Payload>(state: &Folded<P>) -> BTreeMap<TodoId, Authored<P>> {
     let mut out = BTreeMap::new();
     for (Key(kind, todo), frontier) in &state.frontiers {
         if *kind != Kind::Content {
@@ -398,7 +418,7 @@ pub fn content_of(state: &Folded) -> BTreeMap<TodoId, Authored> {
 /// up by this instead of taking a reprint of it across a boundary: a content
 /// record is a whole todo body, and 184 of them printed per fold was 1.7 ms
 /// of a 12 ms day-fold (2026-09-06).
-pub fn chosen_of(state: &Folded, kind: Kind) -> BTreeMap<TodoId, Hash> {
+pub fn chosen_of<P: Payload>(state: &Folded<P>, kind: Kind) -> BTreeMap<TodoId, Hash> {
     let mut out = BTreeMap::new();
     for (Key(held, todo), frontier) in &state.frontiers {
         if *held == kind {
@@ -410,8 +430,10 @@ pub fn chosen_of(state: &Folded, kind: Kind) -> BTreeMap<TodoId, Hash> {
 
 /// Every register with more than one write in its frontier, by todo: the
 /// writes a human has to settle, each named by the object that made it.
-pub fn conflicts_of(state: &Folded) -> BTreeMap<TodoId, BTreeMap<Kind, Frontier>> {
-    let mut out: BTreeMap<TodoId, BTreeMap<Kind, Frontier>> = BTreeMap::new();
+pub fn conflicts_of<P: Payload>(
+    state: &Folded<P>,
+) -> BTreeMap<TodoId, BTreeMap<Kind, Frontier<P>>> {
+    let mut out: BTreeMap<TodoId, BTreeMap<Kind, Frontier<P>>> = BTreeMap::new();
     for (Key(kind, todo), frontier) in &state.frontiers {
         if frontier.is_conflict() {
             out.entry(todo.clone())
@@ -424,7 +446,7 @@ pub fn conflicts_of(state: &Folded) -> BTreeMap<TodoId, BTreeMap<Kind, Frontier>
 
 /// The registers a state has any opinion about — what a reader enumerating
 /// todos asks, instead of unioning three projections.
-pub fn registers_of(state: &Folded) -> BTreeSet<&Key> {
+pub fn registers_of<P: Payload>(state: &Folded<P>) -> BTreeSet<&Key> {
     state.frontiers.keys().collect()
 }
 
@@ -456,9 +478,11 @@ mod tests {
     #[test]
     fn a_created_event_writes_no_register() {
         let at = Datetime::new(2026, 9, 6, 0, 0, 0, 0).expect("a real instant");
-        let created = crate::event::mk_created("alpha", at, "bassel", "", "").expect("valid");
+        let created: TodoEvent<crate::reference::Todo> =
+            crate::event::mk_created("alpha", at, "bassel", "", "").expect("valid");
         assert!(writes_of(&created).is_empty());
-        let completed = crate::event::mk_completed("alpha", at, "bassel", "").expect("valid");
+        let completed: TodoEvent<crate::reference::Todo> =
+            crate::event::mk_completed("alpha", at, "bassel", "").expect("valid");
         assert_eq!(writes_of(&completed), &[Kind::State]);
     }
 }

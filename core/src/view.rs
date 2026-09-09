@@ -61,6 +61,7 @@ use crate::event::{Hash, TodoEvent, TodoId};
 use crate::fold::{self, Binding, Untrusted};
 use crate::fpl::{self, Term};
 use crate::literal::{Datetime, ProdromeError};
+use crate::payload::Payload;
 use crate::registers::{self, Kind, Node};
 
 /// A todo's price at a moment: §6.4's function and that function's value
@@ -242,8 +243,8 @@ fn lowered(binding: Option<Binding>) -> &'static str {
 ///
 /// Returns a `Result` because [`fold::flatten`] does: a fold over stored data
 /// answers with a value, never with an abort.
-pub fn entries(
-    nodes: &[Node],
+pub fn entries<P: Payload>(
+    nodes: &[Node<P>],
     t: Datetime,
     untrusted: &Untrusted,
 ) -> Result<Vec<Entry>, ProdromeError> {
@@ -252,7 +253,7 @@ pub fn entries(
     let content = registers::chosen_of(&confirmed, Kind::Content);
     let mut conflicts = registers::conflicts_of(&confirmed);
 
-    let events: Vec<TodoEvent> = nodes.iter().filter_map(|node| node.event.clone()).collect();
+    let events: Vec<TodoEvent<P>> = nodes.iter().filter_map(|node| node.event.clone()).collect();
     let claims = fold::env_at(&events, t, &Untrusted::none());
     let specs = fold::flatten(&events, t, untrusted)?;
     // ONE conversion of the environment for the whole list: §7's `Env` is
@@ -343,14 +344,17 @@ fn kind_of(binding: Option<Binding>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_authored, mk_completed, mk_sealed, seal_hash, Actor};
+    use crate::event::{mk_completed, mk_sealed, seal_hash, Actor};
     use crate::fpl::mk_flat;
+    use crate::reference::{mk_authored, Todo};
+
+    type Event = TodoEvent<Todo>;
 
     fn at(day: u32) -> Datetime {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
     }
 
-    fn chain(events: Vec<TodoEvent>) -> Vec<Node> {
+    fn chain(events: Vec<Event>) -> Vec<Node<Todo>> {
         let mut prev = None;
         let mut nodes = Vec::new();
         for event in events {
@@ -362,7 +366,7 @@ mod tests {
         nodes
     }
 
-    fn authored(todo: &str, day: u32, actor: &str, spec: Option<Term>) -> TodoEvent {
+    fn authored(todo: &str, day: u32, actor: &str, spec: Option<Term>) -> Event {
         mk_authored(
             todo,
             at(day),
