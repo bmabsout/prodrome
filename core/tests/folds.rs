@@ -17,7 +17,12 @@ use prodrome::event::{canonical, parse_envelope, Actor, Envelope, TodoEvent};
 use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env, Untrusted};
 use prodrome::fpl::{iso, print_term};
 use prodrome::literal::{parse_literal, Datetime, Value};
+use prodrome::reference::Todo;
 use serde::Deserialize;
+
+/// The vectors' `Authored(...)` prints are the reference payload's, so that is
+/// what they are parsed back as — §9.1 under the generic path.
+type Event = TodoEvent<Todo>;
 
 #[derive(Deserialize)]
 struct Vectors {
@@ -52,12 +57,14 @@ fn conformance(name: &str) -> PathBuf {
 /// The generator prints each event on its own; reading one back means wrapping
 /// it in the envelope the loader knows, which is also the honest shape — an
 /// event only ever reaches a fold out of a stored object.
-fn events_of(log: &Log) -> Vec<TodoEvent> {
+fn events_of(log: &Log) -> Vec<Event> {
     log.events
         .iter()
         .map(|text| {
             let object = format!("Sealed(prev='', event={text})");
-            match parse_envelope(&object).unwrap_or_else(|e| panic!("seed {}: {e}", log.seed)) {
+            match parse_envelope::<Todo>(&object)
+                .unwrap_or_else(|e| panic!("seed {}: {e}", log.seed))
+            {
                 Envelope::Sealed { event, .. } => event,
                 Envelope::Woven { .. } => unreachable!("the wrapper is a Sealed"),
             }
@@ -186,12 +193,12 @@ fn a_later_event_is_invisible_and_every_event_prints_as_the_reference_wrote_it()
         }
         let t = moment(&log.at);
         let untrusted = policy(&log.untrusted);
-        let known: Vec<&TodoEvent> = prodrome::fold::chronological(&events, t).collect();
+        let known: Vec<&Event> = prodrome::fold::chronological(&events, t).collect();
         assert!(known.len() <= events.len());
         dropped += events.len() - known.len();
         // Folding only what was known by `t` is the same as folding everything
         // and letting `chronological` do the dropping.
-        let only_known: Vec<TodoEvent> = known.into_iter().cloned().collect();
+        let only_known: Vec<Event> = known.into_iter().cloned().collect();
         assert_eq!(
             env_at(&only_known, t, &untrusted),
             env_at(&events, t, &untrusted),
@@ -236,6 +243,33 @@ fn history_equals_env_at_at_every_instant_a_log_mentions() {
         }
     }
     assert!(asked > vectors.logs.len(), "more instants than logs");
+}
+
+/// SPEC §9.1 ON THE GENERIC PATH. The vectors' record prints were taken with
+/// the REFERENCE PAYLOAD, and this is the law that says so out loud: every
+/// `Authored(...)` in `folds.json` parses under `reference::Todo` — through the
+/// vocabulary that is now the core's names UNION the payload's — and prints
+/// back BYTE FOR BYTE. Making the record kind a type parameter changed the
+/// types and not one byte of the format, and a regression would show up here as
+/// a print that differs from the text it came from.
+#[test]
+fn every_record_print_round_trips_byte_for_byte_under_the_reference_payload() {
+    let raw = fs::read_to_string(conformance("folds.json")).expect("folds.json");
+    let vectors: Vectors = serde_json::from_str(&raw).expect("folds.json is the generator's shape");
+    let mut records = 0;
+    for log in &vectors.logs {
+        for (event, text) in events_of(log).iter().zip(&log.events) {
+            if !matches!(event, TodoEvent::Authored(_)) {
+                continue;
+            }
+            assert_eq!(&canonical(event), text, "seed {}: record print", log.seed);
+            records += 1;
+        }
+    }
+    assert!(
+        records > 100,
+        "the vectors hold records to round-trip, not a handful"
+    );
 }
 
 /// The `Binding` ADT is not a boolean: a completion and a cancellation are

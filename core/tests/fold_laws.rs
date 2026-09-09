@@ -24,20 +24,27 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::{Duration, NaiveDate};
 use prodrome::event::{
-    mk_authored, mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, mk_subtodo,
-    Actor, TodoEvent, TodoId,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, Actor, TodoEvent, TodoId,
 };
 use prodrome::fold::{
     authored_at, env_at, flatten, history, specs_at, Binding, Env, History, Untrusted,
 };
 use prodrome::fpl::{self, print_term, Instant, Term};
 use prodrome::literal::Datetime;
+use prodrome::reference::{mk_authored, mk_subtodo, Todo};
 use prodrome::registers::{
     conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Kind, Node,
 };
 use prodrome::store::EventStore;
 use prodrome::view;
 use proptest::prelude::*;
+
+/// These laws are about the FOLDS, not about a record's fields, so the payload
+/// they run under is the reference one — the shape the vector generator drew.
+type Event = TodoEvent<Todo>;
+type Chain = Node<Todo>;
+type Store = EventStore<Todo>;
+type State = Folded<Todo>;
 
 const TODOS: [&str; 3] = ["alpha", "beta", "gamma"];
 /// The reference generator's actors, in its proportions: two writes trusted
@@ -85,11 +92,11 @@ struct Draft {
 }
 
 impl Draft {
-    fn at(&self, at: Datetime) -> TodoEvent {
+    fn at(&self, at: Datetime) -> Event {
         self.at_with_note(at, "")
     }
 
-    fn at_with_note(&self, at: Datetime, note: &str) -> TodoEvent {
+    fn at_with_note(&self, at: Datetime, note: &str) -> Event {
         match self.roll {
             0 => ok(mk_created(
                 self.todo,
@@ -208,14 +215,14 @@ fn a_schedule(size: std::ops::Range<usize>) -> impl Strategy<Value = Vec<(Draft,
     })
 }
 
-fn realise(schedule: &[(Draft, i64)], shift: i64) -> Vec<TodoEvent> {
+fn realise(schedule: &[(Draft, i64)], shift: i64) -> Vec<Event> {
     schedule
         .iter()
         .map(|(draft, at)| draft.at(moment(at + shift)))
         .collect()
 }
 
-fn a_log() -> impl Strategy<Value = Vec<TodoEvent>> {
+fn a_log() -> impl Strategy<Value = Vec<Event>> {
     a_schedule(0..25).prop_map(|schedule| realise(&schedule, 0))
 }
 
@@ -231,7 +238,7 @@ struct Folds {
     history: History,
 }
 
-fn folds(log: &[TodoEvent], t: Datetime, policy: &Untrusted) -> Folds {
+fn folds(log: &[Event], t: Datetime, policy: &Untrusted) -> Folds {
     Folds {
         env: env_at(log, t, policy),
         specs: specs_at(log, t, policy)
@@ -311,7 +318,7 @@ proptest! {
         // the first content record (which fixes the first checklist length).
         // `specs_at`/`authored_at` hold a key exactly when the chain holds
         // such a write, which is the condition `flatten`'s head reads.
-        let head_of = |log: &[TodoEvent]| -> (BTreeSet<TodoId>, BTreeSet<TodoId>) {
+        let head_of = |log: &[Event]| -> (BTreeSet<TodoId>, BTreeSet<TodoId>) {
             (
                 specs_at(log, tau, &policy).into_keys().collect(),
                 authored_at(log, tau).into_keys().collect(),
@@ -363,14 +370,14 @@ proptest! {
         let mut order: Vec<usize> = (0..log.len()).collect();
         order.sort_by_key(|i| (keys.get(*i).copied().unwrap_or(0), *i));
 
-        let mut queues: BTreeMap<&TodoId, Vec<&TodoEvent>> = BTreeMap::new();
+        let mut queues: BTreeMap<&TodoId, Vec<&Event>> = BTreeMap::new();
         for event in &log {
             queues.entry(event.todo()).or_default().push(event);
         }
         for queue in queues.values_mut() {
             queue.reverse(); // pop from the back keeps each todo's own order
         }
-        let relinearised: Vec<TodoEvent> = order
+        let relinearised: Vec<Event> = order
             .iter()
             .map(|i| {
                 queues
@@ -569,7 +576,7 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
 
 /// A log as the chain a single writer builds: each object sealed on the one
 /// before, so the node's parents are real and its name is its own hash.
-fn chain_of(log: &[TodoEvent]) -> Vec<Node> {
+fn chain_of(log: &[Event]) -> Vec<Chain> {
     let mut prev: Option<prodrome::event::Hash> = None;
     let mut nodes = Vec::with_capacity(log.len());
     for event in log {
@@ -594,11 +601,7 @@ impl Drop for Replicas {
 
 /// Two replicas that diverged: a shared history, then concurrent writes on
 /// each side, then an import. Built the only way a second head can appear.
-fn diverged(
-    shared: &[TodoEvent],
-    mine: &[TodoEvent],
-    theirs: &[TodoEvent],
-) -> (Replicas, EventStore) {
+fn diverged(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, Store) {
     let root = std::env::temp_dir().join(format!(
         "prodrome-laws-{}-{}",
         std::process::id(),
@@ -607,11 +610,11 @@ fn diverged(
     let _ = fs::remove_dir_all(&root);
     let guard = Replicas(root.clone());
     let policy: BTreeSet<Actor> = [Actor::new("triage").expect("valid")].into_iter().collect();
-    let here = EventStore::new(root.join("here"), policy.clone());
+    let here = Store::new(root.join("here"), policy.clone());
     for event in shared {
         here.append(event.clone(), None).expect("appends");
     }
-    let there = EventStore::new(root.join("there"), policy);
+    let there = Store::new(root.join("there"), policy);
     if let Some(tip) = here.tip() {
         there.adopt(&here, &tip).expect("adopts");
     }
@@ -627,15 +630,15 @@ fn diverged(
     (guard, here)
 }
 
-fn nodes_from(store: &EventStore) -> Vec<Node> {
+fn nodes_from(store: &Store) -> Vec<Chain> {
     nodes_of(&store.read_dag_named().expect("the DAG reads"))
 }
 
-fn events_from(nodes: &[Node]) -> Vec<TodoEvent> {
+fn events_from(nodes: &[Chain]) -> Vec<Event> {
     nodes.iter().filter_map(|node| node.event.clone()).collect()
 }
 
-fn written(events: &[TodoEvent], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
+fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     events
         .iter()
         .filter(|event| policy.binds(event))
@@ -647,7 +650,7 @@ fn written(events: &[TodoEvent], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)>
         .collect()
 }
 
-fn conflicted(state: &Folded) -> BTreeSet<(Kind, TodoId)> {
+fn conflicted(state: &State) -> BTreeSet<(Kind, TodoId)> {
     conflicts_of(state)
         .iter()
         .flat_map(|(todo, by_kind)| by_kind.keys().map(|kind| (*kind, todo.clone())))
@@ -670,8 +673,8 @@ proptest! {
         theirs in a_schedule(1..6),
     ) {
         let policy = untrusted();
-        let mine: Vec<TodoEvent> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
-        let theirs: Vec<TodoEvent> =
+        let mine: Vec<Event> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
+        let theirs: Vec<Event> =
             theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
         let (_guard, store) = diverged(&realise(&shared, 0), &mine, &theirs);
         let nodes = nodes_from(&store);
@@ -697,8 +700,8 @@ proptest! {
         theirs in a_schedule(1..6),
     ) {
         let policy = untrusted();
-        let mine: Vec<TodoEvent> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
-        let theirs: Vec<TodoEvent> =
+        let mine: Vec<Event> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
+        let theirs: Vec<Event> =
             theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
         let (_guard, store) = diverged(&realise(&shared, 0), &mine, &theirs);
 
@@ -747,8 +750,8 @@ proptest! {
         when in 0i64..WINDOW,
     ) {
         let policy = untrusted();
-        let mine: Vec<TodoEvent> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
-        let theirs: Vec<TodoEvent> =
+        let mine: Vec<Event> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
+        let theirs: Vec<Event> =
             theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
         let (_guard, store) = diverged(&realise(&shared, 0), &mine, &theirs);
         let nodes = nodes_from(&store);
@@ -773,7 +776,7 @@ proptest! {
         let conflicts = conflicts_of(&fold(&nodes, Some(t), &policy));
         let env = prodrome::fold::evaluation_env(&bound);
         let now = fpl::instant_of(t);
-        let carried: BTreeMap<&prodrome::event::Hash, &TodoEvent> = nodes
+        let carried: BTreeMap<&prodrome::event::Hash, &Event> = nodes
             .iter()
             .filter_map(|node| node.event.as_ref().map(|event| (&node.name, event)))
             .collect();

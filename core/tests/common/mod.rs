@@ -108,11 +108,18 @@ pub fn agrees(path: &str, mine: &Value, theirs: &Value) -> Result<(), String> {
 // files always stood to each other.
 
 use prodrome::event::{
-    mk_authored, mk_cancelled, mk_completed, mk_created, mk_note, mk_reopened, mk_sealed,
-    mk_source, mk_spec_revised, mk_subtodo, mk_woven, seal_hash, Envelope, Hash, TodoEvent,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_sealed, mk_spec_revised, mk_woven,
+    seal_hash, Envelope, Hash, TodoEvent,
 };
 use prodrome::fpl::{self, mk_conj, mk_decay, mk_flat, mk_piecewise, mk_within, Term};
 use prodrome::literal::Datetime;
+pub use prodrome::reference::{mk_authored, mk_note, mk_source, mk_subtodo, Todo};
+
+/// The corpus is written against the REFERENCE PAYLOAD (`prodrome::reference`)
+/// — the record shape `conformance/*.json` was taken with, and therefore the
+/// one every vector in this repository round-trips under.
+pub type Event = TodoEvent<Todo>;
+pub type Object = Envelope<Todo>;
 
 /// A moment in the corpus's window, with microseconds where §2's seventh
 /// argument has to be exercised.
@@ -150,8 +157,8 @@ pub fn a_spec() -> Term {
 /// string that carries both quote characters, a newline and a tab, printable
 /// non-ASCII and an unprintable code point, an empty optional field, an empty
 /// tuple, and a record whose fields are all filled.
-pub fn events() -> Vec<TodoEvent> {
-    let ok = |result: Result<TodoEvent, prodrome::literal::ProdromeError>| {
+pub fn events() -> Vec<Event> {
+    let ok = |result: Result<Event, prodrome::literal::ProdromeError>| {
         result.expect("the corpus only builds events the constructors admit")
     };
     vec![
@@ -234,11 +241,11 @@ pub fn events() -> Vec<TodoEvent> {
 /// The events above sealed into a store's shape: a chain, then a FORK — two
 /// objects on one parent — joined by a `Woven` that carries no event, so the
 /// corpus holds every envelope kind §3 admits, genesis included.
-pub fn corpus() -> Vec<(Hash, Envelope)> {
+pub fn corpus() -> Vec<(Hash, Object)> {
     let mut events = events();
     let last = events.pop().expect("the corpus is not empty");
     let fork = events.pop().expect("the corpus is not empty");
-    let mut objects: Vec<(Hash, Envelope)> = Vec::new();
+    let mut objects: Vec<(Hash, Object)> = Vec::new();
     let mut prev: Option<Hash> = None;
     for event in events {
         let envelope = mk_sealed(prev.clone(), event);

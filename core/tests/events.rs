@@ -16,6 +16,8 @@ use prodrome::event::{
     EVENT_SIGNATURES,
 };
 use prodrome::fpl::TERM_SIGNATURES;
+use prodrome::payload::Payload;
+use prodrome::reference::Todo;
 
 fn untrusted() -> BTreeSet<Actor> {
     // The roster is the DEPLOYMENT's, never the engine's (§5): it arrives as a
@@ -29,8 +31,8 @@ fn every_stored_object_is_a_typed_envelope_that_prints_back() {
     assert!(corpus.len() > 5, "a corpus, not a single object");
     for (name, envelope) in &corpus {
         let text = canonical_envelope(envelope);
-        let parsed =
-            parse_envelope(&text).unwrap_or_else(|e| panic!("object {}: {e}", name.as_str()));
+        let parsed = parse_envelope::<Todo>(&text)
+            .unwrap_or_else(|e| panic!("object {}: {e}", name.as_str()));
         assert_eq!(&parsed, envelope, "object {}", name.as_str());
         assert_eq!(
             canonical_envelope(&parsed),
@@ -92,9 +94,9 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
             provisional += 1;
         }
         if let TodoEvent::Authored(authored) = event {
-            // An `Authored` record binds whatever its actor is (§5).
+            // A content record binds whatever its actor is (§5).
             assert!(binds(event, &untrusted));
-            if let Some(spec) = &authored.spec {
+            if let Some(spec) = &authored.payload.spec {
                 let now = prodrome::fpl::instant_of(authored.at);
                 let value = prodrome::fpl::fulfillment(spec, now, &prodrome::fpl::Env::new());
                 assert!((0.0..=1.0).contains(&value), "todo {:?}", authored.todo);
@@ -104,12 +106,12 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
     }
     for kind in &kinds {
         assert!(
-            EVENT_SIGNATURES.iter().any(|(name, _)| name == kind),
+            EVENT_SIGNATURES.iter().any(|(name, _)| name == kind) || *kind == Todo::KIND,
             "{kind} is outside SPEC §4"
         );
     }
-    // Every kind §4 declares an EVENT for is exercised; the records
-    // (`Source`, `Note`, `SubTodo`) and the envelopes ride inside them.
+    // Every kind §4 declares an EVENT for is exercised; the payload's own
+    // records (`Source`, `Note`, `SubTodo`) and the envelopes ride inside them.
     for kind in [
         "Created",
         "Completed",
@@ -139,18 +141,24 @@ fn a_name_outside_spec_4_is_refused_at_the_envelope() {
         "Woven(parents=('a',), event=None)",
         "None",
     ] {
-        assert!(parse_envelope(text).is_err(), "must refuse {text:?}");
+        assert!(
+            parse_envelope::<Todo>(text).is_err(),
+            "must refuse {text:?}"
+        );
     }
 }
 
 /// §2: "The names admitted are the closed vocabulary of §4 and §7 plus
-/// `datetime`/`timedelta`." This is the pin on that set.
+/// `datetime`/`timedelta`." This is the pin on that set — the core's half
+/// UNION the payload's, which is what a stored object is read against.
 #[test]
 fn the_vocabulary_is_exactly_the_spec_s() {
     let mut names: Vec<&str> = TERM_SIGNATURES
         .iter()
         .chain(EVENT_SIGNATURES.iter())
+        .chain(Todo::VOCABULARY.iter())
         .map(|(name, _)| *name)
+        .chain(std::iter::once(Todo::KIND))
         .collect();
     names.sort_unstable();
     assert_eq!(

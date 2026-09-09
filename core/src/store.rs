@@ -19,12 +19,14 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::event::{mk_sealed, mk_woven, parents_of, seal_hash, Actor, Envelope, Hash, TodoEvent};
 use crate::literal::{Datetime, ProdromeError};
+use crate::payload::Payload;
 
 /// A closed object set in a deterministic TOPOLOGICAL order.
 ///
@@ -39,7 +41,7 @@ use crate::literal::{Datetime, ProdromeError};
 /// two concurrent events on ONE todo, where a definite order is not the right
 /// answer. Those are a CONFLICT to show and settle with a later event, never to
 /// tie-break (§6.6).
-pub fn linearise(objects: &BTreeMap<Hash, Envelope>) -> Result<Vec<Hash>, ProdromeError> {
+pub fn linearise<P>(objects: &BTreeMap<Hash, Envelope<P>>) -> Result<Vec<Hash>, ProdromeError> {
     let mut children: BTreeMap<&Hash, Vec<&Hash>> = BTreeMap::new();
     let mut waiting: BTreeMap<&Hash, usize> = BTreeMap::new();
     for (digest, object) in objects {
@@ -91,16 +93,22 @@ pub fn linearise(objects: &BTreeMap<Hash, Envelope>) -> Result<Vec<Hash>, Prodro
 /// not each have to remember it, and empty (trust every writer) is the only
 /// honest default for a store nobody has configured.
 #[derive(Debug, Clone)]
-pub struct EventStore {
+pub struct EventStore<P> {
     root: PathBuf,
     untrusted: BTreeSet<Actor>,
+    /// WHICH RECORD SHAPE THIS STORE HOLDS. A store is parsed against one
+    /// closed vocabulary (§2), and that vocabulary is the core's kinds plus
+    /// this payload's — so the payload is part of what a store IS, not an
+    /// argument to each read.
+    payload: PhantomData<P>,
 }
 
-impl EventStore {
-    pub fn new(root: impl Into<PathBuf>, untrusted: BTreeSet<Actor>) -> EventStore {
+impl<P: Payload> EventStore<P> {
+    pub fn new(root: impl Into<PathBuf>, untrusted: BTreeSet<Actor>) -> EventStore<P> {
         EventStore {
             root: root.into(),
             untrusted,
+            payload: PhantomData,
         }
     }
 
@@ -247,7 +255,7 @@ impl EventStore {
     /// names stop being heads.
     pub fn append(
         &self,
-        event: TodoEvent,
+        event: TodoEvent<P>,
         parents: Option<&[Hash]>,
     ) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
@@ -279,7 +287,7 @@ impl EventStore {
     pub fn merge(
         &self,
         parents: Option<&[Hash]>,
-        event: Option<TodoEvent>,
+        event: Option<TodoEvent<P>>,
     ) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         let heads = self.tips();
@@ -313,7 +321,7 @@ impl EventStore {
     /// ceremony: a tip we already contain changes nothing; a tip that contains
     /// every head we hold is a FAST-FORWARD; anything else becomes a second
     /// head for `merge` to join.
-    pub fn adopt(&self, source: &EventStore, digest: &Hash) -> Result<Hash, ProdromeError> {
+    pub fn adopt(&self, source: &EventStore<P>, digest: &Hash) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         self.copy_in(source, digest)?;
         self.place(digest)
@@ -387,7 +395,7 @@ impl EventStore {
     /// replica is not trusted for being a replica. An object we already hold
     /// ends that branch of the walk: this store is closed under parents, so
     /// everything above one of ours is already here.
-    fn copy_in(&self, source: &EventStore, digest: &Hash) -> Result<(), ProdromeError> {
+    fn copy_in(&self, source: &EventStore<P>, digest: &Hash) -> Result<(), ProdromeError> {
         self.copy_in_from(digest, |name| fs::read(source.object_path(name)).ok())
     }
 
@@ -414,7 +422,7 @@ impl EventStore {
                     name.as_str()
                 )));
             };
-            let object = decode(&name, &raw)?;
+            let object = decode::<P>(&name, &raw)?;
             let here = self.object_path(&name);
             fs::write(&here, &raw).map_err(|e| Self::io(&here, e))?;
             pending.extend(parents_of(&object));
@@ -425,7 +433,7 @@ impl EventStore {
     /// One object onto disk, content-addressed and idempotent: identical bytes
     /// at the target path are a no-op; DIFFERENT bytes at the same name are a
     /// sha256 collision or a corrupt store, and we stop rather than clobber.
-    fn write(&self, object: &Envelope) -> Result<Hash, ProdromeError> {
+    fn write(&self, object: &Envelope<P>) -> Result<Hash, ProdromeError> {
         let text = crate::event::canonical_envelope(object);
         let digest = seal_hash(object);
         let objects = self.objects_dir();
@@ -453,7 +461,7 @@ impl EventStore {
     /// filename, then parse. Deliberately NOT a reparse→reprint→rehash — git
     /// hashes bytes and not semantics, so that a future printer change cannot
     /// false-alarm the whole store as tampered.
-    pub fn load(&self, digest: &Hash) -> Result<Envelope, ProdromeError> {
+    pub fn load(&self, digest: &Hash) -> Result<Envelope<P>, ProdromeError> {
         let path = self.object_path(digest);
         if !path.exists() {
             return Err(ProdromeError::Store(format!(
@@ -496,8 +504,8 @@ impl EventStore {
     fn objects_from(
         &self,
         tips: &BTreeSet<Hash>,
-    ) -> Result<BTreeMap<Hash, Envelope>, ProdromeError> {
-        let mut objects: BTreeMap<Hash, Envelope> = BTreeMap::new();
+    ) -> Result<BTreeMap<Hash, Envelope<P>>, ProdromeError> {
+        let mut objects: BTreeMap<Hash, Envelope<P>> = BTreeMap::new();
         let mut pending: Vec<Hash> = tips.iter().cloned().collect();
         while let Some(name) = pending.pop() {
             if objects.contains_key(&name) {
@@ -512,7 +520,7 @@ impl EventStore {
 
     /// Every object, from every head, in [`linearise`]'s topological order.
     /// THE read: parents come before children, so the sequence is causal order.
-    pub fn read_dag(&self) -> Result<Vec<Envelope>, ProdromeError> {
+    pub fn read_dag(&self) -> Result<Vec<Envelope<P>>, ProdromeError> {
         let objects = self.objects_from(&self.tips())?;
         let order = linearise(&objects)?;
         Ok(order
@@ -523,7 +531,7 @@ impl EventStore {
 
     /// The same read, with each object's name — which every caller that needs
     /// to rehash, link or report an object wants and would otherwise recompute.
-    pub fn read_dag_named(&self) -> Result<Vec<(Hash, Envelope)>, ProdromeError> {
+    pub fn read_dag_named(&self) -> Result<Vec<(Hash, Envelope<P>)>, ProdromeError> {
         self.read_dag_at(&self.tips())
     }
 
@@ -536,7 +544,7 @@ impl EventStore {
     pub fn read_dag_at(
         &self,
         tips: &BTreeSet<Hash>,
-    ) -> Result<Vec<(Hash, Envelope)>, ProdromeError> {
+    ) -> Result<Vec<(Hash, Envelope<P>)>, ProdromeError> {
         let objects = self.objects_from(tips)?;
         let order = linearise(&objects)?;
         Ok(order
@@ -554,7 +562,7 @@ impl EventStore {
     /// merge on the path, REFUSES rather than answering with a fragment of
     /// itself. Readers that cannot be wrong about a DAG keep calling this and
     /// find out loudly.
-    pub fn read_chain(&self) -> Result<Vec<Envelope>, ProdromeError> {
+    pub fn read_chain(&self) -> Result<Vec<Envelope<P>>, ProdromeError> {
         let heads = self.tips();
         if heads.len() > 1 {
             return Err(ProdromeError::Store(format!(
@@ -562,7 +570,7 @@ impl EventStore {
                 heads.len()
             )));
         }
-        let mut chain: Vec<Envelope> = Vec::new();
+        let mut chain: Vec<Envelope<P>> = Vec::new();
         let mut seen: BTreeSet<Hash> = BTreeSet::new();
         let mut cursor = self.tip();
         while let Some(digest) = cursor {
@@ -592,7 +600,7 @@ impl EventStore {
     /// The store's event bodies, in the linearisation's order. A merge carries
     /// no event and contributes none: the folds see facts about todos, and the
     /// DAG's shape reaches them only as the ORDER those facts arrive in.
-    pub fn events(&self) -> Result<Vec<TodoEvent>, ProdromeError> {
+    pub fn events(&self) -> Result<Vec<TodoEvent<P>>, ProdromeError> {
         Ok(self
             .read_dag()?
             .into_iter()
@@ -661,7 +669,7 @@ impl EventStore {
         let Ok(text) = std::str::from_utf8(&raw) else {
             return vec![format!("object {stem} failed to parse: not UTF-8")];
         };
-        match crate::event::parse_envelope(text) {
+        match crate::event::parse_envelope::<P>(text) {
             Ok(_) => Vec::new(),
             Err(error) => vec![format!("object {stem} failed to parse: {error}")],
         }
@@ -713,7 +721,7 @@ impl EventStore {
     /// a DAG.
     fn graph_problems(&self, tips: &BTreeSet<Hash>) -> (BTreeSet<Hash>, Vec<String>) {
         let mut visited: BTreeSet<Hash> = BTreeSet::new();
-        let mut objects: BTreeMap<Hash, Envelope> = BTreeMap::new();
+        let mut objects: BTreeMap<Hash, Envelope<P>> = BTreeMap::new();
         let mut pending: Vec<Hash> = tips.iter().cloned().collect();
         while let Some(name) = pending.pop() {
             if !visited.insert(name.clone()) {
@@ -780,9 +788,9 @@ impl EventStore {
 /// mark is the latest stamp anywhere beneath it, carried up the DAG in
 /// topological order. On a chain that is the running maximum this rule has
 /// always used, so the finding and its wording are unchanged there.
-fn dating_problems(
+fn dating_problems<P: Payload>(
     order: &[Hash],
-    objects: &BTreeMap<Hash, Envelope>,
+    objects: &BTreeMap<Hash, Envelope<P>>,
     untrusted: &BTreeSet<Actor>,
 ) -> Vec<String> {
     let mut high: BTreeMap<&Hash, Datetime> = BTreeMap::new();
@@ -818,7 +826,7 @@ fn dating_problems(
     problems
 }
 
-fn decode(digest: &Hash, raw: &[u8]) -> Result<Envelope, ProdromeError> {
+fn decode<P: Payload>(digest: &Hash, raw: &[u8]) -> Result<Envelope<P>, ProdromeError> {
     let recomputed = hex(&Sha256::digest(raw));
     if recomputed != digest.as_str() {
         return Err(ProdromeError::Store(format!(
@@ -846,6 +854,12 @@ mod tests {
     use super::*;
     use crate::event::{mk_completed, mk_created, Actor};
     use crate::literal::Datetime;
+    use crate::reference::Todo;
+
+    /// The store these tests drive. The payload is the reference one because
+    /// a store has to hold SOME record shape; nothing below reads a field of
+    /// it.
+    type Store = EventStore<Todo>;
 
     fn at(day: u32) -> Datetime {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
@@ -867,7 +881,7 @@ mod tests {
 
     #[test]
     fn a_chain_appends_verifies_and_reads_back_in_order() {
-        let store = EventStore::new(scratch("chain"), untrusted());
+        let store = Store::new(scratch("chain"), untrusted());
         let first = store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -902,8 +916,8 @@ mod tests {
 
     #[test]
     fn adopt_makes_a_second_head_and_merge_settles_it() {
-        let here = EventStore::new(scratch("here"), untrusted());
-        let there = EventStore::new(scratch("there"), untrusted());
+        let here = Store::new(scratch("here"), untrusted());
+        let there = Store::new(scratch("there"), untrusted());
         let shared = here
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -965,9 +979,9 @@ mod tests {
     /// two refusals below are the other half of it.
     #[test]
     fn adopting_bytes_lands_where_adopting_a_directory_lands() {
-        let by_dir = EventStore::new(scratch("bytes-dir"), untrusted());
-        let by_bytes = EventStore::new(scratch("bytes-map"), untrusted());
-        let there = EventStore::new(scratch("bytes-there"), untrusted());
+        let by_dir = Store::new(scratch("bytes-dir"), untrusted());
+        let by_bytes = Store::new(scratch("bytes-map"), untrusted());
+        let there = Store::new(scratch("bytes-there"), untrusted());
         let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
         for store in [&by_dir, &by_bytes, &there] {
             store.append(shared.clone(), None).expect("appends");
@@ -1011,7 +1025,7 @@ mod tests {
         // A REPLICA IS NOT TRUSTED FOR BEING A REPLICA. Bytes that do not hash
         // to the name they were filed under are refused, and so is a parent
         // nobody holds.
-        let liar = EventStore::new(scratch("bytes-liar"), untrusted());
+        let liar = Store::new(scratch("bytes-liar"), untrusted());
         let mut tampered = over_the_wire.clone();
         if let Some(text) = tampered.get_mut(&theirs) {
             text.push(' ');
@@ -1022,7 +1036,7 @@ mod tests {
             .filter(|(name, _)| **name == theirs)
             .map(|(name, text)| (name.clone(), text.clone()))
             .collect();
-        let missing = EventStore::new(scratch("bytes-orphan"), untrusted());
+        let missing = Store::new(scratch("bytes-orphan"), untrusted());
         assert!(missing.adopt_objects(&orphan, &theirs).is_err());
 
         for store in [&by_dir, &by_bytes, &there, &liar, &missing] {
@@ -1032,8 +1046,8 @@ mod tests {
 
     #[test]
     fn a_contained_tip_changes_nothing_and_a_containing_one_fast_forwards() {
-        let here = EventStore::new(scratch("ff-here"), untrusted());
-        let there = EventStore::new(scratch("ff-there"), untrusted());
+        let here = Store::new(scratch("ff-here"), untrusted());
+        let there = Store::new(scratch("ff-there"), untrusted());
         let first = here
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -1058,7 +1072,7 @@ mod tests {
 
     #[test]
     fn a_tampered_object_is_caught_on_read_and_by_verify() {
-        let store = EventStore::new(scratch("tamper"), untrusted());
+        let store = Store::new(scratch("tamper"), untrusted());
         let digest = store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -1090,7 +1104,7 @@ mod tests {
 
     #[test]
     fn an_untrusted_event_dated_behind_its_predecessor_is_a_finding() {
-        let store = EventStore::new(scratch("dating"), untrusted());
+        let store = Store::new(scratch("dating"), untrusted());
         store
             .append(
                 mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
@@ -1113,7 +1127,7 @@ mod tests {
             )]
         );
         // The same event from a TRUSTED actor is a backfill, not a finding.
-        let trusted = EventStore::new(scratch("dating-trusted"), untrusted());
+        let trusted = Store::new(scratch("dating-trusted"), untrusted());
         trusted
             .append(
                 mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
@@ -1133,7 +1147,7 @@ mod tests {
 
     #[test]
     fn an_orphan_is_unreachable_and_verify_says_so() {
-        let store = EventStore::new(scratch("orphan"), untrusted());
+        let store = Store::new(scratch("orphan"), untrusted());
         store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -1160,12 +1174,13 @@ mod tests {
 
     #[test]
     fn linearise_refuses_a_missing_parent_and_a_cycle() {
-        let store = EventStore::new(scratch("broken"), untrusted());
+        let store = Store::new(scratch("broken"), untrusted());
         let event = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
         let absent = Hash::new("a".repeat(64)).expect("hex");
         let orphaned = mk_sealed(Some(absent.clone()), event);
         let digest = seal_hash(&orphaned);
-        let objects: BTreeMap<Hash, Envelope> = [(digest.clone(), orphaned)].into_iter().collect();
+        let objects: BTreeMap<Hash, Envelope<Todo>> =
+            [(digest.clone(), orphaned)].into_iter().collect();
         assert_eq!(
             linearise(&objects).unwrap_err().to_string(),
             format!(
@@ -1191,7 +1206,7 @@ mod tests {
     fn an_append_takes_the_same_lock_file_the_python_writer_takes() {
         use rustix::fs::{flock, FlockOperation};
 
-        let store = EventStore::new(scratch("locked"), untrusted());
+        let store = Store::new(scratch("locked"), untrusted());
         store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),

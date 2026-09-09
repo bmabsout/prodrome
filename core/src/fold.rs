@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::event::{binds, Actor, Authored, TodoEvent, TodoId};
 use crate::fpl::{self, FplError, Instant, Term};
 use crate::literal::Datetime;
+use crate::payload::Payload;
 
 /// The actors whose lifecycle and repricing events are PROVISIONAL (§5):
 /// stored, shown as claims, never folded. A newtype rather than a bare set
@@ -40,7 +41,7 @@ impl Untrusted {
     }
 
     /// THE trust rule (§5), asked through the policy that holds it.
-    pub fn binds(&self, event: &TodoEvent) -> bool {
+    pub fn binds<P: Payload>(&self, event: &TodoEvent<P>) -> bool {
         binds(event, &self.0)
     }
 
@@ -100,7 +101,10 @@ pub fn evaluation_env(env: &Env) -> fpl::Env {
 /// The events known by `t`, in CAUSAL order — THE ordering every fold below
 /// shares, named once. `events` is the chain (or a prefix of it, or a DAG's
 /// linearisation); this keeps that order and drops what is dated after `t`.
-pub fn chronological(events: &[TodoEvent], t: Datetime) -> impl Iterator<Item = &TodoEvent> {
+pub fn chronological<P: Payload>(
+    events: &[TodoEvent<P>],
+    t: Datetime,
+) -> impl Iterator<Item = &TodoEvent<P>> {
     events.iter().filter(move |event| event.at() <= t)
 }
 
@@ -110,7 +114,7 @@ pub fn chronological(events: &[TodoEvent], t: Datetime) -> impl Iterator<Item = 
 ///
 /// This is what makes `fulfillment(term, t, env_at(…, t))` a time machine: the
 /// belief at any past moment is a query over the log, never a stored snapshot.
-pub fn env_at(events: &[TodoEvent], t: Datetime, untrusted: &Untrusted) -> Env {
+pub fn env_at<P: Payload>(events: &[TodoEvent<P>], t: Datetime, untrusted: &Untrusted) -> Env {
     let mut env = Env::new();
     for event in chronological(events, t) {
         if !untrusted.binds(event) {
@@ -142,8 +146,8 @@ pub fn env_at(events: &[TodoEvent], t: Datetime, untrusted: &Untrusted) -> Env {
 ///
 /// ABSENCE IS NOT ZERO: a todo missing here means the chain has no opinion
 /// about its price, not that it is worth nothing.
-pub fn specs_at(
-    events: &[TodoEvent],
+pub fn specs_at<P: Payload>(
+    events: &[TodoEvent<P>],
     t: Datetime,
     untrusted: &Untrusted,
 ) -> BTreeMap<TodoId, Term> {
@@ -154,7 +158,7 @@ pub fn specs_at(
                 specs.insert(e.todo.clone(), e.spec.clone());
             }
             TodoEvent::Authored(e) => {
-                if let Some(spec) = &e.spec {
+                if let Some(spec) = e.payload.spec() {
                     specs.insert(e.todo.clone(), spec.clone());
                 }
             }
@@ -174,7 +178,10 @@ pub fn specs_at(
 /// content from every actor renders. A fold that hid the agent's writes would
 /// not be containment, it would be an outage that reports success; the reader
 /// marks a provisional record instead.
-pub fn authored_at(events: &[TodoEvent], t: Datetime) -> BTreeMap<TodoId, Authored> {
+pub fn authored_at<P: Payload>(
+    events: &[TodoEvent<P>],
+    t: Datetime,
+) -> BTreeMap<TodoId, Authored<P>> {
     let mut out = BTreeMap::new();
     for event in chronological(events, t) {
         if let TodoEvent::Authored(e) = event {
@@ -245,7 +252,7 @@ impl History {
 /// Fold the whole log into a [`History`]. Same writers and the same trust rule
 /// as [`env_at`]: `Completed`/`Cancelled` bind, `Reopened` clears, the rest
 /// and every untrusted actor's lifecycle event do nothing.
-pub fn history(events: &[TodoEvent], untrusted: &Untrusted) -> History {
+pub fn history<P: Payload>(events: &[TodoEvent<P>], untrusted: &Untrusted) -> History {
     let mut bindings: BTreeMap<TodoId, Vec<(Instant, Option<Binding>)>> = BTreeMap::new();
     for event in events {
         if !untrusted.binds(event) {
@@ -301,8 +308,8 @@ pub fn history(events: &[TodoEvent], untrusted: &Untrusted) -> History {
 /// Returns a `Result` rather than panicking: every `mk_*` below is called with
 /// arguments this function proves valid, but a fold over stored data answers
 /// with a value, never with an abort.
-pub fn flatten(
-    events: &[TodoEvent],
+pub fn flatten<P: Payload>(
+    events: &[TodoEvent<P>],
     t: Datetime,
     untrusted: &Untrusted,
 ) -> Result<BTreeMap<TodoId, Term>, FplError> {
@@ -318,8 +325,8 @@ pub fn flatten(
                 items
                     .entry(e.todo.clone())
                     .or_default()
-                    .push((at, e.subtodos.len()));
-                if let Some(spec) = &e.spec {
+                    .push((at, e.payload.checklist_len()));
+                if let Some(spec) = e.payload.spec() {
                     specs
                         .entry(e.todo.clone())
                         .or_default()
@@ -410,14 +417,17 @@ fn flatten_one(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_authored, mk_completed, mk_reopened, mk_subtodo};
+    use crate::event::{mk_completed, mk_reopened};
     use crate::fpl::{fulfillment, mk_flat, print_term};
+    use crate::reference::{mk_authored, mk_subtodo, Todo};
+
+    type Event = TodoEvent<Todo>;
 
     fn at(day: u32) -> Datetime {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
     }
 
-    fn authored(todo: &str, day: u32, actor: &str, spec: Option<Term>, items: usize) -> TodoEvent {
+    fn authored(todo: &str, day: u32, actor: &str, spec: Option<Term>, items: usize) -> Event {
         let subtodos = (0..items)
             .map(|i| mk_subtodo(&format!("item {i}"), false).expect("valid"))
             .collect();
@@ -447,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_completion_binds_and_a_reopening_clears() {
-        let log = vec![
+        let log: Vec<Event> = vec![
             mk_completed("alpha", at(2), "bassel", "").expect("valid"),
             mk_reopened("alpha", at(4), "bassel", "").expect("valid"),
         ];
@@ -462,7 +472,7 @@ mod tests {
 
     #[test]
     fn an_untrusted_completion_is_a_claim_and_not_a_binding() {
-        let log = vec![mk_completed("alpha", at(2), "triage", "").expect("valid")];
+        let log: Vec<Event> = vec![mk_completed("alpha", at(2), "triage", "").expect("valid")];
         assert!(env_at(&log, at(3), &trusted()).is_empty());
         assert_eq!(env_at(&log, at(3), &Untrusted::none()).len(), 1);
     }

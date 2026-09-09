@@ -10,6 +10,16 @@ readme = "../README.md"
 keywords = ["event-sourcing", "content-addressed", "database", "temporal", "fuzzy-logic"]
 categories = ["database-implementations", "data-structures", "date-and-time"]
 
+[features]
+# THE REFERENCE PAYLOAD, on by default. `prodrome::reference` is the record
+# shape `conformance/*.json` was taken with and the worked example of
+# `payload::Payload`; the crate's own conformance suites are written against
+# it, which is why it ships rather than living in `tests/`. A host that
+# defines its own payload and wants none of these types compiles with
+# `default-features = false`.
+default = ["reference"]
+reference = []
+
 [lib]
 name = "prodrome"
 path = "src/lib.rs"
