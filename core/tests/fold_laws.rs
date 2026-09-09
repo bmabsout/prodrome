@@ -18,18 +18,17 @@
 //! about a frontier may depend on this side having constructed the graph in
 //! memory.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use chrono::{Duration, NaiveDate};
-use prodrome::event::{
-    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, Actor, TodoEvent, TodoId,
-};
+use prodrome::event::{mk_completed, mk_spec_revised, Actor, TodoEvent, TodoId};
 use prodrome::fold::{
     authored_at, env_at, flatten, history, specs_at, Binding, Env, History, Untrusted,
 };
-use prodrome::fpl::{self, print_term, Instant, Term};
+use prodrome::fpl::{self, print_term, Term};
 use prodrome::literal::Datetime;
 use prodrome::reference::{mk_authored, mk_subtodo, Todo};
 use prodrome::registers::{
@@ -39,6 +38,8 @@ use prodrome::store::EventStore;
 use prodrome::view;
 use proptest::prelude::*;
 
+use common::{a_draft, a_log, a_schedule, chain_of, far, moment, realise, WINDOW};
+
 /// These laws are about the FOLDS, not about a record's fields, so the payload
 /// they run under is the reference one — the shape the vector generator drew.
 type Event = TodoEvent<Todo>;
@@ -46,184 +47,14 @@ type Chain = Node<Todo>;
 type Store = EventStore<Todo>;
 type State = Folded<Todo>;
 
-const TODOS: [&str; 3] = ["alpha", "beta", "gamma"];
-/// The reference generator's actors, in its proportions: two writes trusted
-/// for every one that is not.
-const ACTORS: [&str; 3] = ["bassel", "bassel", "triage"];
-/// The generator's window: sixty days from the origin.
-const WINDOW: i64 = 60 * 86_400;
-
-fn origin() -> Instant {
-    NaiveDate::from_ymd_opt(2026, 9, 1)
-        .and_then(|day| day.and_hms_opt(0, 0, 0))
-        .expect("a real date")
-}
-
-fn moment(seconds: i64) -> Datetime {
-    fpl::datetime_of(origin() + Duration::seconds(seconds)).expect("inside the grammar's years")
-}
-
-/// Later than every event any generator here produces, so a dated fold sees
-/// the whole log and can be compared with the undated register fold.
-fn far() -> Datetime {
-    moment(WINDOW * 20)
-}
-
+/// The random log generator (`TODOS`, `ACTORS`, `WINDOW`, `origin`, `moment`,
+/// `far`, `Draft`, `a_random_spec`, `a_draft`, `a_schedule`, `realise`,
+/// `a_log`, `chain_of`) lives in `tests/common/mod.rs` now: it is also what
+/// `examples/generate_view_vectors.rs` draws `conformance/view/*.json` from,
+/// over a fixed seed, and a generator a vector file was taken from and a
+/// property runs against had to be the same one.
 fn untrusted() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
-}
-
-fn ok<T>(result: Result<T, prodrome::literal::ProdromeError>) -> T {
-    result.expect("the generator only builds events the constructors admit")
-}
-
-/// An event with its instant left OPEN. The generators produce these, and the
-/// laws realise them at whatever instant they are about: the prefix law needs
-/// an event dated after the log, and the shift law needs the same log dated
-/// differently, and neither is expressible if the stamp is baked in.
-#[derive(Debug, Clone)]
-struct Draft {
-    todo: &'static str,
-    actor: &'static str,
-    roll: u8,
-    spec: Option<Term>,
-    items: usize,
-    text: u32,
-}
-
-impl Draft {
-    fn at(&self, at: Datetime) -> Event {
-        self.at_with_note(at, "")
-    }
-
-    fn at_with_note(&self, at: Datetime, note: &str) -> Event {
-        match self.roll {
-            0 => ok(mk_created(
-                self.todo,
-                at,
-                self.actor,
-                &format!("t{}", self.text),
-                note,
-            )),
-            1 | 2 => {
-                let subtodos = (0..self.items)
-                    .map(|i| ok(mk_subtodo(&format!("item {i}"), i % 3 == 0)))
-                    .collect();
-                ok(mk_authored(
-                    self.todo,
-                    at,
-                    self.actor,
-                    "todo",
-                    at,
-                    &format!("body {} \\@x", self.text),
-                    self.spec.clone(),
-                    vec![],
-                    "",
-                    "",
-                    "",
-                    None,
-                    subtodos,
-                    vec![],
-                    note,
-                ))
-            }
-            3 => ok(mk_spec_revised(
-                self.todo,
-                at,
-                self.actor,
-                self.spec
-                    .clone()
-                    .unwrap_or_else(|| fpl::mk_flat(0.5).expect("0.5 is a fulfillment")),
-                note,
-            )),
-            4 => ok(mk_completed(self.todo, at, self.actor, note)),
-            5 => ok(mk_cancelled(self.todo, at, self.actor, note)),
-            _ => ok(mk_reopened(self.todo, at, self.actor, note)),
-        }
-    }
-}
-
-/// A spec the way the reference's generator draws one, shallow: the shapes that
-/// make `flatten`'s normal form do work — a schedule to splice, a conjunction
-/// to push under one — without the depth `fpl`'s own laws already cover.
-fn a_spec() -> impl Strategy<Value = Term> {
-    let leaf = prop_oneof![
-        (0.02f64..0.98).prop_map(|v| fpl::mk_flat(v).expect("in [0, 1]")),
-        (0.3f64..0.95, 0.0f64..0.2, 0i64..WINDOW, 6i64..400).prop_map(|(start, end, at, lead)| {
-            fpl::mk_decay(
-                start,
-                end,
-                origin() + Duration::seconds(at),
-                Duration::hours(lead),
-                None,
-            )
-            .expect("a well-formed decay")
-        }),
-    ];
-    leaf.prop_recursive(2, 8, 2, |inner| {
-        prop_oneof![
-            (
-                prop::collection::vec(inner.clone(), 1..3),
-                prop::sample::select(vec![-4.0, -1.0, 0.0])
-            )
-                .prop_map(|(terms, p)| fpl::mk_conj(terms, p).expect("p is in range")),
-            (
-                inner.clone(),
-                prop::collection::btree_set(0i64..WINDOW, 1..3),
-                prop::collection::vec(inner, 2)
-            )
-                .prop_map(|(head, ats, terms)| fpl::mk_piecewise(
-                    head,
-                    ats.iter()
-                        .zip(terms)
-                        .map(|(at, term)| (origin() + Duration::seconds(*at), term))
-                        .collect()
-                )
-                .expect("the instants are a sorted set"))
-        ]
-    })
-}
-
-fn a_draft() -> impl Strategy<Value = Draft> {
-    (
-        prop::sample::select(TODOS.to_vec()),
-        prop::sample::select(ACTORS.to_vec()),
-        0u8..7,
-        // The generator carries a spec on most `Authored` records and not all.
-        prop::option::weighted(0.85, a_spec()),
-        prop::sample::select(vec![0usize, 0, 2, 3]),
-        0u32..999,
-    )
-        .prop_map(|(todo, actor, roll, spec, items, text)| Draft {
-            todo,
-            actor,
-            roll,
-            spec,
-            items,
-            text,
-        })
-}
-
-/// Drafts with their instants, ready to realise. Kept apart from the events so
-/// a law can re-date the same log.
-fn a_schedule(size: std::ops::Range<usize>) -> impl Strategy<Value = Vec<(Draft, i64)>> {
-    prop::collection::vec((a_draft(), 0i64..WINDOW), size).prop_map(|mut drafts| {
-        // `a_log` sorts by instant, and Rust's sort is stable, so equal stamps
-        // keep the order they were drawn in — the reference's `sorted` too.
-        drafts.sort_by_key(|(_, at)| *at);
-        drafts
-    })
-}
-
-fn realise(schedule: &[(Draft, i64)], shift: i64) -> Vec<Event> {
-    schedule
-        .iter()
-        .map(|(draft, at)| draft.at(moment(at + shift)))
-        .collect()
-}
-
-fn a_log() -> impl Strategy<Value = Vec<Event>> {
-    a_schedule(0..25).prop_map(|schedule| realise(&schedule, 0))
 }
 
 /// What every fold answers, as one comparable value. Terms and records go in
@@ -572,20 +403,6 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
     );
     assert_eq!(fpl::fulfillment(&before[&beta], now, &env), 0.5);
     assert_eq!(fpl::fulfillment(&after[&beta], now, &env), 0.75);
-}
-
-/// A log as the chain a single writer builds: each object sealed on the one
-/// before, so the node's parents are real and its name is its own hash.
-fn chain_of(log: &[Event]) -> Vec<Chain> {
-    let mut prev: Option<prodrome::event::Hash> = None;
-    let mut nodes = Vec::with_capacity(log.len());
-    for event in log {
-        let envelope = prodrome::event::mk_sealed(prev.clone(), event.clone());
-        let name = prodrome::event::seal_hash(&envelope);
-        prev = Some(name.clone());
-        nodes.push(Node::of(name, &envelope));
-    }
-    nodes
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
