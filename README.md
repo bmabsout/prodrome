@@ -24,9 +24,6 @@ semantics.
   alone.
 - **Trust as policy.** Untrusted writers' claims are stored and shown but do
   not change what is believed.
-- **Your record, not ours.** What an objective SAYS is your type: implement
-  `Payload` and the database stores, prints, parses and folds it without
-  knowing a field of it.
 - **Runs in the browser.** The same core compiles to WebAssembly.
 
 ## Installation
