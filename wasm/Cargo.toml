@@ -1,6 +1,6 @@
 [package]
 name = "prodrome-wasm"
-description = "The Prodrome in the browser: prodrome-core compiled to WebAssembly, one evaluator for every host"
+description = "prodrome-core compiled to WebAssembly"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
