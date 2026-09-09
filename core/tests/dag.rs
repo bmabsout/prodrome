@@ -8,18 +8,19 @@
 //! way to test a READER: nothing about the order or the findings may depend on
 //! this side having been the writer.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::event::{parents_of, seal_hash, Actor, Hash};
+use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::store::EventStore;
 
 /// The vectors were taken with the reference payload, so the store these read
 /// them into holds that record shape.
-type Store = EventStore<Todo>;
+type Store = EventStore<Todo, Untrusted>;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -43,12 +44,12 @@ fn conformance(name: &str) -> PathBuf {
         .collect()
 }
 
-fn untrusted() -> BTreeSet<Actor> {
-    // The roster is the DEPLOYMENT's, never the engine's (§5) — it arrives as
+fn roster() -> Untrusted {
+    // The policy is the DEPLOYMENT's, never the engine's (§5) — it arrives as
     // a parameter here exactly as it does at every other call site. These
-    // vectors were generated under `{"triage"}`, so that is the policy their
-    // `verify` findings were taken under.
-    [Actor::new("triage").expect("valid")].into_iter().collect()
+    // vectors were generated under the reference policy with `{"triage"}` on
+    // its roster, so that is what their `verify` findings were taken under.
+    Untrusted::of([Actor::new("triage").expect("valid")])
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -74,7 +75,7 @@ fn materialise(dag: &Dag) -> Store {
         }
     }
     fs::write(root.join("HEAD"), &dag.tips[0]).expect("writes HEAD");
-    Store::new(root, untrusted())
+    Store::new(root, roster())
 }
 
 #[test]

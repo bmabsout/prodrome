@@ -14,14 +14,14 @@
 //! each draw into a chain (`common::chain_of`), and asking `view::entries`
 //! about it — the same call `conformance_view.rs` replays.
 //!
-//! TWO TRUST POLICIES, not one, because §6.7's whole point is the asymmetry
-//! between them: `common::ACTORS` is two `"bassel"` writes for every
-//! `"triage"` one, so untrusting `"triage"` (the crate's usual policy,
-//! `tests/fold_laws.rs`'s `untrusted()`) and untrusting `"bassel"` instead
-//! exercise the SAME logs from opposite sides of that 2:1 split — the first
-//! is the common case (a minority write is provisional), the second is the
-//! inverted one (most of a log's writes are). `Untrusted::none()` would have
-//! been a third file of nothing but `Standing::Confirmed`.
+//! TWO POLICIES, not one, because §6.7's whole point is the asymmetry between
+//! the two readings: `common::ACTORS` is two `"bassel"` writes for every
+//! `"triage"` one, so a reference roster of `"triage"` (the crate's usual one,
+//! `tests/fold_laws.rs`'s `roster()`) and one of `"bassel"` instead exercise
+//! the SAME logs from opposite sides of that 2:1 split — the first is the
+//! common case (a minority write is provisional), the second is the inverted
+//! one (most of a log's writes are). `Untrusted::none()` would have been a
+//! third file of nothing but `Confidence::Confirmed`.
 
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -30,7 +30,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use prodrome::event::{canonical, Actor};
-use prodrome::fold::Untrusted;
+use prodrome::policy::Untrusted;
 use prodrome::view;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
@@ -65,7 +65,7 @@ fn conformance_dir() -> PathBuf {
         .collect()
 }
 
-/// One file: every case, under one trust policy.
+/// One file: every case, under one policy.
 fn generate(name: &str, untrusted: &Untrusted) -> Value {
     let mut run = runner();
     let instants_strategy = proptest::collection::vec(0i64..common::WINDOW, RANDOM_INSTANTS);

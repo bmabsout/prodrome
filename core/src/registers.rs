@@ -29,10 +29,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::event::{Authored, Envelope, Hash, TodoEvent, TodoId};
-use crate::fold::{Binding, Env, Untrusted};
+use crate::fold::{Binding, Env};
 use crate::fpl::{self, Term};
 use crate::literal::Datetime;
 use crate::payload::Payload;
+use crate::policy::Policy;
 
 /// A set of small non-negative integers as a bitmap.
 ///
@@ -277,7 +278,7 @@ impl<P: Payload> Folded<P> {
 /// Structure is ALWAYS folded — an object is positioned and its ancestry
 /// recorded whether or not its event writes anything — so that a later
 /// object's "descends" is answerable. An event writes its registers when it is
-/// known by `t` (`None`: all of them) and binds under the trust rule;
+/// known by `t` (`None`: all of them) and the host's policy BINDS it;
 /// otherwise it is skipped exactly as `chronological` and the folds skip it.
 /// A write supersedes every frontier member it descends from and joins the
 /// rest.
@@ -285,7 +286,7 @@ pub fn extend<P: Payload>(
     state: &Folded<P>,
     nodes: &[Node<P>],
     t: Option<Datetime>,
-    untrusted: &Untrusted,
+    policy: &impl Policy<P>,
 ) -> Folded<P> {
     let mut position = state.position.clone();
     let mut ancestry = state.ancestry.clone();
@@ -311,7 +312,7 @@ pub fn extend<P: Payload>(
         if t.is_some_and(|moment| event.at() > moment) {
             continue;
         }
-        if !untrusted.binds(event) {
+        if policy.standing(event).claims() {
             continue;
         }
         let write = Write {
@@ -342,9 +343,9 @@ pub fn extend<P: Payload>(
 pub fn fold<P: Payload>(
     nodes: &[Node<P>],
     t: Option<Datetime>,
-    untrusted: &Untrusted,
+    policy: &impl Policy<P>,
 ) -> Folded<P> {
-    extend(&Folded::empty(), nodes, t, untrusted)
+    extend(&Folded::empty(), nodes, t, policy)
 }
 
 /// The nodes `state` has not folded yet, in their given order — what [`extend`]

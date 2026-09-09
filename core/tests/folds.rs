@@ -14,9 +14,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use prodrome::event::{canonical, parse_envelope, Actor, Envelope, TodoEvent};
-use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env, Untrusted};
+use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env};
 use prodrome::fpl::{iso, print_term};
 use prodrome::literal::{parse_literal, Datetime, Value};
+use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use serde::Deserialize;
 

@@ -9,9 +9,9 @@
 //!
 //! | field       | where it comes from                                        |
 //! | ----------- | ---------------------------------------------------------- |
-//! | `outcome`   | `env_of(registers::fold(nodes, t, untrusted))`              |
-//! | `claim`     | `fold::env_at(events, t, ∅)`, where it DISAGREES            |
-//! | `spec`      | `fold::flatten(events, t, untrusted)`                       |
+//! | `outcome`   | `env_of(registers::fold(nodes, t, policy))`                 |
+//! | `claim`     | `fold::env_at(events, t, Everything)`, where it DISAGREES   |
+//! | `spec`      | `fold::flatten(events, t, policy)`                          |
 //! | `value`     | `fpl::fulfillment(spec, t, evaluation_env(outcomes))`       |
 //! | `content`   | `registers::chosen_of(confirmed, Kind::Content)`            |
 //! | `conflicts` | `registers::conflicts_of(confirmed)`                        |
@@ -24,11 +24,13 @@
 //! compositions drift; the law in §9 says this one equals the folds it
 //! names, on random DAGs.
 //!
-//! WHY TWO ENVIRONMENTS. The CONFIRMED one is what prices and what a reader is
-//! told; the LOOSE one trusts every writer and exists only to name what an
-//! untrusted actor has claimed and has not bound. The gap between them is §5's
-//! containment asymmetry, made into a value ([`Entry::claim`]) rather than
-//! left implicit — displayed, never applied.
+//! WHY TWO READINGS. The CONFIRMED one — under the host's [`Policy`] — is what
+//! prices and what a reader is told; the CLAIMED one is taken under
+//! [`Everything`], where every event binds, and exists only to name what a
+//! writer has CLAIMED and has not bound. Both stay in the core: a store that
+//! kept only the filtered reading could not show a claim at all. The gap
+//! between them is a value ([`Entry::claim`]) rather than something implicit —
+//! displayed, never applied.
 //!
 //! ABSENCE. Three of them, and each is a type rather than a sentinel:
 //!
@@ -58,10 +60,11 @@
 use std::collections::BTreeMap;
 
 use crate::event::{Hash, TodoEvent, TodoId};
-use crate::fold::{self, Binding, Untrusted};
+use crate::fold::{self, Binding};
 use crate::fpl::{self, Term};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
+use crate::policy::{Everything, Policy};
 use crate::registers::{self, Kind, Node};
 
 /// A todo's price at a moment: §6.4's function and that function's value
@@ -81,54 +84,56 @@ pub struct Priced {
     pub value: f64,
 }
 
-/// WHY a reader is being shown something the trusted fold did not bind.
+/// WHY a reader is being shown something the confirmed reading did not have.
 ///
-/// Never "no reason": [`Standing::Confirmed`] is that case, so a `Provisional`
+/// Never "no reason": [`Confidence::Confirmed`] is that case, so a `Provisional`
 /// that means nothing is not a value that exists. The two reasons are
-/// independent — a claimed state and an untrusted content record are different
-/// asymmetries with different remedies — so the sum names all three
+/// independent — a claimed state and a content record the policy does not
+/// confirm are different asymmetries with different remedies — so the sum
+/// names all three
 /// inhabitants rather than carrying two booleans that can both be false.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provisional {
-    /// An untrusted actor's lifecycle event binds a state the trusted fold
-    /// refuses. [`Entry::claim`] is that state.
+    /// A CLAIMING lifecycle event names a state the confirmed reading refuses.
+    /// [`Entry::claim`] is that state.
     Claimed,
-    /// The winning content record was written by an untrusted actor, so it is
+    /// The winning content record is one the policy does not
+    /// [`Policy::confirms`] — it BINDS, and it is still its writer's — so it is
     /// shown as source and never rendered ("rendered means confirmed").
     Content,
     /// Both at once.
     ClaimedAndContent,
 }
 
-/// Whether the chain's answer for this todo is the trusted fold's, whole.
+/// Whether the chain's answer for this todo is the confirmed reading, whole.
 ///
 /// A SUM and not a bool beside a string: a consumer that
-/// wants one flag asks [`Standing::is_provisional`], and a consumer that wants
+/// wants one flag asks [`Confidence::is_provisional`], and a consumer that wants
 /// to say WHICH asymmetry it is looking at can, without a second field to keep
 /// in step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Standing {
-    /// The two folds agree and the winning content record is a trusted
-    /// actor's.
+pub enum Confidence {
+    /// The two readings agree and the policy confirms the winning content
+    /// record.
     Confirmed,
     Provisional(Provisional),
 }
 
-impl Standing {
-    /// The standing implied by the two asymmetries. Total: neither of them is
-    /// [`Standing::Confirmed`], which is why `Provisional` has no fourth arm.
-    pub fn of(claimed: bool, content: bool) -> Standing {
+impl Confidence {
+    /// The confidence implied by the two asymmetries. Total: neither of them is
+    /// [`Confidence::Confirmed`], which is why `Provisional` has no fourth arm.
+    pub fn of(claimed: bool, content: bool) -> Confidence {
         match (claimed, content) {
-            (false, false) => Standing::Confirmed,
-            (true, false) => Standing::Provisional(Provisional::Claimed),
-            (false, true) => Standing::Provisional(Provisional::Content),
-            (true, true) => Standing::Provisional(Provisional::ClaimedAndContent),
+            (false, false) => Confidence::Confirmed,
+            (true, false) => Confidence::Provisional(Provisional::Claimed),
+            (false, true) => Confidence::Provisional(Provisional::Content),
+            (true, true) => Confidence::Provisional(Provisional::ClaimedAndContent),
         }
     }
 
     /// The one flag a wire carries — `view.Entry.unconfirmed`.
     pub fn is_provisional(self) -> bool {
-        matches!(self, Standing::Provisional(_))
+        matches!(self, Confidence::Provisional(_))
     }
 }
 
@@ -138,16 +143,16 @@ pub struct Entry {
     pub todo: TodoId,
     /// The CONFIRMED binding; `None` is open.
     pub outcome: Option<Binding>,
-    /// What every writer's events would bind and the trusted fold refused —
-    /// `None` when the two agree. It is DISPLAYED, never applied.
+    /// What every writer's events would bind and the confirmed reading refused
+    /// — `None` when the two agree. It is DISPLAYED, never applied.
     ///
     /// Two bindings of the same KIND at different instants do not disagree:
-    /// what an untrusted actor can claim is that a todo is over, and an
-    /// instant on a binding the trusted fold already made is not a claim about
+    /// what a claiming event can say is that a todo is over, and an instant on
+    /// a binding the confirmed reading already made is not a claim about
     /// anything a reader acts on. That is the reference's rule
     /// (`view._entry`'s `disputed`, which compares the two outcomes' kinds).
     pub claim: Option<Binding>,
-    pub standing: Standing,
+    pub confidence: Confidence,
     /// §6.4's function and its value here, absent together (see [`Priced`]).
     pub priced: Option<Priced>,
     /// The NAME of the object whose write the content register shows.
@@ -215,23 +220,23 @@ fn lowered(binding: Option<Binding>) -> &'static str {
 ///
 /// `nodes` is the DAG in the linearisation's order (parents first), which is
 /// what [`registers::nodes_of`] hands over and what every fold here reads;
-/// `untrusted` is §5's whole policy. The rows are sorted by todo id.
+/// `policy` is §5's standing, the host's. The rows are sorted by todo id.
 ///
 /// The composition, spelled once so the law can say "this equals that":
 ///
-/// 1. `confirmed = registers::fold(nodes, Some(t), untrusted)`;
+/// 1. `confirmed = registers::fold(nodes, Some(t), policy)`;
 /// 2. `outcome = env_of(confirmed)[todo]`;
-///    `claim = env_at(events, t, ∅)[todo]` where the two outcomes name
-///    different kinds;
-/// 3. `spec = flatten(events of nodes, t, untrusted)[todo]`, and `value` is
+///    `claim = env_at(events, t, Everything)[todo]` where the two outcomes
+///    name different kinds;
+/// 3. `spec = flatten(events of nodes, t, policy)[todo]`, and `value` is
 ///    `fulfillment(spec, t, evaluation_env(env_of(confirmed)))` — the
 ///    CONFIRMED environment, because a claim does not price;
 /// 4. `content = chosen_of(confirmed, Kind::Content)[todo]`,
 ///    `conflicts = conflicts_of(confirmed)[todo]`;
-/// 5. `standing` is `Standing::of(claim.is_some(), the content record's actor
-///    is untrusted)`.
+/// 5. `confidence` is `Confidence::of(claim.is_some(),
+///    !policy.confirms(the winning content record))`.
 ///
-/// ONE REGISTER FOLD, NOT TWO. The loose side is asked exactly one question —
+/// ONE REGISTER FOLD, NOT TWO. The claimed side is asked exactly one question —
 /// what would every writer's events bind — and that question is §6.1's, which
 /// [`fold::env_at`] answers from the linearisation. §9.6 says the two agree on
 /// any DAG (`env_of(fold(nodes, …)) == env_at(events, …)`), so this is the
@@ -246,16 +251,16 @@ fn lowered(binding: Option<Binding>) -> &'static str {
 pub fn entries<P: Payload>(
     nodes: &[Node<P>],
     t: Datetime,
-    untrusted: &Untrusted,
+    policy: &impl Policy<P>,
 ) -> Result<Vec<Entry>, ProdromeError> {
-    let confirmed = registers::fold(nodes, Some(t), untrusted);
+    let confirmed = registers::fold(nodes, Some(t), policy);
     let outcomes = registers::env_of(&confirmed);
     let content = registers::chosen_of(&confirmed, Kind::Content);
     let mut conflicts = registers::conflicts_of(&confirmed);
 
     let events: Vec<TodoEvent<P>> = nodes.iter().filter_map(|node| node.event.clone()).collect();
-    let claims = fold::env_at(&events, t, &Untrusted::none());
-    let specs = fold::flatten(&events, t, untrusted)?;
+    let claims = fold::env_at(&events, t, &Everything);
+    let specs = fold::flatten(&events, t, policy)?;
     // ONE conversion of the environment for the whole list: §7's `Env` is
     // keyed by event NAME and the fold's by `TodoId`, and converting per todo
     // would rebuild it once per row.
@@ -264,7 +269,7 @@ pub fn entries<P: Payload>(
 
     // Which objects wrote about which todo, in the order the DAG handed them
     // over — and, with it, WHICH TODOS THERE ARE. No filter on `t` and none on
-    // trust: a todo exists on this list because the chain mentions it.
+    // standing: a todo exists on this list because the chain mentions it.
     let mut streams: BTreeMap<TodoId, Vec<Hash>> = BTreeMap::new();
     for node in nodes {
         if let Some(event) = &node.event {
@@ -275,14 +280,16 @@ pub fn entries<P: Payload>(
         }
     }
 
-    // The untrusted actors' content records, by todo — the second half of
-    // `standing`. Read off the events the nodes carry rather than off a
+    // The content records the policy does not CONFIRM, by object name — the
+    // second half of `confidence`, and the one question here that standing
+    // alone does not answer: such a record binds (the folds took it) and is
+    // still its writer's. Read off the events the nodes carry rather than off a
     // re-lookup, because `content` names an object and this is what that
     // object said.
-    let mut untrusted_content: BTreeMap<&Hash, bool> = BTreeMap::new();
+    let mut unconfirmed_content: BTreeMap<&Hash, bool> = BTreeMap::new();
     for node in nodes {
-        if let Some(TodoEvent::Authored(record)) = &node.event {
-            untrusted_content.insert(&node.name, untrusted.actors().contains(&record.actor));
+        if let Some(event @ TodoEvent::Authored(_)) = &node.event {
+            unconfirmed_content.insert(&node.name, !policy.confirms(event));
         }
     }
 
@@ -294,7 +301,7 @@ pub fn entries<P: Payload>(
         let written = content.get(&todo).cloned();
         let provisional_content = written
             .as_ref()
-            .and_then(|name| untrusted_content.get(name))
+            .and_then(|name| unconfirmed_content.get(name))
             .copied()
             .unwrap_or(false);
         let priced = specs.get(&todo).map(|spec| Priced {
@@ -303,7 +310,7 @@ pub fn entries<P: Payload>(
         });
         out.push(Entry {
             claim: if disputed { claimed } else { None },
-            standing: Standing::of(disputed, provisional_content),
+            confidence: Confidence::of(disputed, provisional_content),
             outcome,
             priced,
             content: written,
@@ -334,7 +341,7 @@ pub fn entries<P: Payload>(
 
 /// The outcome's constructor name, or `"open"` for no binding — the three
 /// values `disputed` compares. `None` is a value here and not a missing one:
-/// an untrusted `Reopened` that the trusted fold refuses is a claim that the
+/// a claiming `Reopened` the confirmed reading refuses is a claim that the
 /// todo is OPEN, and comparing `Option`s would have made that the same as
 /// having nothing to say.
 fn kind_of(binding: Option<Binding>) -> &'static str {
@@ -346,6 +353,7 @@ mod tests {
     use super::*;
     use crate::event::{mk_completed, mk_sealed, seal_hash, Actor};
     use crate::fpl::mk_flat;
+    use crate::policy::Untrusted;
     use crate::reference::{mk_authored, Todo};
 
     type Event = TodoEvent<Todo>;
@@ -387,25 +395,28 @@ mod tests {
         .expect("valid")
     }
 
-    fn trusted() -> Untrusted {
+    fn roster() -> Untrusted {
         Untrusted::of([Actor::new("triage").expect("valid")])
     }
 
     #[test]
-    fn an_untrusted_completion_is_a_claim_and_the_entry_is_provisional() {
+    fn a_claiming_completion_is_a_claim_and_the_entry_is_provisional() {
         let nodes = chain(vec![
             authored("alpha", 1, "bassel", Some(mk_flat(0.25).expect("valid"))),
             mk_completed("alpha", at(3), "triage", "").expect("valid"),
         ]);
-        let entries = entries(&nodes, at(9), &trusted()).expect("folds");
+        let entries = entries(&nodes, at(9), &roster()).expect("folds");
         let [entry] = &entries[..] else {
             panic!("one todo")
         };
-        assert_eq!(entry.outcome, None, "the trusted fold refuses the claim");
+        assert_eq!(
+            entry.outcome, None,
+            "the confirmed reading refuses the claim"
+        );
         assert!(matches!(entry.claim, Some(Binding::Completed(_))));
         assert_eq!(
-            entry.standing,
-            Standing::Provisional(Provisional::Claimed),
+            entry.confidence,
+            Confidence::Provisional(Provisional::Claimed),
             "the claim alone, since bassel wrote the content"
         );
         assert_eq!(entry.value(), Some(0.25), "an open todo prices by its spec");
@@ -413,14 +424,17 @@ mod tests {
     }
 
     #[test]
-    fn an_untrusted_record_makes_the_entry_provisional_without_a_claim() {
+    fn an_unconfirmed_record_makes_the_entry_provisional_without_a_claim() {
         let nodes = chain(vec![authored("alpha", 1, "triage", None)]);
-        let entries = entries(&nodes, at(9), &trusted()).expect("folds");
+        let entries = entries(&nodes, at(9), &roster()).expect("folds");
         let [entry] = &entries[..] else {
             panic!("one todo")
         };
         assert_eq!(entry.claim, None);
-        assert_eq!(entry.standing, Standing::Provisional(Provisional::Content));
+        assert_eq!(
+            entry.confidence,
+            Confidence::Provisional(Provisional::Content)
+        );
         assert_eq!(
             entry.content.as_ref(),
             Some(&nodes[0].name),
@@ -440,11 +454,11 @@ mod tests {
             "bassel",
             Some(mk_flat(0.5).expect("valid")),
         )]);
-        let entries = entries(&nodes, at(1), &trusted()).expect("folds");
+        let entries = entries(&nodes, at(1), &roster()).expect("folds");
         let [entry] = &entries[..] else {
             panic!("one todo")
         };
-        assert_eq!(entry.standing, Standing::Confirmed);
+        assert_eq!(entry.confidence, Confidence::Confirmed);
         assert_eq!(entry.outcome, None);
         assert_eq!(entry.priced, None, "the chain knows no price yet");
         assert_eq!(entry.content, None, "and no record yet");
@@ -457,7 +471,7 @@ mod tests {
             authored("alpha", 1, "bassel", Some(mk_flat(0.2).expect("valid"))),
             mk_completed("alpha", at(3), "bassel", "").expect("valid"),
         ]);
-        let entries = entries(&nodes, at(9), &trusted()).expect("folds");
+        let entries = entries(&nodes, at(9), &roster()).expect("folds");
         let [entry] = &entries[..] else {
             panic!("one todo")
         };
@@ -466,18 +480,18 @@ mod tests {
             Some(Binding::Completed(fpl::instant_of(at(3))))
         );
         assert_eq!(entry.claim, None, "the two folds agree");
-        assert_eq!(entry.standing, Standing::Confirmed);
+        assert_eq!(entry.confidence, Confidence::Confirmed);
         assert_eq!(entry.value(), Some(1.0));
     }
 
     #[test]
-    fn the_standing_of_no_asymmetry_is_confirmed() {
-        assert_eq!(Standing::of(false, false), Standing::Confirmed);
-        assert!(!Standing::of(false, false).is_provisional());
-        assert!(Standing::of(true, true).is_provisional());
+    fn the_confidence_of_no_asymmetry_is_confirmed() {
+        assert_eq!(Confidence::of(false, false), Confidence::Confirmed);
+        assert!(!Confidence::of(false, false).is_provisional());
+        assert!(Confidence::of(true, true).is_provisional());
         assert_eq!(
-            Standing::of(true, true),
-            Standing::Provisional(Provisional::ClaimedAndContent)
+            Confidence::of(true, true),
+            Confidence::Provisional(Provisional::ClaimedAndContent)
         );
     }
 }

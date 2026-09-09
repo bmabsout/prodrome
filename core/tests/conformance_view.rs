@@ -1,6 +1,6 @@
 //! SPEC §9.9 (§6.7) over `conformance/view/*.json`: every field of every
-//! `view::entries` row, replayed under the two trust policies the vectors
-//! were taken with.
+//! `view::entries` row, replayed under the two reference policies the vectors
+//! were taken with — their `untrusted` arrays, read through `policy::Untrusted`.
 //!
 //! THE VECTORS ARE FROZEN. Nothing in this file regenerates them — a chain
 //! this test cannot rebuild byte-for-byte is a chain it is supposed to fail
@@ -25,7 +25,7 @@
 //!
 //! Each `Entry` is compared through `common::json_entry` — the same
 //! rendering `prodrome-wasm`'s `wire::json_entry` ships — because that is
-//! what the wire actually carries: `Standing`'s three-way split collapses to
+//! what the wire actually carries: `Confidence`'s three-way split collapses to
 //! one `unconfirmed` bool on the wire, and a vector that compared the richer
 //! Rust value would be pinning a distinction no consumer ever reads.
 
@@ -34,8 +34,8 @@ mod common;
 use std::collections::BTreeMap;
 
 use prodrome::event::parse_event;
-use prodrome::fold::Untrusted;
 use prodrome::literal::Datetime;
+use prodrome::policy::Untrusted;
 use prodrome::view;
 use serde_json::Value;
 
@@ -142,10 +142,10 @@ fn every_entry_agrees_under_the_bassel_untrusted_policy() {
     println!("view/bassel-untrusted.json: {logs} logs, {rows} entry-instants");
 }
 
-/// §9.9 names TWO asymmetries — a claim and an untrusted content record —
-/// and a suite that never saw either would not be testing what §6.7 is for.
-/// Both vector files together must show every `standing` this crate can
-/// print: an untrusted actor flips which writes are provisional, so the two
+/// §9.9 names TWO asymmetries — a claim, and a content record the policy does
+/// not confirm — and a suite that never saw either would not be testing what
+/// §6.7 is for. Both vector files together must show every `confidence` this
+/// crate can print: the roster flips which writes are provisional, so the two
 /// policies see the two directions of the same 2:1 split
 /// (`tests/common/mod.rs`'s `ACTORS`).
 #[test]
@@ -171,6 +171,6 @@ fn the_vectors_show_a_claim_and_an_unconfirmed_record_between_them() {
     assert_eq!(
         unconfirmed.values().copied().collect::<Vec<_>>(),
         vec![true, true],
-        "both trust policies should provoke at least one unconfirmed entry: {unconfirmed:?}"
+        "both policies should provoke at least one unconfirmed entry: {unconfirmed:?}"
     );
 }

@@ -29,10 +29,11 @@
 use std::collections::BTreeMap;
 
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
-use prodrome::fold::{Binding, Env, Untrusted};
+use prodrome::fold::{Binding, Env};
 use prodrome::fpl::{self, Instant, Outcome, Term};
 use prodrome::literal;
 use prodrome::payload::Payload;
+use prodrome::policy::Untrusted;
 use prodrome::view::Entry;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -55,10 +56,16 @@ pub fn parse_objects(json_text: &str) -> Result<Vec<ObjectIn>, Refusal> {
     serde_json::from_str(json_text).map_err(|e| format!("objects: expected [{{hash, text}}] ({e})"))
 }
 
-/// The deployment's trust policy (§5), as the browser was told it. It arrives
-/// from `/api/chain` rather than being assumed here: WHICH actors are
-/// provisional is instance knowledge, and a core that guessed it would fold a
-/// different chain than the server did while claiming to fold the same one.
+/// The deployment's STANDING policy (§5), as the browser was told it. It
+/// arrives from `/api/chain` rather than being assumed here: WHICH actors a
+/// host stands behind is instance knowledge, and a core that guessed it would
+/// fold a different chain than the server did while claiming to fold the same
+/// one.
+///
+/// THE WIRE IS UNCHANGED. `untrusted` is still a JSON array of actor names;
+/// since 0.3 the core takes a `policy::Policy` rather than that array, and this
+/// is where the array becomes one — `Untrusted`, the reference policy, which is
+/// the rule this argument always meant.
 pub fn parse_untrusted(json_text: &str) -> Result<Untrusted, Refusal> {
     let names: Vec<String> = serde_json::from_str(json_text)
         .map_err(|e| format!("untrusted: expected a list of actor names ({e})"))?;
@@ -297,7 +304,7 @@ pub fn json_entry(entry: &Entry) -> Value {
         "at": entry.at(),
         "claimed": entry.claimed(),
         "value": entry.value(),
-        "unconfirmed": entry.standing.is_provisional(),
+        "unconfirmed": entry.confidence.is_provisional(),
         "conflicts": Value::Object(
             entry
                 .conflicts

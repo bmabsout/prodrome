@@ -24,9 +24,10 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::event::{mk_sealed, mk_woven, parents_of, seal_hash, Actor, Envelope, Hash, TodoEvent};
+use crate::event::{mk_sealed, mk_woven, parents_of, seal_hash, Envelope, Hash, TodoEvent};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
+use crate::policy::{Policy, Untrusted};
 
 /// A closed object set in a deterministic TOPOLOGICAL order.
 ///
@@ -88,14 +89,17 @@ pub fn linearise<P>(objects: &BTreeMap<Hash, Envelope<P>>) -> Result<Vec<Hash>, 
     Ok(order)
 }
 
-/// A chain rooted at `root`. `untrusted` names the actors whose events are
-/// provisional for THIS deployment — the store holds the policy so callers do
-/// not each have to remember it, and empty (trust every writer) is the only
-/// honest default for a store nobody has configured.
+/// A chain rooted at `root`, read under one host [`Policy`] (§5).
+///
+/// THE STORE HOLDS THE POLICY, so callers do not each have to remember it and
+/// `verify` has the one it is asked about. The type parameter defaults to
+/// [`Untrusted`], the reference policy, because a store that names no policy
+/// at all is a store nobody has configured — and `Untrusted::none()`, which
+/// stands behind every writer, is the only honest thing for that to mean.
 #[derive(Debug, Clone)]
-pub struct EventStore<P> {
+pub struct EventStore<P, Pol = Untrusted> {
     root: PathBuf,
-    untrusted: BTreeSet<Actor>,
+    policy: Pol,
     /// WHICH RECORD SHAPE THIS STORE HOLDS. A store is parsed against one
     /// closed vocabulary (§2), and that vocabulary is the core's kinds plus
     /// this payload's — so the payload is part of what a store IS, not an
@@ -103,13 +107,20 @@ pub struct EventStore<P> {
     payload: PhantomData<P>,
 }
 
-impl<P: Payload> EventStore<P> {
-    pub fn new(root: impl Into<PathBuf>, untrusted: BTreeSet<Actor>) -> EventStore<P> {
+impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
+    pub fn new(root: impl Into<PathBuf>, policy: Pol) -> EventStore<P, Pol> {
         EventStore {
             root: root.into(),
-            untrusted,
+            policy,
             payload: PhantomData,
         }
+    }
+
+    /// The policy this store reads under — what `verify` asks and what a
+    /// caller folding its events should ask too, so that one store is one
+    /// reading.
+    pub fn policy(&self) -> &Pol {
+        &self.policy
     }
 
     pub fn root(&self) -> &Path {
@@ -321,7 +332,7 @@ impl<P: Payload> EventStore<P> {
     /// ceremony: a tip we already contain changes nothing; a tip that contains
     /// every head we hold is a FAST-FORWARD; anything else becomes a second
     /// head for `merge` to join.
-    pub fn adopt(&self, source: &EventStore<P>, digest: &Hash) -> Result<Hash, ProdromeError> {
+    pub fn adopt(&self, source: &EventStore<P, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         self.copy_in(source, digest)?;
         self.place(digest)
@@ -395,7 +406,7 @@ impl<P: Payload> EventStore<P> {
     /// replica is not trusted for being a replica. An object we already hold
     /// ends that branch of the walk: this store is closed under parents, so
     /// everything above one of ours is already here.
-    fn copy_in(&self, source: &EventStore<P>, digest: &Hash) -> Result<(), ProdromeError> {
+    fn copy_in(&self, source: &EventStore<P, Pol>, digest: &Hash) -> Result<(), ProdromeError> {
         self.copy_in_from(digest, |name| fs::read(source.object_path(name)).ok())
     }
 
@@ -618,7 +629,8 @@ impl<P: Payload> EventStore<P> {
     /// and cannot parse — the constructor is the boundary); every parent named
     /// exists; the walk from EVERY head reaches genesis without a cycle; no
     /// unreachable object; the heads agree with HEAD and with each other; and
-    /// no untrusted event is dated behind anything it rests on.
+    /// no event the policy does not CONFIRM is dated behind anything it rests
+    /// on.
     pub fn verify(&self) -> Vec<String> {
         let files = self.object_files();
         let tips = self.tips();
@@ -745,7 +757,7 @@ impl<P: Payload> EventStore<P> {
             Err(error) => return (visited, vec![error.to_string()]),
         };
         let mut problems = self.stale_heads(tips);
-        problems.extend(dating_problems(&order, &objects, &self.untrusted));
+        problems.extend(dating_problems(&order, &objects, &self.policy));
         (visited, problems)
     }
 
@@ -779,10 +791,21 @@ impl<P: Payload> EventStore<P> {
 /// THE ONE PLACE CAUSAL ORDER MEETS CLOCK ORDER.
 ///
 /// The folds read `at` as data; the store orders by parents. They may disagree
-/// for a TRUSTED actor — a backfill legitimately records 2025 completions today
-/// — but an UNTRUSTED actor's `at` is the server clock, forced by the verb, so
-/// an untrusted event dated before something it was written on top of is either
-/// a clock that ran backwards or an object nobody's verb wrote.
+/// for an event the policy CONFIRMS — a backfill legitimately records 2025
+/// completions today. For one it does not, the `at` is the host's own clock,
+/// forced by the verb that wrote it, so a stamp behind something the event was
+/// written on top of is either a clock that ran backwards or an object nobody's
+/// verb wrote.
+///
+/// [`Policy::confirms`] is the question, and its DEFAULT is §5 exactly: an
+/// event that only CLAIMS is not the host's word, so its stamp is not either.
+/// A policy that folds a writer's events while still holding their clock — the
+/// reference policy does, for content records — says so by overriding it. No
+/// actor name is read here.
+///
+/// The finding's WORDING is frozen: `conformance/dag.json` holds these
+/// sentences byte for byte (§9.8), and they were taken under the reference
+/// policy, where "does not confirm" is "untrusted".
 ///
 /// "Before" is over ANCESTORS, not over one predecessor: an object's high water
 /// mark is the latest stamp anywhere beneath it, carried up the DAG in
@@ -791,7 +814,7 @@ impl<P: Payload> EventStore<P> {
 fn dating_problems<P: Payload>(
     order: &[Hash],
     objects: &BTreeMap<Hash, Envelope<P>>,
-    untrusted: &BTreeSet<Actor>,
+    policy: &impl Policy<P>,
 ) -> Vec<String> {
     let mut high: BTreeMap<&Hash, Datetime> = BTreeMap::new();
     let mut problems: Vec<String> = Vec::new();
@@ -803,7 +826,7 @@ fn dating_problems<P: Payload>(
             .max();
         let event = object.event();
         if let (Some(event), Some(behind)) = (event, behind) {
-            if untrusted.contains(event.actor()) && event.at() < behind {
+            if !policy.confirms(event) && event.at() < behind {
                 problems.push(format!(
                     "untrusted event {} is dated {}, behind its predecessor ({})",
                     digest.as_str(),
@@ -865,8 +888,10 @@ mod tests {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
     }
 
-    fn untrusted() -> BTreeSet<Actor> {
-        [Actor::new("triage").expect("valid")].into_iter().collect()
+    /// The reference policy, with one name on the roster — every store below
+    /// reads under it, and only the dating test can tell.
+    fn roster() -> Untrusted {
+        Untrusted::of([Actor::new("triage").expect("valid")])
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -881,7 +906,7 @@ mod tests {
 
     #[test]
     fn a_chain_appends_verifies_and_reads_back_in_order() {
-        let store = Store::new(scratch("chain"), untrusted());
+        let store = Store::new(scratch("chain"), roster());
         let first = store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -916,8 +941,8 @@ mod tests {
 
     #[test]
     fn adopt_makes_a_second_head_and_merge_settles_it() {
-        let here = Store::new(scratch("here"), untrusted());
-        let there = Store::new(scratch("there"), untrusted());
+        let here = Store::new(scratch("here"), roster());
+        let there = Store::new(scratch("there"), roster());
         let shared = here
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -979,9 +1004,9 @@ mod tests {
     /// two refusals below are the other half of it.
     #[test]
     fn adopting_bytes_lands_where_adopting_a_directory_lands() {
-        let by_dir = Store::new(scratch("bytes-dir"), untrusted());
-        let by_bytes = Store::new(scratch("bytes-map"), untrusted());
-        let there = Store::new(scratch("bytes-there"), untrusted());
+        let by_dir = Store::new(scratch("bytes-dir"), roster());
+        let by_bytes = Store::new(scratch("bytes-map"), roster());
+        let there = Store::new(scratch("bytes-there"), roster());
         let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
         for store in [&by_dir, &by_bytes, &there] {
             store.append(shared.clone(), None).expect("appends");
@@ -1025,7 +1050,7 @@ mod tests {
         // A REPLICA IS NOT TRUSTED FOR BEING A REPLICA. Bytes that do not hash
         // to the name they were filed under are refused, and so is a parent
         // nobody holds.
-        let liar = Store::new(scratch("bytes-liar"), untrusted());
+        let liar = Store::new(scratch("bytes-liar"), roster());
         let mut tampered = over_the_wire.clone();
         if let Some(text) = tampered.get_mut(&theirs) {
             text.push(' ');
@@ -1036,7 +1061,7 @@ mod tests {
             .filter(|(name, _)| **name == theirs)
             .map(|(name, text)| (name.clone(), text.clone()))
             .collect();
-        let missing = Store::new(scratch("bytes-orphan"), untrusted());
+        let missing = Store::new(scratch("bytes-orphan"), roster());
         assert!(missing.adopt_objects(&orphan, &theirs).is_err());
 
         for store in [&by_dir, &by_bytes, &there, &liar, &missing] {
@@ -1046,8 +1071,8 @@ mod tests {
 
     #[test]
     fn a_contained_tip_changes_nothing_and_a_containing_one_fast_forwards() {
-        let here = Store::new(scratch("ff-here"), untrusted());
-        let there = Store::new(scratch("ff-there"), untrusted());
+        let here = Store::new(scratch("ff-here"), roster());
+        let there = Store::new(scratch("ff-there"), roster());
         let first = here
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -1072,7 +1097,7 @@ mod tests {
 
     #[test]
     fn a_tampered_object_is_caught_on_read_and_by_verify() {
-        let store = Store::new(scratch("tamper"), untrusted());
+        let store = Store::new(scratch("tamper"), roster());
         let digest = store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -1103,8 +1128,8 @@ mod tests {
     }
 
     #[test]
-    fn an_untrusted_event_dated_behind_its_predecessor_is_a_finding() {
-        let store = Store::new(scratch("dating"), untrusted());
+    fn an_unconfirmed_event_dated_behind_its_predecessor_is_a_finding() {
+        let store = Store::new(scratch("dating"), roster());
         store
             .append(
                 mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
@@ -1126,8 +1151,9 @@ mod tests {
                 at(10).isoformat()
             )]
         );
-        // The same event from a TRUSTED actor is a backfill, not a finding.
-        let trusted = Store::new(scratch("dating-trusted"), untrusted());
+        // The same event from a writer the policy CONFIRMS is a backfill, not a
+        // finding.
+        let trusted = Store::new(scratch("dating-trusted"), roster());
         trusted
             .append(
                 mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
@@ -1145,9 +1171,66 @@ mod tests {
         let _ = fs::remove_dir_all(trusted.root());
     }
 
+    /// THE CLOCK RULE IS `confirms`, NOT `binds`. A record from an actor on the
+    /// roster BINDS — the folds take it (§5) — and its stamp is still the
+    /// host's, so a record dated behind what it rests on is still a finding.
+    /// The reference policy is the one that draws that line, by overriding
+    /// `Policy::confirms`; `conformance/dag.json` holds these findings for
+    /// records too, which is why the distinction is pinned here and not left to
+    /// the default.
+    #[test]
+    fn a_record_that_binds_is_still_held_to_the_dag_s_clock() {
+        let store = Store::new(scratch("dating-record"), roster());
+        store
+            .append(
+                mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let record = store
+            .append(
+                crate::reference::mk_authored(
+                    "alpha",
+                    at(2),
+                    "triage",
+                    "todo",
+                    at(2),
+                    "body",
+                    None,
+                    vec![],
+                    "",
+                    "",
+                    "",
+                    None,
+                    vec![],
+                    vec![],
+                    "",
+                )
+                .expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let events = store.events().expect("reads");
+        let late = events.last().expect("the record");
+        assert!(
+            roster().standing(late).binds(),
+            "a content record binds whoever wrote it"
+        );
+        assert_eq!(
+            store.verify(),
+            vec![format!(
+                "untrusted event {} is dated {}, behind its predecessor ({})",
+                record.as_str(),
+                at(2).isoformat(),
+                at(10).isoformat()
+            )]
+        );
+        let _ = fs::remove_dir_all(store.root());
+    }
+
     #[test]
     fn an_orphan_is_unreachable_and_verify_says_so() {
-        let store = Store::new(scratch("orphan"), untrusted());
+        let store = Store::new(scratch("orphan"), roster());
         store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
@@ -1174,7 +1257,7 @@ mod tests {
 
     #[test]
     fn linearise_refuses_a_missing_parent_and_a_cycle() {
-        let store = Store::new(scratch("broken"), untrusted());
+        let store = Store::new(scratch("broken"), roster());
         let event = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
         let absent = Hash::new("a".repeat(64)).expect("hex");
         let orphaned = mk_sealed(Some(absent.clone()), event);
@@ -1206,7 +1289,7 @@ mod tests {
     fn an_append_takes_the_same_lock_file_the_python_writer_takes() {
         use rustix::fs::{flock, FlockOperation};
 
-        let store = Store::new(scratch("locked"), untrusted());
+        let store = Store::new(scratch("locked"), roster());
         store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
