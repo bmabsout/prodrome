@@ -13,8 +13,7 @@ holds the vectors they are checked against.
 - **Types first.** Every value below is a closed algebraic type. Invariants
   live in smart constructors that return an error; a record that exists is
   valid. Names that mean different things are different types even when they
-  are all strings: `Hash`, `TodoId`, `Actor`, `MarkupSource`, `StringSource`
-  do not mix.
+  are all strings: `Hash`, `TodoId`, `Actor`, `Name` do not mix.
 - **One evaluator.** Fulfillment is computed in one place, and every consumer
   reads numbers it produced.
 - **Order is causal, time is data.** Events are ordered by the DAG. The `at` a
@@ -48,7 +47,10 @@ equal values print byte-identically.
 - Tuples: `(a, b)`, `(a,)`, `()`.
 - Constructor calls `Name(field=value, …)`: every field, in declared order,
   keyword form. The admitted names are the vocabulary of §4 and §7 plus
-  `datetime` and `timedelta`.
+  `datetime` and `timedelta`. §4's half is the core's kinds UNION the host
+  payload's — its record kind and the constructors that kind's fields nest —
+  so the whitelist is a union and is still a whitelist; where the two would
+  name the same constructor, the core's wins and the host's is unreachable.
 
 Parsing admits exactly this grammar: no names, operators, comprehensions or
 attribute access. A call dispatches to its smart constructor, whose error is
@@ -90,22 +92,39 @@ Kinds and fields, in order; all shipped; `""` means absent.
 - `Created(todo, at, actor, text, note)`
 - `Completed(todo, at, actor, note)`, `Cancelled(…)`, `Reopened(…)`
 - `SpecRevised(todo, at, actor, spec, note)`
-- `Authored(todo, at, actor, kind, created, body, spec, rationale, category,
-  waiting_on, detail, source, subtodos, notes, note)`: `body` and `detail`
-  are `MarkupSource`, `waiting_on` is `StringSource`, `rationale` a tuple of
-  strings, `source` a `Source(sender, subject, date, hash, thread_id,
-  message_id)` or `None`, `subtodos` a tuple of `SubTodo(body, done)`, `notes`
-  a tuple of `Note(on, lines)` with `on` a site literal.
+- **The record kind**: `KIND(todo, at, actor, <the host's fields>)`.
 
-`MarkupSource` and `StringSource` are opaque text in the host's two rendering
-languages; the database stores and prints them and never interprets them.
+The five kinds above are the DATABASE's: their fields are its semantics, and
+they are frozen here. A record is a todo's CONTENT, and content is a
+deployment's — so a host **payload** supplies
+
+- `KIND`, the constructor name, and the record's fields and their declared
+  order, which together are the stored bytes and are frozen the same way;
+- the VOCABULARY of the constructors those fields nest, which is §2's
+  whitelist's other half;
+- the parse and the print of those fields, the parse refusing what a smart
+  constructor refuses;
+- and the two readings §6 takes from a record and the only two: the spec it
+  carries (§6.2, §6.4) and its checklist length (§6.4).
+
+Nothing else about a record is read anywhere in this document. The REFERENCE
+PAYLOAD — the one `conformance/*.json` was taken with, and the one every
+`Authored(...)` in those vectors round-trips under — is `Authored(todo, at,
+actor, kind, created, body, spec, rationale, category, waiting_on, detail,
+source, subtodos, notes, note)`: `body` and `detail` are `MarkupSource`,
+`waiting_on` is `StringSource`, `rationale` a tuple of strings, `source` a
+`Source(sender, subject, date, hash, thread_id, message_id)` or `None`,
+`subtodos` a tuple of `SubTodo(body, done)`, `notes` a tuple of `Note(on,
+lines)` with `on` a site literal. `MarkupSource` and `StringSource` are opaque
+text in that host's two rendering languages; the database stores and prints
+them and never interprets them.
 
 ## 5. Trust
 
 `untrusted` is a set of actor names and is the whole policy. `binds(event,
-untrusted)` holds when the event is an `Authored` record, from any actor, or
-its actor is trusted. An untrusted actor's lifecycle and `SpecRevised` events
-are provisional: stored, shown as claims, never folded.
+untrusted)` holds when the event is a content record, from any actor, or its
+actor is trusted. An untrusted actor's lifecycle and `SpecRevised` events are
+provisional: stored, shown as claims, never folded.
 
 ## 6. Folds
 
@@ -115,14 +134,16 @@ with `at <= t` in causal order.
 1. `env_at(events, t, untrusted) : TodoId → Completed(at) | Cancelled(at)`.
    The last binding write wins; `Reopened` clears; only events that bind
    write.
-2. `specs_at`: the latest spec per todo, from `Authored` (any actor) or a
-   trusted `SpecRevised`.
-3. `authored_at`: the latest `Authored` per todo, any actor.
+2. `specs_at`: the latest spec per todo, from a record's payload (any actor)
+   or a trusted `SpecRevised`.
+3. `authored_at`: the latest record per todo, any actor.
 4. `flatten(events, t, untrusted) : TodoId → Term`: one function per todo. Its
    head is `checklist(first spec ever, first checklist length ever)`; at every
    moment a spec, a checklist length or the trusted state changed there is a
    `Piece(at, term)`: a flat 1.0 while resolved, else `checklist(spec in
-   force, items in force)`; assembled by `mk_piecewise`. The head extends to
+   force, items in force)`; assembled by `mk_piecewise`. "Spec" and "items"
+   are the payload's two readings (§4) and the whole of what a record
+   contributes. The head extends to
    −∞: a todo's function is total over time, and before anything was recorded
    about a half its unit is the earliest recorded demand of that half. A
    completion recorded before its record therefore stands against the demand
@@ -148,7 +169,8 @@ with `at <= t` in causal order.
    `outcome`, absent where they agree; `spec = flatten(…)[todo]` and `value`
    its fulfillment at `t` under `confirmed`'s environment, absent together;
    `content = chosen_of(confirmed, content)[todo]`, the name of the winning
-   object and never the record; `conflicts = conflicts_of(confirmed)[todo]`;
+   object and never the record — a consumer that wants the payload looks the
+   object up, because what a record MEANS is the host's; `conflicts = conflicts_of(confirmed)[todo]`;
    `stream` is every node whose event names the todo, in causal order. A todo
    whose events are all dated after `t` is still a row, open and unpriced:
    `t` asks what is believed, not what exists. `standing` says whether the
@@ -199,8 +221,11 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
 
 ## 8. Types an implementation must have
 
-`Hash` (64 hex), `TodoId`, `Actor`, `MarkupSource`, `StringSource`,
-`NoteSite`; `Envelope = Sealed | Woven`; `TodoEvent`; `Term` as `Fix TermF`;
+`Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Payload`, §4's record kind as a
+parameter — a constructor name, a field order, a vocabulary, a parse, a print,
+`spec` and a checklist length — carried by value and never as an existential,
+since one store holds one record shape; `Envelope = Sealed | Woven`;
+`TodoEvent`; `Term` as `Fix TermF`;
 `Explanation = Cofree TermF Annotation`; `Frontier`, a non-empty ordered set
 of writes; `Folded`; `Breaks`; `Entry` (§6.7), whose price and function are
 absent together and whose `Standing` is a sum with no "provisional for no
@@ -212,7 +237,8 @@ code never calls a raw constructor.
 Against `conformance/*.json` and on generated inputs:
 
 1. `print ∘ parse` is the identity on every stored object, and `hash(print)`
-   is its name.
+   is its name. Records included: every `KIND(...)` print in the vectors
+   round-trips byte for byte under the payload they were taken with.
 2. **Prefix.** Appending a later event changes no earlier moment's reading,
    except the head's unit (§6.4): a todo's first spec or first checklist,
    recorded late, re-heads its curve before it. With both halves recorded,
