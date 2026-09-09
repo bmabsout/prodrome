@@ -24,6 +24,9 @@ semantics.
   alone.
 - **Trust as policy.** Untrusted writers' claims are stored and shown but do
   not change what is believed.
+- **Your record, not ours.** What an objective SAYS is your type: implement
+  `Payload` and the database stores, prints, parses and folds it without
+  knowing a field of it.
 - **Runs in the browser.** The same core compiles to WebAssembly.
 
 ## Installation
@@ -37,6 +40,14 @@ prodrome = { package = "prodrome-core", git = "https://github.com/bmabsout/prodr
 
 Requires Rust 1.85 or later.
 
+A host implements `payload::Payload` — the constructor name its records are
+stored under, their fields in order, the vocabulary those fields nest, a parse
+and a print, and the two readings the folds take (the spec a record carries and
+its checklist length). Every type below is generic over it. The default
+`reference` feature ships `prodrome::reference::Todo`, the payload
+`conformance/` was taken with and a worked example; a host with its own can
+turn it off with `default-features = false`.
+
 ## Usage
 
 ```rust
@@ -46,13 +57,17 @@ use prodrome::event::{mk_created, mk_spec_revised, TodoId};
 use prodrome::fold::{env_at, evaluation_env, flatten, Untrusted};
 use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, mk_decay};
 use prodrome::literal::Datetime;
+use prodrome::reference::Todo;
 use prodrome::registers::nodes_of;
 use prodrome::store::EventStore;
 use prodrome::view::entries;
 
-// A store is a directory. The second argument is the deployment's trust
-// policy (§5): the actors whose lifecycle events are claims, not bindings.
-let store = EventStore::new(&dir, BTreeSet::new());
+// A store is a directory. The type parameter is the HOST's record shape: what
+// this deployment attaches to a todo, as a `payload::Payload`. `reference::Todo`
+// is the one this repository's vectors were taken with; a host implements its
+// own. The second argument is the deployment's trust policy (§5): the actors
+// whose lifecycle events are claims, not bindings.
+let store = EventStore::<Todo>::new(&dir, BTreeSet::new());
 
 // An event carries the instant its writer stamped on it. The store has no
 // clock: `at` is data, and nothing here reads the machine's.
@@ -95,6 +110,14 @@ This example is the crate's doctest; `cargo test` compiles and runs it.
 or a `Woven(parents, event)` merge with several. Its name is the hash of its
 canonical print. `verify` reports anything that does not hash to its name,
 rest on a missing parent, or form a cycle.
+
+**Records and payloads.** Five event kinds are the database's — `Created`,
+`Completed`/`Cancelled`/`Reopened`, `SpecRevised` — and their fields are its
+semantics. The sixth is yours: a record is `KIND(todo, at, actor, <your
+fields>)`, where your `Payload` supplies the name, the fields, their parse and
+print, and the only two things the folds read out of one (the spec it carries
+and how many checklist items it has). The stored bytes are frozen the moment
+you ship them, exactly as the database's own are.
 
 **Folds.** `env_at` gives each todo's outcome at an instant, `specs_at` its
 spec in force, `authored_at` its current record, and `flatten` its whole
@@ -142,11 +165,15 @@ $ nix build .#prodrome-wasm
 Produces `result/web/` for a bundler and `result/nodejs/` for a script. The
 exports (`verify_objects`, `fold`, `registers`, `entries`, `fulfillment`,
 `explain`, `series_knots`, `term_json`, `lifecycle`, `seal`, `merge_object`)
-each parse their arguments, call the core, and return JSON.
+each parse their arguments, call the core, and return JSON. A record crosses as
+its payload's own field names; the module is built with one payload, named once
+at the top of `wasm/src/lib.rs`, so a host with its own compiles its own wasm
+from this crate with that line changed.
 
 ## Documentation
 
 - [`SPEC.md`](SPEC.md): the contract, with the laws in §9.
+- [`CHANGELOG.md`](CHANGELOG.md): what changed, and what the stored bytes promise.
 - `cargo doc --open`: the API.
 
 ## Testing
@@ -162,8 +189,9 @@ SPEC §9 are property tests over generated logs and two-replica stores.
 ## Repository layout
 
 ```
-core/         prodrome-core: literal, event, store, fpl, fold, registers, breaks, view
-wasm/         prodrome-wasm: the core compiled for the browser
+core/         prodrome-core: literal, payload, event, store, fpl, fold, registers, breaks, view
+              plus `reference`, the payload the vectors were taken with
+wasm/         prodrome-wasm: the core compiled for the browser, built with that payload
 conformance/  the vectors
 SPEC.md       the specification
 ```
