@@ -74,6 +74,7 @@
 //!
 //! Layout, one module per layer of the spec:
 //! - `literal`  — §2: the grammar, its printer (Python `repr` rules) and parser
+//! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `store`    — §3: objects on disk, heads, linearisation, verify, adopt/merge
 //! - `fpl`      — §7: `TermF`, `Term`, evaluation, normal form, explain (Cofree)
@@ -87,6 +88,7 @@ pub mod event;
 pub mod fold;
 pub mod fpl;
 pub mod literal;
+pub mod payload;
 pub mod registers;
 pub mod store;
 pub mod view;
