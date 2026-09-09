@@ -66,10 +66,24 @@ use wasm_bindgen::prelude::*;
 mod wire;
 
 use wire::{
-    json_authored, json_content, json_entry, json_env, json_marker, json_terms, object, parse_env,
+    json_content, json_entry, json_env, json_marker, json_record, json_terms, object, parse_env,
     parse_instant, parse_moment, parse_objects, parse_term, parse_untrusted, strings, History,
     ObjectIn, Refusal,
 };
+
+/// THE RECORD SHAPE THIS MODULE WAS BUILT WITH.
+///
+/// §4's record kind is the host's (`prodrome::payload::Payload`), and a store
+/// is parsed against one closed vocabulary — so a `.wasm` is built for one
+/// payload, and this is the choice. `prodrome::reference::Todo` is the shape
+/// `conformance/*.json` was taken with; a host with its own payload compiles
+/// its own wasm from this crate with the type swapped, and every export below
+/// is written so that is the ONLY line that changes.
+type Record = prodrome::reference::Todo;
+
+type Event = TodoEvent<Record>;
+type Object = Envelope<Record>;
+type Node = registers::Node<Record>;
 
 /// A refusal, as the exception a JS caller catches. Every entry point returns
 /// one rather than panicking: a browser that aborts inside the Wasm leaves the
@@ -142,7 +156,7 @@ impl Row {
     /// structure and not a fact about a todo, so its `todo`, `actor` and `at`
     /// stay "" and its `kind` is the envelope's own name; nothing is invented
     /// to fill them.
-    fn describe(&mut self, envelope: &Envelope) {
+    fn describe(&mut self, envelope: &Object) {
         self.parents = parents_of(envelope);
         match envelope.event() {
             Some(event) => {
@@ -208,7 +222,7 @@ pub fn verify_objects(objects: &str, tips: &str) -> Result<String, JsError> {
     let mut problems: Vec<String> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
     let mut index: BTreeMap<String, usize> = BTreeMap::new();
-    let mut parsed: BTreeMap<Hash, Envelope> = BTreeMap::new();
+    let mut parsed: BTreeMap<Hash, Object> = BTreeMap::new();
 
     for ObjectIn { hash, text } in &sent {
         if index.contains_key(hash) {
@@ -346,13 +360,13 @@ pub fn verify_objects(objects: &str, tips: &str) -> Result<String, JsError> {
 /// `EventStore::read_dag_named` draws the same line, in the same words.
 struct Read {
     order: Vec<Hash>,
-    objects: BTreeMap<Hash, Envelope>,
+    objects: BTreeMap<Hash, Object>,
 }
 
 impl Read {
     fn of(objects: &str) -> Result<Read, Refusal> {
         let sent = parse_objects(objects)?;
-        let mut parsed: BTreeMap<Hash, Envelope> = BTreeMap::new();
+        let mut parsed: BTreeMap<Hash, Object> = BTreeMap::new();
         for ObjectIn { hash, text } in &sent {
             if name_of(text) != *hash {
                 return Err(format!(
@@ -373,25 +387,25 @@ impl Read {
 
     /// The events, in the linearisation's order — merges dropped, since a
     /// merge is structure and carries no event to fold.
-    fn events(&self) -> Vec<TodoEvent> {
+    fn events(&self) -> Vec<Event> {
         self.order
             .iter()
             .filter_map(|name| self.objects[name].event().cloned())
             .collect()
     }
 
-    fn nodes(&self) -> Vec<registers::Node> {
+    fn nodes(&self) -> Vec<Node> {
         self.order
             .iter()
-            .map(|name| registers::Node::of(name.clone(), &self.objects[name]))
+            .map(|name| Node::of(name.clone(), &self.objects[name]))
             .collect()
     }
 
     /// Per todo, its events in causal order with the object that carries each —
     /// `json_entry`'s `stream` and `json_series`'s `markers`, from
     /// one pass.
-    fn streams(&self) -> BTreeMap<String, Vec<(Hash, TodoEvent)>> {
-        let mut out: BTreeMap<String, Vec<(Hash, TodoEvent)>> = BTreeMap::new();
+    fn streams(&self) -> BTreeMap<String, Vec<(Hash, Event)>> {
+        let mut out: BTreeMap<String, Vec<(Hash, Event)>> = BTreeMap::new();
         for name in &self.order {
             if let Some(event) = self.objects[name].event() {
                 out.entry(event.todo().as_str().to_owned())
@@ -572,10 +586,11 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
 /// `records` is the lookup an entry's `content` NAME implies: an entry carries
 /// the name of the winning content object and never the record, and a browser
 /// holding those objects as TEXT cannot open one without the §2 parser — which
-/// is here. So the answer carries the `Authored` records the rows actually
-/// name, and nothing else: it is the caller's own lookup done on the caller's
-/// behalf, not the Prodrome deciding what a body is for. The shape is
-/// [`wire::json_authored`], which is the reference's `json_authored` MINUS `rich`.
+/// is here. So the answer carries the records the rows actually name, and
+/// nothing else: it is the caller's own lookup done on the caller's behalf,
+/// not the Prodrome deciding what a body is for. The shape is
+/// [`wire::json_record`] — `todo`, `at`, `actor` and the payload's own fields
+/// under the names it stores them by.
 #[wasm_bindgen]
 pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
     let read = Read::of(objects).map_err(refused)?;
@@ -590,7 +605,7 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         .filter_map(|row| row.content.as_ref())
         .filter_map(|name| match read.objects[name].event() {
             Some(TodoEvent::Authored(record)) => {
-                Some((name.as_str().to_owned(), json_authored(record)))
+                Some((name.as_str().to_owned(), json_record(record)))
             }
             _ => None,
         })
@@ -634,7 +649,7 @@ pub fn lifecycle(
 ) -> Result<String, JsError> {
     let at = parse_instant("at", at).map_err(refused)?;
     let at = datetime_of(at).map_err(|e| refused(format!("at: {e}")))?;
-    let event = match kind {
+    let event: Event = match kind {
         "Created" => prodrome::event::mk_created(todo, at, actor, "", note),
         "Completed" => prodrome::event::mk_completed(todo, at, actor, note),
         "Cancelled" => prodrome::event::mk_cancelled(todo, at, actor, note),
@@ -650,7 +665,7 @@ pub fn lifecycle(
 }
 
 /// One object's name and its bytes, the way `/api/objects` carries them.
-fn object_of(envelope: &Envelope) -> Result<String, JsError> {
+fn object_of(envelope: &Object) -> Result<String, JsError> {
     let literal = prodrome::event::canonical_envelope(envelope);
     printed(&object(vec![
         ("name", Value::String(name_of(&literal))),
@@ -661,7 +676,7 @@ fn object_of(envelope: &Envelope) -> Result<String, JsError> {
 /// The event a sealing call was given, or `None` — a print, read back through
 /// the closed vocabulary and every `mk_*` rule, so a caller cannot seal a
 /// record the constructors would have refused.
-fn event_of(event: Option<String>) -> Result<Option<TodoEvent>, JsError> {
+fn event_of(event: Option<String>) -> Result<Option<Event>, JsError> {
     event
         .map(|print| {
             prodrome::event::parse_event(&print).map_err(|e| refused(format!("event: {e}")))

@@ -15,19 +15,24 @@
 //! nothing rewritten in between — a translation step is where a second reading
 //! grows.
 //!
-//! Two places print an instant differently, and both are RENDERINGS.
-//! `json_authored`'s `created` and `source.date` are DATES, a genuine
-//! narrowing of the value, and so are done here. `json_entry`'s `at` is
-//! `isoformat(" ")` and used to be the page's to spell; since §6.7 it is
-//! `Entry::at`, in the core — because the same string now has to come out of
-//! the PyO3 binding too, and one spelling in two crates is one spelling too
-//! many.
+//! A RECORD'S FIELDS ARE THE HOST'S, so this file does not name one. §4's
+//! record kind is `KIND(todo, at, actor, <the payload's fields>)`, and
+//! [`json_record`] serialises exactly that: the three the core owns, then the
+//! payload's own `fields()` as a JSON object keyed by field name, each a §2
+//! literal mapped by [`json_literal`]. A browser therefore reads the same
+//! names its store holds, whatever payload the module was built with — and
+//! this crate stops having an opinion about what a body is.
+//!
+//! `json_entry`'s `at` is `isoformat(" ")` and used to be the page's to spell;
+//! since §6.7 it is `Entry::at`, in the core — one spelling, in one place.
 
 use std::collections::BTreeMap;
 
-use prodrome::event::{Authored, Hash, Source, TodoEvent, TodoId};
+use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
 use prodrome::fold::{Binding, Env, Untrusted};
 use prodrome::fpl::{self, Instant, Outcome, Term};
+use prodrome::literal;
+use prodrome::payload::Payload;
 use prodrome::view::Entry;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -195,54 +200,80 @@ pub fn json_terms(terms: &BTreeMap<TodoId, Term>) -> Value {
     )
 }
 
-fn json_source(source: &Source) -> Value {
-    json!({
-        "sender": source.sender.as_str(),
-        "subject": source.subject.as_str(),
-        "date": fpl::instant_of(source.date).format("%Y-%m-%d").to_string(),
-        "hash": source.hash.as_str(),
-        "thread_id": source.thread_id.as_str(),
-        "message_id": source.message_id.as_str(),
-    })
-}
-
-/// The reference's `json_authored` MINUS `rich`.
+/// A §2 literal as JSON, by the obvious mapping — the ONE reading of a
+/// payload's fields this boundary has.
 ///
-/// `rich` is typst's HTML, and typst is a compiler this core does not carry
-/// (nor should: `markup.suspicious` and the trust gate around it are the
-/// server's, and a browser that rendered its own markup would be a second
-/// answer to "may this string become nodes"). The caller adds
-/// `rich: {body: null, detail: null, rationale: null, waiting_on: null}`,
-/// which is the shape `json_rich` already emits for a record nobody may
-/// render, and which the frontend already answers by showing the source.
-pub fn json_authored(record: &Authored) -> Value {
-    json!({
-        "kind": record.kind.as_str(),
-        "created": fpl::instant_of(record.created).format("%Y-%m-%d").to_string(),
-        "body": record.body.as_str(),
-        "detail": record.detail.as_str(),
-        "category": record.category.as_ref().map_or("", |c| c.as_str()),
-        "waiting_on": record.waiting_on.as_str(),
-        "rationale": Value::Array(record.rationale.iter().map(|r| Value::String(r.clone())).collect()),
-        "spec": record.spec.as_ref().map_or(Value::Null, fpl::to_json),
-        "actor": record.actor.as_str(),
-        "at": fpl::iso(fpl::instant_of(record.at)),
-        "source": record.source.as_ref().map_or(Value::Null, json_source),
-        "subtodos": Value::Array(
-            record
-                .subtodos
-                .iter()
-                .map(|s| json!({"body": s.body, "done": s.done}))
-                .collect(),
-        ),
-    })
+/// `None` is `null`, a bool is a bool, a string is a string; an integer is a
+/// number where one fits and its print where it does not (§2's integers are
+/// unbounded and JSON's are not); a float is a number; a datetime is
+/// [`fpl::iso`], the one instant shape this whole file speaks; a timedelta is
+/// its three components, which is what it IS; a tuple is an array; and a
+/// constructor call is an object of its fields with its name under `"kind"`.
+///
+/// A TERM ARRIVES AS ITS LITERAL SHAPE HERE, not as `fpl::to_json`'s — this
+/// mapping is a payload's, and a payload's fields are opaque to this crate. A
+/// caller that wants a term as `to_json` reads `fold`'s `specs`/`flatten`, or
+/// hands the print to [`crate::term_json`].
+pub fn json_literal(value: &literal::Value) -> Value {
+    match value {
+        literal::Value::None => Value::Null,
+        literal::Value::Bool(flag) => Value::Bool(*flag),
+        literal::Value::Int(int) => int
+            .as_i64()
+            .map_or_else(|| Value::String(literal::print_literal(value)), Value::from),
+        literal::Value::Float(float) => Value::from(float.get()),
+        literal::Value::Str(text) => Value::String(text.clone()),
+        literal::Value::Datetime(at) => Value::String(fpl::iso(fpl::instant_of(*at))),
+        literal::Value::Timedelta(delta) => json!({
+            "days": delta.days(),
+            "seconds": delta.seconds(),
+            "microseconds": delta.microseconds(),
+        }),
+        literal::Value::Tuple(items) => Value::Array(items.iter().map(json_literal).collect()),
+        literal::Value::Call(call) => {
+            let mut out = Map::new();
+            out.insert("kind".to_owned(), Value::String(call.name.clone()));
+            for (name, field) in &call.fields {
+                out.insert(name.clone(), json_literal(field));
+            }
+            Value::Object(out)
+        }
+    }
 }
 
-pub fn json_content(content: &BTreeMap<TodoId, Authored>) -> Value {
+/// One content record: the three fields §4 gives every event, then the
+/// PAYLOAD's own, keyed by the names it stores them under.
+///
+/// No rendering of a body, and there could not be one: markup is a compiler
+/// this core does not carry (nor should — a browser that rendered its own
+/// markup would be a second answer to "may this string become nodes"), and a
+/// field's meaning is the host's anyway. A caller that renders adds its own
+/// keys beside these.
+pub fn json_record<P: Payload>(record: &Authored<P>) -> Value {
+    let mut out = Map::new();
+    out.insert(
+        "todo".to_owned(),
+        Value::String(record.todo.as_str().to_owned()),
+    );
+    out.insert(
+        "at".to_owned(),
+        Value::String(fpl::iso(fpl::instant_of(record.at))),
+    );
+    out.insert(
+        "actor".to_owned(),
+        Value::String(record.actor.as_str().to_owned()),
+    );
+    for (name, value) in record.payload.fields() {
+        out.insert(name.to_owned(), json_literal(&value));
+    }
+    Value::Object(out)
+}
+
+pub fn json_content<P: Payload>(content: &BTreeMap<TodoId, Authored<P>>) -> Value {
     Value::Object(
         content
             .iter()
-            .map(|(todo, record)| (todo.as_str().to_owned(), json_authored(record)))
+            .map(|(todo, record)| (todo.as_str().to_owned(), json_record(record)))
             .collect(),
     )
 }
@@ -283,7 +314,7 @@ pub fn json_entry(entry: &Entry) -> Value {
 
 /// One event's identity on a todo's timeline — `json_series`'s marker,
 /// and what a locally folded entry's `stream` is a list of.
-pub fn json_marker(name: &Hash, event: &TodoEvent) -> Value {
+pub fn json_marker<P: Payload>(name: &Hash, event: &TodoEvent<P>) -> Value {
     json!({
         "at": fpl::iso(fpl::instant_of(event.at())),
         "kind": event.kind_name(),
