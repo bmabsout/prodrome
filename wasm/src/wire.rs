@@ -210,6 +210,10 @@ pub fn json_terms(terms: &BTreeMap<TodoId, Term>) -> Value {
 /// its three components, which is what it IS; a tuple is an array; and a
 /// constructor call is an object of its fields with its name under `"kind"`.
 ///
+/// A nested call whose own field is named `kind` keeps the FIELD and loses the
+/// tag, because a reader is after the value; the core kinds and the reference
+/// payload have no such field, and a host that adds one should expect it.
+///
 /// A TERM ARRIVES AS ITS LITERAL SHAPE HERE, not as `fpl::to_json`'s — this
 /// mapping is a payload's, and a payload's fields are opaque to this crate. A
 /// caller that wants a term as `to_json` reads `fold`'s `specs`/`flatten`, or
