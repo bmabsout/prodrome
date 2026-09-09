@@ -6,18 +6,20 @@ semantics.
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-- **Content-addressed.** Every object is one file named by the SHA-256 of its
-  bytes. Reads re-hash before they parse.
-- **Causal, not clocked.** Objects name their parents; history is a DAG. A
-  writer's timestamp is data for queries and never decides a merge.
-- **Time-travelling queries.** A fold answers what was believed at any
-  instant. Registers expose concurrent writes as conflicts instead of picking
-  a winner.
+- **A CRDT.** Every store is a full replica. Write offline, exchange objects
+  with any other store, and all of them converge on the same history without
+  a clock to agree on. Concurrent writes to the same field stay visible as a
+  conflict for a person to settle; nothing is resolved silently.
+- **Content-addressed.** Each object is one file named by the SHA-256 of its
+  bytes, so a store is tamper-evident and can be verified from the files
+  alone.
+- **Queryable at any instant.** Ask what was believed at any past moment and
+  get the answer as of then.
 - **Fulfillment as a function of time.** FPL, a small fuzzy temporal logic,
-  gives each todo a spec whose value in `[0, 1]` at an instant is how well it
-  is being met; the complement is urgency.
-- **Replicas.** Stores exchange objects and merge heads; a trust policy decides
-  which writers' claims bind.
+  gives each todo a spec whose value in `[0, 1]` says how well it is being
+  met right now; the complement is urgency.
+- **Trust as policy.** Untrusted writers' claims are stored and shown but do
+  not change what is believed.
 - **Runs in the browser.** The same core compiles to WebAssembly.
 
 ## Installation
