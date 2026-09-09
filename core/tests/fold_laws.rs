@@ -38,7 +38,7 @@ use prodrome::store::EventStore;
 use prodrome::view;
 use proptest::prelude::*;
 
-use common::{a_draft, a_log, a_schedule, chain_of, far, moment, realise, WINDOW};
+use common::{a_draft, a_log, a_schedule, chain_of, far, moment, realise, Draft, WINDOW};
 
 /// These laws are about the FOLDS, not about a record's fields, so the payload
 /// they run under is the reference one — the shape the vector generator drew.
@@ -55,6 +55,19 @@ type State = Folded<Todo>;
 /// property runs against had to be the same one.
 fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
+}
+
+/// A draft the reference policy can only let CLAIM: a lifecycle write or a
+/// repricing, from the one actor on the roster. `Draft`'s rolls 3..7 are
+/// `SpecRevised`, `Completed`, `Cancelled` and `Reopened` — the kinds §5 makes
+/// provisional — and rolls 0..3 (`Created`, `Authored`) are the ones it does
+/// not, which is why the range is exactly this one.
+fn a_claim() -> impl Strategy<Value = Draft> {
+    (a_draft(), 3u8..7).prop_map(|(draft, roll)| Draft {
+        actor: "triage",
+        roll,
+        ..draft
+    })
 }
 
 /// What every fold answers, as one comparable value. Terms and records go in
@@ -278,6 +291,100 @@ proptest! {
         );
     }
 
+    /// §9.10 — UNDER A POLICY THAT BINDS EVERYTHING THE TWO READINGS ARE ONE.
+    ///
+    /// [`Everything`]'s whole content is that no event claims, so the CLAIMED
+    /// reading (§6.7, taken under it) and the CONFIRMED one (taken under the
+    /// policy) coincide: every fold answers the same, no entry carries a claim,
+    /// and no entry is provisional. It is the law that says the two readings
+    /// are ONE reading asked twice and not two different pieces of machinery —
+    /// and `Untrusted::none()`, the empty roster, is the same policy said with
+    /// a roster, which is checked here too.
+    #[test]
+    fn the_two_readings_agree_under_a_policy_that_binds_everything(
+        log in a_log(),
+        at in 0i64..WINDOW,
+    ) {
+        let t = moment(at);
+        prop_assert_eq!(folds(&log, t, &Everything), folds(&log, t, &Untrusted::none()));
+
+        let nodes = chain_of(&log);
+        for row in view::entries(&nodes, t, &Everything).expect("the log folds") {
+            prop_assert_eq!(row.claim, None, "nothing is refused, so nothing is claimed");
+            prop_assert_eq!(row.confidence, view::Confidence::Confirmed, "confidence");
+        }
+    }
+
+    /// §9.11 — A CLAIMING EVENT NEVER MOVES THE CONFIRMED READING.
+    ///
+    /// Append one event the policy only lets CLAIM — a lifecycle write or a
+    /// repricing from an actor on the roster, at any instant, about any todo —
+    /// and every confirmed answer is the answer it was: the environment, the
+    /// specs, the content, the functions and the whole history. That is what
+    /// "stored and shown but not folded" MEANS, and it is the containment the
+    /// roster is kept for.
+    ///
+    /// Asked at several instants, including instants before the claim, because
+    /// a fold that let a claim through at one moment and not another would
+    /// still pass at one moment.
+    #[test]
+    fn a_claiming_event_never_moves_the_confirmed_reading(
+        log in a_log(),
+        claim in a_claim(),
+        when in 0i64..WINDOW,
+        asked in prop::collection::vec(0i64..WINDOW, 1..5),
+    ) {
+        let policy = roster();
+        let claim = claim.at(moment(when));
+        prop_assert!(policy.standing(&claim).claims(), "the generator draws a claim");
+
+        let mut extended = log.clone();
+        extended.push(claim);
+        for seconds in asked.into_iter().chain([when, WINDOW]) {
+            let t = moment(seconds);
+            prop_assert_eq!(folds(&extended, t, &policy), folds(&log, t, &policy));
+        }
+    }
+
+    /// §9.12 — STANDING SELECTS EVENTS, NOT POSITIONS.
+    ///
+    /// [`Policy::standing`] is a function of the event alone: not of the log it
+    /// sits in, not of where in the log it sits, not of the moment being asked
+    /// about. So folding under a policy IS folding the sub-log of the events it
+    /// binds — which is checked here against the ONE policy that binds
+    /// everything — and that stays true under any permutation of the log,
+    /// because filtering commutes with reordering. Which events count is a
+    /// function of the event SET; only which of them WINS is a function of the
+    /// order, and §9.3 is that half.
+    #[test]
+    fn standing_selects_events_and_not_positions(
+        log in a_log(),
+        keys in prop::collection::vec(0u32..1000, 0..25),
+        at in 0i64..WINDOW,
+    ) {
+        let policy = roster();
+        let t = moment(at);
+        let mut order: Vec<usize> = (0..log.len()).collect();
+        order.sort_by_key(|i| (keys.get(*i).copied().unwrap_or(0), *i));
+        let shuffled: Vec<Event> = order.iter().map(|i| log[*i].clone()).collect();
+
+        for log in [&log, &shuffled] {
+            let kept: Vec<Event> = log
+                .iter()
+                .filter(|event| policy.standing(event).binds())
+                .cloned()
+                .collect();
+            // `authored_at` takes no policy and reads EVERY record, so the
+            // sub-log has to keep them; the reference policy binds them, which
+            // is why this comparison is about the other four folds and this
+            // assertion is what says so.
+            prop_assert_eq!(
+                kept.iter().filter(|e| matches!(e, TodoEvent::Authored(_))).count(),
+                log.iter().filter(|e| matches!(e, TodoEvent::Authored(_))).count()
+            );
+            prop_assert_eq!(folds(&kept, t, &Everything), folds(log, t, &policy));
+        }
+    }
 }
 
 /// THE ONE PLACE A LATER EVENT REACHES BACK, named with its witnesses.
