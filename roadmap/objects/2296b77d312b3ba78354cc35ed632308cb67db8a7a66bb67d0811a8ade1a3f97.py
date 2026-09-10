@@ -1,0 +1,1 @@
+Sealed(prev='a4e1e02fe113cdb2cbaba1a4116ee0cf791133e1fca4fcf2d1438e442599416d', event=Created(todo='ancestry-beyond-bitsets', at=datetime(2026, 9, 10, 0, 31, 34, 170219), actor='bassel', text='replace the per-object ancestry bitset if a DAG reaches tens of thousands of objects', note=''))

@@ -1,0 +1,1 @@
+Sealed(prev='d8d9495f4da030843d59276198d5416edd032a0d2fd6b37deb80b75c89fb0ab0', event=Created(todo='the-vectors-are-literals', at=datetime(2026, 9, 9, 10, 9, 3), actor='bassel', text="write the conformance vectors in the crate's own grammar", note=''))

@@ -1,0 +1,1 @@
+Sealed(prev='cae9420f21e38fee1154ea1376f8026092f63e412ea943a0f5c8d6f2753221ad', event=SpecRevised(todo='a-book-style-guide', at=datetime(2026, 9, 10, 0, 31, 34, 153595), actor='bassel', spec=Flat(value=0.85), note=''))

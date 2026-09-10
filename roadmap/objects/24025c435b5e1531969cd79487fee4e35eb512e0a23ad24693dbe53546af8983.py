@@ -1,0 +1,1 @@
+Sealed(prev='fe60a586c3de12748fdced9da824da269b6cb262c772f8de9a4b2046990a0284', event=Created(todo='property-test-the-cli-verbs', at=datetime(2026, 9, 10, 0, 31, 34, 132801), actor='bassel', text="property-test the CLI's verbs against the store laws in SPEC 9", note=''))

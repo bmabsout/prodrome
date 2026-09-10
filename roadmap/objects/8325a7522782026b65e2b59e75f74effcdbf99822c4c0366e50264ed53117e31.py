@@ -1,0 +1,1 @@
+Sealed(prev='13cbbc0c921651ee1d25d785c20e70b46723a6e4ade50fc8d34b7b61a8f49f6c', event=Created(todo='standing-is-the-hosts', at=datetime(2026, 9, 9, 0, 0, 0), actor='bassel', text='make trust a host policy, not a roster of names inside the core', note=''))

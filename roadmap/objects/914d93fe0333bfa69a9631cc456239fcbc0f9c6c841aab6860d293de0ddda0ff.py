@@ -1,0 +1,1 @@
+Sealed(prev='5edb6b65abff6267fca69c3c08abd14cbdf000e87f85fb734abd2ac5a291a097', event=Created(todo='publish-to-crates-io', at=datetime(2026, 9, 10, 0, 31, 34, 127062), actor='bassel', text='publish prodrome-core and prodrome-cli to crates.io', note=''))

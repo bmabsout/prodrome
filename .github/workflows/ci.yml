@@ -24,3 +24,12 @@ jobs:
       # The browser's artefact, built purely: bindgen's glue and wasm-opt's
       # rewrite are outside `cargo test`, so a break there shows up here.
       - run: nix build .#prodrome-wasm --print-build-logs
+      # THE ROADMAP IS DATA, AND THIS IS THE CHECK ON IT. `roadmap/` is not in
+      # the flake's fileset, so the binary is built from source and then
+      # pointed at the CHECKOUT: `verify` says every object it holds rehashes
+      # to its name, rests on a parent that exists and is reachable from a
+      # head, and `list` says the whole store still folds. A pull request that
+      # appends a todo proves both here.
+      - run: nix build .#prodrome-cli -o result-cli --print-build-logs
+      - run: ./result-cli/bin/prodrome verify --store roadmap
+      - run: ./result-cli/bin/prodrome list --store roadmap

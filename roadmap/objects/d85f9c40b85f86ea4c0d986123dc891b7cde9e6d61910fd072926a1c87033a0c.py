@@ -1,0 +1,1 @@
+Sealed(prev='d471611d3b8664dbc70e9c413d3a79c378978612f8edc634873d0809863c630b', event=Completed(todo='the-vectors-are-literals', at=datetime(2026, 9, 10, 0, 10, 59), actor='bassel', note='0.4.0'))
