@@ -61,6 +61,11 @@ changes, no reading changes, and the interpreted path is the one it was.
   interpreted evaluation and none at all compiled, asserted on the counting env
   in both its readings (the `After` nodes that could ask, and an environment
   that would show if one did) and never on the clock.
+  MEASURED AND STATED AS MEASURED: 390 000 lookups become 0 for a 19 µs
+  compile, and the wall clock moves about 7% in release, because a lookup in a
+  three-entry map is cheap. What the compiler buys is that the environment
+  leaves the query path — a compiled term can be cached, stored, shipped and
+  evaluated where no history exists — and not a constant factor.
 - `prodrome-wasm` gains ONE export, `compile(term, env)`, returning the
   compiled term's canonical print beside its links. The other exports are
   unchanged in shape and in answer.

@@ -353,6 +353,15 @@ under a window costs 65 lookups, and a chain of `d` links under one costs
 then `normalize`'s merge of the partition) ONCE, and every evaluation
 afterwards pays none, because there is no `After` left to pay for.
 
+WHAT THAT IS AND IS NOT WORTH, measured rather than assumed: on a chain of
+three links under one window, 2000 evaluations, the lookups go from 390 000 to
+0 for a 19 µs compile — and the WALL CLOCK moves about 7% in a release build,
+because a lookup in a three-entry map is cheap. The saving being claimed is not
+the microseconds. It is that the environment leaves the query path entirely: a
+compiled term is a term (§7), so it can be cached, stored, shipped over a wire
+and evaluated somewhere that holds no history at all, and the chain it came
+from is one schedule a reader can see rather than a nest to re-enter.
+
 ## 8. Types an implementation must have
 
 `Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Payload`, §4's record kind as a
