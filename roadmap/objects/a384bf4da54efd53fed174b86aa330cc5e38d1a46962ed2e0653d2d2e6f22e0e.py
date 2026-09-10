@@ -1,0 +1,1 @@
+Sealed(prev='a6a5532b67035312f1f4c568f7c06278483b49c3204ccdfa45d732eed97a50ac', event=SpecRevised(todo='exact-within', at=datetime(2026, 9, 10, 5, 48, 9, 886299), actor='bassel', spec=Flat(value=0.88), note=''))

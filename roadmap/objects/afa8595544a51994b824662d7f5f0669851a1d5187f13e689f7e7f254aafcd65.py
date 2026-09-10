@@ -1,0 +1,1 @@
+Sealed(prev='44a925ac2829ef20669ba4e2edf8cebe10a08a7ef2c5e3159979ccbfb321a863', event=SpecRevised(todo='shift-monoid-action-law', at=datetime(2026, 9, 10, 5, 48, 9, 896652), actor='bassel', spec=Flat(value=0.85), note=''))
