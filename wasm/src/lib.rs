@@ -54,8 +54,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use prodrome::chain::Link;
 use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent};
-use prodrome::fpl::{datetime_of, instant_of, iso, Instant};
+use prodrome::fpl::{datetime_of, instant_of, iso, print_term, total_seconds, Delta, Instant};
 use prodrome::literal::Datetime;
 use prodrome::registers;
 use prodrome::store::linearise;
@@ -782,6 +783,67 @@ pub fn explain(term: &str, now: &str, env: &str) -> Result<String, JsError> {
     let now = parse_instant("now", now).map_err(refused)?;
     let env = parse_env(env).map_err(refused)?;
     printed(&crate::json::explain(&term, now, &env))
+}
+
+/// One resolved link, as the boundary carries it: spans in hours, instants as
+/// ISO, exactly like every other span and instant this module writes.
+fn json_link(link: &Link) -> Value {
+    let hours = |span: Delta| Value::from(total_seconds(span) / 3600.0);
+    let mut fields = vec![
+        ("event", Value::String(link.event().to_owned())),
+        ("grade", Value::from(link.grade())),
+    ];
+    match link {
+        Link::Pending { .. } => fields.push(("bound", Value::String("pending".to_owned()))),
+        Link::Completed {
+            at,
+            slip,
+            needs,
+            ready,
+            ..
+        } => {
+            fields.push(("bound", Value::String("completed".to_owned())));
+            fields.push(("at", Value::String(iso(*at))));
+            fields.push(("slipHours", hours(*slip)));
+            if let Some(needs) = needs {
+                fields.push(("needsHours", hours(*needs)));
+            }
+            if let Some(ready) = ready {
+                fields.push(("readyAt", Value::String(iso(*ready))));
+            }
+        }
+        Link::Moot { at, .. } => {
+            fields.push(("bound", Value::String("cancelled".to_owned())));
+            fields.push(("at", Value::String(iso(*at))));
+        }
+    }
+    object(fields)
+}
+
+/// §7.1 — a term with every `After` resolved against a snapshot, so a page
+/// that redraws a curve stops paying for a lookup per node per sample.
+///
+/// The compiled term comes back as its canonical PRINT and not as the JSON
+/// shape, because a compiled term is a term and [`term_json`] already reads
+/// one — and because the print is what a caller would cache. Evaluate it with
+/// `fulfillment(compiled, now, "{}")`: the empty environment, which is the
+/// whole claim, since nothing is left in it that could read one.
+///
+/// `links` is not decoration. A cancelled upstream compiles to a 1.0 that no
+/// reader could otherwise tell from a demand met (§7), and this is where the
+/// boundary is told which is which.
+#[wasm_bindgen]
+pub fn compile(term: &str, env: &str) -> Result<String, JsError> {
+    let term = parse_term("term", term).map_err(refused)?;
+    let env = parse_env(env).map_err(refused)?;
+    let compiled = prodrome::chain::compile(&term, &env);
+    printed(&object(vec![
+        ("term", Value::String(print_term(compiled.term()))),
+        (
+            "links",
+            Value::Array(compiled.links().iter().map(json_link).collect()),
+        ),
+    ]))
 }
 
 /// §7's knots — the curve a graph draws over `[from, to]`, and whether the
