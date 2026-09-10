@@ -27,12 +27,16 @@
         # handed `./.`, so a README edit does not change a derivation's hash.
         # `conformance/` is in it because the tests read those vectors: a check
         # that cannot reach its evidence is a check that passes for the wrong
-        # reason.
+        # reason. `roadmap/` is NOT in it, for the mirror-image reason: it is
+        # DATA the binary reads and not source the binary is built from, so a
+        # todo appended to it must rebuild nothing, and CI runs `prodrome
+        # verify --store roadmap` against the checkout rather than a copy.
         src = lib.fileset.toSource {
           root = ./.;
           fileset = lib.fileset.unions [
             ./Cargo.toml
             ./Cargo.lock
+            ./cli
             ./core
             ./wasm
             ./conformance
@@ -127,11 +131,26 @@
               license = with lib.licenses; [ mit asl20 ];
             };
           };
+
+        # THE BINARY (`nix build .#prodrome-cli`), which is also a check: this
+        # builds `cli/` and runs its tests, so `nix flake check` covers the
+        # verbs and CI has the executable it points at `roadmap/`.
+        prodrome-cli = pkgs.rustPlatform.buildRustPackage {
+          pname = "prodrome-cli";
+          inherit version src;
+          cargoLock.lockFile = ./Cargo.lock;
+          buildAndTestSubdir = "cli";
+          meta = {
+            description = "A command line over a Prodrome store";
+            license = with lib.licenses; [ mit asl20 ];
+            mainProgram = "prodrome";
+          };
+        };
       in
       {
         packages = {
-          inherit prodrome-wasm;
-          default = prodrome-wasm;
+          inherit prodrome-cli prodrome-wasm;
+          default = prodrome-cli;
         };
 
         # `nix flake check` runs the crate's own suites — SPEC §9 against
@@ -151,7 +170,7 @@
               doCheck = false;
             };
           };
-          inherit prodrome-wasm;
+          inherit prodrome-cli prodrome-wasm;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's

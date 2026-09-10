@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "wasm"]
+members = ["cli", "core", "wasm"]
 
 [workspace.package]
 version = "0.4.0"
@@ -32,3 +32,10 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# THE CORE, AS ONE ENTRY. `prodrome-cli` depends on it by path (what this
+# workspace builds against) and by version (what a published `prodrome-cli`
+# would resolve to), and the two live here beside `workspace.package.version`
+# so that a release bumps one file.
+[workspace.dependencies]
+prodrome-core = { path = "core", version = "0.4.0" }
