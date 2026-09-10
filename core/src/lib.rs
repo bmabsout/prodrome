@@ -83,6 +83,7 @@
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `store`    — §3: objects on disk, heads, linearisation, verify, adopt/merge
 //! - `fpl`      — §7: `TermF`, `Term`, evaluation, normal form, explain (Cofree)
+//! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
 //! - `policy`   — §5: `Standing`, the `Policy` trait, and the reference policy
 //! - `fold`     — §6.1–6.5: causal folds, flatten, history
 //! - `registers`— §6.6: frontiers over the DAG, the fold as a monoid action
@@ -91,6 +92,9 @@
 //! - `reference`— the payload the vectors were taken with (feature `reference`)
 
 pub mod breaks;
+/// §7.1 — the chain compiler: `After` erased against a snapshot, so a chain
+/// composes into one evaluable term instead of a lookup per node per sample.
+pub mod chain;
 pub mod event;
 pub mod fold;
 pub mod fpl;
