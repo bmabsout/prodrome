@@ -289,10 +289,18 @@ pub fn node(v: &Json) -> Value {
             one => children.push(node(one)),
         }
     }
+    // A `flat` node KEEPS its `value` note. `explanation_json` writes the
+    // annotation and the notes into one map, so Flat's own `value` field and
+    // the node's fulfillment land on the same key — and they are the same
+    // number by definition (`fulfillment(Flat(v)) == v`), so reading the key
+    // back as both loses nothing and invents nothing. Every other kind names
+    // its scalars differently and has no such collision.
     let notes: Vec<Value> = object
         .iter()
         .filter(|(key, _)| {
-            key.as_str() != "kind" && key.as_str() != "value" && !child_keys.contains(&key.as_str())
+            key.as_str() != "kind"
+                && (kind == "flat" || key.as_str() != "value")
+                && !child_keys.contains(&key.as_str())
         })
         .map(|(key, note)| {
             call(
