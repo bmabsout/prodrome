@@ -311,8 +311,6 @@ dependencies = [
  "chrono",
  "proptest",
  "rustix",
- "serde",
- "serde_json",
  "sha2",
  "thiserror",
  "unicode-general-category",
