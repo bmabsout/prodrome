@@ -1,10 +1,14 @@
 //! SPEC §9.5, on random terms: `mk_piecewise` is a normal form (unit, join,
 //! no adjacent repeats, strictly increasing, idempotent) and `normalize`
 //! preserves every reading, buries no schedule, and is idempotent.
+//!
+//! And §9.13 over the same generators: COMPILING preserves every reading too,
+//! with the compiled side read against the EMPTY environment (§7.1).
 
 use std::collections::BTreeMap;
 
 use chrono::{Duration, NaiveDate};
+use prodrome::chain::compile;
 use prodrome::fpl::{
     self, fulfillment, mk_piecewise, normalize, Env, Instant, Outcome, Term, TermF,
 };
@@ -296,6 +300,87 @@ proptest! {
             };
             prop_assert!(!buried, "a schedule stayed under {}", node.out().kind());
             prop_assert!(schedule_is_normal(node).is_ok(), "{:?}", schedule_is_normal(node));
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// §9.13: COMPILATION PRESERVES EVERY READING. The compiled term, read
+    /// against the EMPTY environment, answers what the interpreted one
+    /// answered against the real one — at every instant, on every term the
+    /// constructors admit and every snapshot §9.5 is checked over. This is the
+    /// whole justification for §7.1: an optimisation with an equivalence law,
+    /// and not a second semantics.
+    #[test]
+    fn compilation_preserves_every_reading(
+        term in a_term(),
+        env in an_env(),
+        probes in prop::collection::vec(-500i64..500, 8),
+    ) {
+        let compiled = compile(&term, &env);
+        for h in probes {
+            let now = moment(h);
+            let (interpreted, value) = (fulfillment(&term, now, &env), compiled.fulfillment(now));
+            prop_assert!(
+                (interpreted - value).abs() <= 1e-9,
+                "at {now}: {interpreted} became {value}",
+            );
+        }
+    }
+
+    /// The law's TEETH: nothing survives compilation that could read history.
+    /// `After` is the only constructor whose evaluation consults the
+    /// environment — every other one is a function of `now` and its subterms —
+    /// so no `After` anywhere is the proof that no lookup happens, and the
+    /// environment that answers differently about everything is the same
+    /// proof taken behaviourally.
+    #[test]
+    fn compilation_leaves_nothing_that_reads_history(
+        term in a_term(),
+        env in an_env(),
+        probes in prop::collection::vec(-500i64..500, 4),
+    ) {
+        let compiled = compile(&term, &env);
+        let mut all = vec![];
+        nodes(compiled.term(), &mut all);
+        for node in &all {
+            prop_assert!(
+                !matches!(node.out(), TermF::After { .. }),
+                "an After survived compilation",
+            );
+            prop_assert!(schedule_is_normal(node).is_ok(), "{:?}", schedule_is_normal(node));
+        }
+        let poisoned: Env = EVENTS
+            .iter()
+            .map(|e| ((*e).to_string(), Outcome::Cancelled(moment(-10_000))))
+            .collect();
+        for h in probes {
+            let now = moment(h);
+            prop_assert_eq!(
+                compiled.fulfillment(now),
+                fulfillment(compiled.term(), now, &poisoned),
+                "the compiled term consulted the environment",
+            );
+        }
+    }
+
+    /// Compiling under the environment that binds NOTHING is the identity on
+    /// readings AND drops every unbound link's frozen branch: a term with no
+    /// binding in force is exactly its pending branches, which is the
+    /// optimisation at its plainest.
+    #[test]
+    fn compiling_against_nothing_is_the_pending_reading(
+        term in a_term(),
+        probes in prop::collection::vec(-500i64..500, 4),
+    ) {
+        let compiled = compile(&term, &Env::new());
+        for h in probes {
+            let now = moment(h);
+            let (interpreted, value) =
+                (fulfillment(&term, now, &Env::new()), compiled.fulfillment(now));
+            prop_assert!((interpreted - value).abs() <= 1e-9, "at {now}: {interpreted} vs {value}");
         }
     }
 }
