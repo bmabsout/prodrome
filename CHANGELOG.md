@@ -8,6 +8,65 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-10
+
+A VERSION AND NOT AN `Unreleased`: a new crate ships in the workspace and
+`packages.default` changes, which are things a reader can depend on, and both
+belong under a number rather than under a heading that never settles. Nothing
+about the format moved.
+
+### Added
+
+- **`prodrome-cli`**, the `prodrome` binary, over `prodrome-core` with the
+  reference payload (`reference::Todo`) and the reference policy
+  (`policy::Untrusted`). The verbs: `init`, `add`, `done`, `cancel`, `reopen`,
+  `revise`, `list`, `show`, `verify`, `weave`. `--store DIR` defaults to
+  `./roadmap` when that directory exists and to `.` otherwise; `--actor`
+  defaults to `$PRODROME_ACTOR`, then `$USER`; `--untrusted NAME,…` (or
+  `$PRODROME_UNTRUSTED`) is the READER's standing policy, so one invocation
+  shows the confirmed reading and the claimed one at once.
+- IT IS A HOST, AND IT IS WHERE THE CLOCK IS. The core has none — an event's
+  `at` is data (§4) and a fold is a query at an instant the caller names (§6) —
+  so `--at` names one and the machine's clock is only what a caller who did not
+  falls back to. On a write `--at` is the instant STAMPED ON the event, which
+  is how a todo that became true yesterday says so.
+- A price is stated as `--priority N`, a constant, or as `--deadline
+  YYYY-MM-DD` with `--start`, `--end` and `--lead-up-days`, a `Decay` onto
+  17:00 that day. The scale is fulfillment as a percentage, so LOW IS URGENT
+  and there is no second scale to invert.
+- `weave` is `EventStore::merge(None, None)`: every head into one `Woven`
+  carrying no event, which is what settles a store two branches both appended
+  to. No actor and no note, because a merge asserts structure and not a fact
+  about a todo (§3).
+- **`roadmap/`**: this crate's own todos, as a store of objects, seeded by the
+  verbs above and committed like any other directory. The historical items
+  carry the instants their releases were actually cut, so `prodrome list --at`
+  answers about the past with what was believed then. It is the one example
+  that cannot go stale: CI runs `prodrome verify --store roadmap` and
+  `prodrome list --store roadmap`, so a pull request that appends to it proves
+  its objects rehash and that the store still folds.
+- THE STORE HOLDS NO POLICY and CI names no allowlist — 0.3's point, applied to
+  this repository. Objects are content-addressed and never rewritten, so a pull
+  request's diff is exactly the objects it adds, the objects are reviewed like
+  code, and merging one is a maintainer's act. README's *Contributing* says it
+  in those words.
+- `nix build .#prodrome-cli` builds and tests the binary, and it is a
+  `nix flake check` check. `packages.default` is now the binary rather than the
+  wasm; `nix build .#prodrome-wasm` is unchanged. `roadmap/` is deliberately
+  NOT in the flake's fileset: it is data the binary reads, not source it is
+  built from, so appending a todo rebuilds nothing.
+
+### Unchanged
+
+- **The stored bytes.** No constructor, field or print changed; every object
+  written by 0.1.0 through 0.4.0 parses, prints back byte for byte and hashes
+  to the same name. `roadmap/` is written by the same printer that wrote the
+  vectors.
+- **The wasm wire**, and every conformance vector.
+- `prodrome-core`'s API. The binary is a consumer of it and added nothing to
+  it: `EventStore`, the folds, `view::entries` and `policy::Untrusted` are what
+  the verbs are made of.
+
 ## [0.4.0] — 2026-09-10
 
 ### Changed

@@ -27,6 +27,22 @@ semantics.
   readings either way.
 - **Runs in the browser.** The same core compiles to WebAssembly.
 
+## This crate's roadmap is a Prodrome
+
+`roadmap/` is a store of objects like any other, holding what this crate has
+left to do, and `prodrome-cli` folds it at whatever instant you ask for. The
+list is ascending in fulfillment, so the top of it is the most urgent thing.
+CI runs `verify` and `list` over the directory on every pull request, which is
+why the example cannot go stale.
+
+```console
+$ cargo run -p prodrome-cli -- list
+$ cargo run -p prodrome-cli -- list --at 2026-09-09
+```
+
+The second is the roadmap as it stood on 2026-09-09: two open questions about
+the format, both of them since answered.
+
 ## Installation
 
 The crate is not on crates.io yet. Depend on it by revision:
@@ -37,6 +53,11 @@ prodrome = { package = "prodrome-core", git = "https://github.com/bmabsout/prodr
 ```
 
 Requires Rust 1.85 or later.
+
+The `prodrome` binary is `prodrome-cli` in the same workspace —
+`cargo install --path cli`, or `nix build .#prodrome-cli`. It is a host like
+any other: the reference payload, the reference policy, and a clock, over the
+core.
 
 A host implements `payload::Payload` — the constructor name its records are
 stored under, their fields in order, the vocabulary those fields nest, a parse
@@ -219,9 +240,12 @@ flake check` and CI never run.
 ```
 core/         prodrome-core: literal, payload, policy, event, store, fpl, fold, registers, breaks, view
               plus `reference`, the payload the vectors were taken with
+cli/          prodrome-cli: the `prodrome` binary — the verbs, over that payload
+              and the reference policy, and the only clock in the workspace
 wasm/         prodrome-wasm: the core compiled for the browser, built with that
               payload, plus `json`, the term codec the JavaScript side reads
 conformance/  the vectors, as literals of the grammar in SPEC §2
+roadmap/      this crate's own todos, as a store the binary reads
 SPEC.md       the specification
 ```
 
@@ -229,6 +253,17 @@ SPEC.md       the specification
 
 Issues and pull requests are welcome. Changes to semantics need a change to
 `SPEC.md` in the same pull request, and a law or a vector that pins them.
+
+**The roadmap.** `roadmap/` is appended to the way the code is changed: by a
+pull request. There is no allowlist in the store and none in CI, because the
+store holds no policy — standing is the host's (§5), and a directory of
+objects is not a host. What there is instead is content addressing: every
+object is named by the hash of its bytes, nothing is ever rewritten, and a
+pull request's diff is exactly the objects it adds. So the objects are read
+like code, and merging one is a maintainer's act. A reader who wants to see
+what a particular writer's events would say without folding them passes
+`--untrusted NAME`, and gets the confirmed reading and the claimed one side by
+side; that is the reader's policy, and it is not stored anywhere either.
 
 ## License
 
