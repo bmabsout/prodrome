@@ -20,7 +20,7 @@
 //! of, so they are as unchangeable as any shipped field: evolution is a new
 //! constructor, never a new field on a shipped one.
 //!
-//! The reference payload — the one `conformance/*.json` was taken with — is
+//! The reference payload — the one `conformance/*.py` was taken with — is
 //! [`crate::reference`].
 
 use std::fmt::Debug;

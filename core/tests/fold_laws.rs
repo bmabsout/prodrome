@@ -50,7 +50,7 @@ type State = Folded<Todo>;
 /// The random log generator (`TODOS`, `ACTORS`, `WINDOW`, `origin`, `moment`,
 /// `far`, `Draft`, `a_random_spec`, `a_draft`, `a_schedule`, `realise`,
 /// `a_log`, `chain_of`) lives in `tests/common/mod.rs` now: it is also what
-/// `examples/generate_view_vectors.rs` draws `conformance/view/*.json` from,
+/// `examples/generate_view_vectors.rs` draws `conformance/view/*.py` from,
 /// over a fixed seed, and a generator a vector file was taken from and a
 /// property runs against had to be the same one.
 fn roster() -> Untrusted {

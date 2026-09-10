@@ -8,6 +8,66 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-10
+
+### Changed
+
+- **The vectors are literals** (SPEC §2). `conformance/` held 1.9 MB of JSON
+  in a crate whose claim is that there is ONE reading of its data: one closed
+  grammar, one printer, one parser. Evidence written in a second format was a
+  second format to keep in step. `conformance/*.py` is that evidence in the
+  crate's own grammar, read by the crate's own parser against the VECTOR
+  VOCABULARY — a second closed whitelist, disjoint from a store's, so a vector
+  name is refused in an object and an object's kind is refused in a vector.
+  Every stored object, event and term inside one is a STRING holding its
+  canonical print, because those exact bytes are what a vector is evidence of
+  (§9.1); instants are `datetime(...)`, and the mappings the JSON keyed by
+  todo id or object name are tuples of a named constructor.
+- A CHECKED MIGRATION, not a refresh: the vectors are frozen and have no
+  generator left to re-run, so the converting commit read the JSON, built the
+  literal, printed it, parsed it back, asserted the two values equal, mapped
+  the literal back to JSON and asserted it equalled what it started from —
+  exactly, no tolerance, every key and every float — for all 400 vectors, and
+  ran that under `cargo test`. The counts are unchanged: 120 logs, 40 DAGs,
+  150 terms, 60 windows, 30 + 30 view cases.
+- **The JSON codec leaves the core.** `fpl::to_json`, `fpl::from_json`,
+  `fpl::explanation_json` and `fpl::explain` are `prodrome-wasm`'s
+  `json` module now — JSON is JavaScript's literal grammar and the wasm crate
+  is the JavaScript boundary. The core keeps `fpl::explained`: the decoration
+  is §7's, only its JSON was not. SPEC §7 no longer names `to_json` as part of
+  the contract.
+- `prodrome-core` depends on neither `serde` nor `serde_json`, as a dependency
+  or a dev-dependency. Nothing in the crate parses a second format.
+- `core/examples/generate_view_vectors.rs` emits literals, laid out one case
+  per line so a diff is readable.
+
+### Added
+
+- `wasm/conformance/term-json.json`: the `json` and `explain` halves of what
+  was `conformance/fpl.json`, unchanged, for the same 150 terms — the JSON
+  boundary's evidence, in the crate where the JSON is produced.
+  `wasm/src/json.rs`'s test replays all of them, and `wasm/src/wire.rs` gains
+  the first test of `json_entry`'s ten keys.
+- `core/tests/common/vectors.rs`: the vector vocabulary and the accessors a
+  suite reads a case with. `common::entry_value` (an `Entry` as the vector
+  grammar's `Row`) and `common::explanation_value` (an explanation's
+  DECORATION — kind, value, notes — beside the term's own print) replace the
+  copy of `json_entry` the core kept in step with the wasm crate by hand.
+
+### Unchanged
+
+- **The stored bytes.** No constructor, field or print changed; every object
+  written by 0.1.0, 0.2.0 and 0.3.0 parses, prints back byte for byte and
+  hashes to the same name. The format of the EVIDENCE changed; the format of
+  the DATA did not.
+- **The wasm wire.** Every exported function's arguments and answers are the
+  shapes they were — `term_json`, `explain`, `series_knots`, `entries`,
+  `fold`, `registers` included, down to the lowercase kind tags, the ISO
+  instants and the spans in hours.
+- **Every expected answer**, to the digit: what `conformance/*.py` says is
+  what `conformance/*.json` said.
+
+
 ## [0.3.0] — 2026-09-09
 
 ### Changed

@@ -1,6 +1,6 @@
 //! §7 breakpoints and the series a graph draws.
 //!
-//! See ../../SPEC.md. Implemented against ../../conformance/series.json, and
+//! See ../../SPEC.md. Implemented against ../../conformance/series.py, and
 //! ported from the reference `view.py` (`Breaks`, `_breakpoints`,
 //! `_operator_breaks`, `_constant`, `series_of`).
 //!

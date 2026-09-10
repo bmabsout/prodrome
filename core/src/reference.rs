@@ -1,4 +1,4 @@
-//! THE REFERENCE PAYLOAD — the record shape `conformance/*.json` was taken
+//! THE REFERENCE PAYLOAD — the record shape `conformance/*.py` was taken
 //! with, and an example of [`crate::payload::Payload`] written out in full.
 //!
 //! `Authored(todo, at, actor, kind, created, body, spec, rationale, category,
@@ -6,7 +6,7 @@
 //! decorations of a fulfillment curve — a todo's text in two rendering
 //! languages, the message it came from, a checklist, comment runs — frozen here
 //! because the vectors' bytes are frozen. Every `Authored(...)` print in
-//! `conformance/*.json` parses and prints back byte for byte under this
+//! `conformance/*.py` parses and prints back byte for byte under this
 //! payload; that is the whole of what this module is for.
 //!
 //! IT IS NOT THE FORMAT. A host defines its own [`Payload`] and gets its own

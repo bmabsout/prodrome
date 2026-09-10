@@ -803,7 +803,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
 /// reference policy does, for content records — says so by overriding it. No
 /// actor name is read here.
 ///
-/// The finding's WORDING is frozen: `conformance/dag.json` holds these
+/// The finding's WORDING is frozen: `conformance/dag.py` holds these
 /// sentences byte for byte (§9.8), and they were taken under the reference
 /// policy, where "does not confirm" is "untrusted".
 ///
@@ -1175,7 +1175,7 @@ mod tests {
     /// roster BINDS — the folds take it (§5) — and its stamp is still the
     /// host's, so a record dated behind what it rests on is still a finding.
     /// The reference policy is the one that draws that line, by overriding
-    /// `Policy::confirms`; `conformance/dag.json` holds these findings for
+    /// `Policy::confirms`; `conformance/dag.py` holds these findings for
     /// records too, which is why the distinction is pinned here and not left to
     /// the default.
     #[test]

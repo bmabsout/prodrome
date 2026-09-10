@@ -174,7 +174,9 @@ $ nix build .#prodrome-wasm
 Produces `result/web/` for a bundler and `result/nodejs/` for a script. The
 exports (`verify_objects`, `fold`, `registers`, `entries`, `fulfillment`,
 `explain`, `series_knots`, `term_json`, `lifecycle`, `seal`, `merge_object`)
-each parse their arguments, call the core, and return JSON. A record crosses as
+each parse their arguments, call the core, and return JSON. The JSON shape of a
+term is this crate's — `wasm/src/json.rs`, since 0.4 — because JSON is
+JavaScript's literal grammar and the core has its own. A record crosses as
 its payload's own field names; the module is built with one payload, named once
 at the top of `wasm/src/lib.rs`, so a host with its own compiles its own wasm
 from this crate with that line changed.
@@ -194,7 +196,14 @@ $ nix develop -c cargo test    # the same with a toolchain in hand
 
 `conformance/` holds vectors an implementation must reproduce; the laws in
 SPEC §9 are property tests over generated logs and two-replica stores.
-`conformance/view/*.json` (§6.7) is the one exception to "taken from the
+
+THE VECTORS ARE LITERALS of the crate's own grammar (§2), read by the crate's
+own parser against a second closed vocabulary — evidence for "one grammar, one
+printer, one parser" written in a second format was a second format to keep in
+step. Every stored object, event and term inside one is a string holding its
+canonical print, because those bytes are what the vector is evidence of.
+
+`conformance/view/*.py` (§6.7) is the one exception to "taken from the
 reference": there is no reference to take it from any more, so it is SEEDED
 instead — this crate's own log generator (`core/tests/common/mod.rs`'s
 `a_log`), under a fixed seed. It is still FROZEN: `cargo test` only reads it,
@@ -202,13 +211,17 @@ and regenerating it is a separate, manual step —
 `cargo run --example generate_view_vectors -p prodrome-core` — that `nix
 flake check` and CI never run.
 
+`wasm/conformance/` holds the JSON boundary's own evidence: the `to_json` and
+`explain` shapes for the same 150 terms, frozen when the codec moved there.
+
 ## Repository layout
 
 ```
 core/         prodrome-core: literal, payload, policy, event, store, fpl, fold, registers, breaks, view
               plus `reference`, the payload the vectors were taken with
-wasm/         prodrome-wasm: the core compiled for the browser, built with that payload
-conformance/  the vectors
+wasm/         prodrome-wasm: the core compiled for the browser, built with that
+              payload, plus `json`, the term codec the JavaScript side reads
+conformance/  the vectors, as literals of the grammar in SPEC §2
 SPEC.md       the specification
 ```
 
