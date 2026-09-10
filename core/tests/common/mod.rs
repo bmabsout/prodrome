@@ -1,22 +1,24 @@
-//! Shared plumbing for the conformance suites (SPEC §9): loading a vector
-//! file, comparing two JSON trees the way the spec compares them — shape and
-//! strings exactly, floats to 1e-9 — the synthetic corpus of stored objects
-//! the grammar and the event suites both read, and the RANDOM LOG GENERATOR
-//! (`a_log` and what it is built from) that `tests/fold_laws.rs` draws its
-//! properties from and `examples/generate_view_vectors.rs` draws
-//! `conformance/view/*.json` from — one generator, read by a property and
-//! frozen by a vector file, never two.
+//! Shared plumbing for the conformance suites (SPEC §9): the vector grammar
+//! (`vectors`), comparing two literal trees the way the spec compares them —
+//! shape and strings exactly, floats to 1e-9 — the synthetic corpus of stored
+//! objects the grammar and the event suites both read, and the RANDOM LOG
+//! GENERATOR (`a_log` and what it is built from) that `tests/fold_laws.rs`
+//! draws its properties from and `examples/generate_view_vectors.rs` draws
+//! `conformance/view/*.py` from — one generator, read by a property and frozen
+//! by a vector file, never two.
 //!
 //! Included by several test binaries, each of which uses a part of it; the
 //! part one binary does not call is not dead code, it is another's.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+#[path = "vectors.rs"]
+pub mod vectors;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{Duration, NaiveDate};
+use prodrome::literal::{print_literal, Value};
 use proptest::prelude::*;
-use serde_json::{json, Value};
 
 /// The largest float deviation any comparison has seen, so a suite can report
 /// its margin rather than only its verdict.
@@ -45,24 +47,14 @@ fn record(delta: f64) {
     }
 }
 
-pub fn vectors(name: &str) -> Value {
-    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "conformance", name]
-        .iter()
-        .collect();
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display()))
-}
-
-/// `mine` against `theirs`, in the spec's terms. Returns the first
-/// disagreement as a path plus a message.
+/// `mine` against `theirs`, in the spec's terms: every shape, every string and
+/// every instant EXACTLY, every float to 1e-9 (§9.8). Returns the first
+/// disagreement as a path plus a message, because "something differs" in a
+/// tree this size is not a report.
 pub fn agrees(path: &str, mine: &Value, theirs: &Value) -> Result<(), String> {
     match (mine, theirs) {
-        (Value::Number(a), Value::Number(b)) => {
-            let (a, b) = (
-                a.as_f64().unwrap_or(f64::NAN),
-                b.as_f64().unwrap_or(f64::NAN),
-            );
+        (Value::Float(a), Value::Float(b)) => {
+            let (a, b) = (a.get(), b.get());
             let delta = (a - b).abs();
             record(delta);
             if delta <= tolerance() * a.abs().max(b.abs()).max(1.0) {
@@ -71,7 +63,7 @@ pub fn agrees(path: &str, mine: &Value, theirs: &Value) -> Result<(), String> {
                 Err(format!("{path}: {a} != {b} (off by {delta:e})"))
             }
         }
-        (Value::Array(a), Value::Array(b)) => {
+        (Value::Tuple(a), Value::Tuple(b)) => {
             if a.len() != b.len() {
                 return Err(format!("{path}: {} items, expected {}", a.len(), b.len()));
             }
@@ -80,21 +72,40 @@ pub fn agrees(path: &str, mine: &Value, theirs: &Value) -> Result<(), String> {
             }
             Ok(())
         }
-        (Value::Object(a), Value::Object(b)) => {
-            let mut mine_keys: Vec<&String> = a.keys().collect();
-            let mut theirs_keys: Vec<&String> = b.keys().collect();
-            mine_keys.sort();
-            theirs_keys.sort();
-            if mine_keys != theirs_keys {
-                return Err(format!("{path}: keys {mine_keys:?} != {theirs_keys:?}"));
+        (Value::Call(a), Value::Call(b)) => {
+            if a.name != b.name {
+                return Err(format!("{path}: {} != {}", a.name, b.name));
             }
-            for (k, x) in a {
-                agrees(&format!("{path}.{k}"), x, &b[k])?;
+            let (mine, theirs): (Vec<&String>, Vec<&String>) = (
+                a.fields.iter().map(|(k, _)| k).collect(),
+                b.fields.iter().map(|(k, _)| k).collect(),
+            );
+            if mine != theirs {
+                return Err(format!("{path}: fields {mine:?} != {theirs:?}"));
+            }
+            for ((key, x), (_, y)) in a.fields.iter().zip(&b.fields) {
+                agrees(&format!("{path}.{key}"), x, y)?;
             }
             Ok(())
         }
         (x, y) if x == y => Ok(()),
-        (x, y) => Err(format!("{path}: {x} != {y}")),
+        (x, y) => Err(format!(
+            "{path}: {} != {}",
+            print_literal(x),
+            print_literal(y)
+        )),
+    }
+}
+
+/// One number, compared the way §9.8 compares one: to 1e-9, relative, and the
+/// deviation recorded so a suite can report its margin.
+pub fn close(path: &str, mine: f64, theirs: f64) -> Result<(), String> {
+    let delta = (mine - theirs).abs();
+    record(delta);
+    if delta <= tolerance() * mine.abs().max(theirs.abs()).max(1.0) {
+        Ok(())
+    } else {
+        Err(format!("{path}: {mine} != {theirs} (off by {delta:e})"))
     }
 }
 
@@ -477,46 +488,172 @@ pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {
     nodes
 }
 
-/// One §6.7 entry as `prodrome-wasm`'s `wire::json_entry` renders it — copied
-/// rather than depended on, because `core` does not depend on `wasm` (the
-/// dependency runs the other way) and a dev-dependency cycle across the
-/// workspace is not worth it for one rendering function used by one
-/// conformance suite. Keep this byte-for-byte with `wasm/src/wire.rs`'s
-/// `json_entry`: this is the WIRE, and `conformance/view/*.json` is frozen
-/// against it, not against a reading of the `Entry` struct's own fields.
-pub fn json_entry(entry: &prodrome::view::Entry) -> Value {
-    json!({
-        "todo": entry.todo.as_str(),
-        "state": entry.state(),
-        "at": entry.at(),
-        "claimed": entry.claimed(),
-        "value": entry.value(),
-        "unconfirmed": entry.confidence.is_provisional(),
-        "conflicts": Value::Object(
-            entry
-                .conflicts
-                .iter()
-                .map(|(kind, writes)| {
+/// One §6.7 entry as the vector grammar's `Row(...)`.
+///
+/// THE SAME TEN FIELDS `prodrome-wasm`'s `wire::json_entry` puts on the wire,
+/// in the same forms — the lowercased state, `isoformat(" ")`, `""` for an
+/// absent claim, `None` for an absent value, a term as its §2 PRINT. That is
+/// deliberate and is what `conformance/view/*.py` is frozen against: the entry
+/// as a CONSUMER reads it, not as the `Entry` struct happens to be shaped.
+/// `wasm/src/wire.rs`'s own test pins the JSON spelling of these same fields.
+pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
+    let conflicts: Vec<Value> = entry
+        .conflicts
+        .iter()
+        .map(|(kind, writes)| {
+            Value::call(
+                "RowConflict",
+                vec![
+                    ("kind".to_owned(), Value::Str(kind.as_str().to_owned())),
                     (
-                        kind.as_str().to_owned(),
-                        Value::Array(
+                        "writes".to_owned(),
+                        Value::Tuple(
                             writes
                                 .iter()
-                                .map(|write| Value::String(write.as_str().to_owned()))
+                                .map(|write| Value::Str(write.as_str().to_owned()))
                                 .collect(),
                         ),
-                    )
-                })
-                .collect(),
+                    ),
+                ],
+            )
+        })
+        .collect();
+    let optional = |text: Option<String>| text.map_or(Value::None, Value::Str);
+    Value::call(
+        "Row",
+        vec![
+            (
+                "todo".to_owned(),
+                Value::Str(entry.todo.as_str().to_owned()),
+            ),
+            ("state".to_owned(), Value::Str(entry.state().to_owned())),
+            ("at".to_owned(), Value::Str(entry.at())),
+            ("claimed".to_owned(), Value::Str(entry.claimed().to_owned())),
+            (
+                "value".to_owned(),
+                entry.value().map_or(Value::None, |v| {
+                    Value::float(v).expect("a fulfillment is finite")
+                }),
+            ),
+            (
+                "unconfirmed".to_owned(),
+                Value::Bool(entry.confidence.is_provisional()),
+            ),
+            ("conflicts".to_owned(), Value::Tuple(conflicts)),
+            (
+                "content".to_owned(),
+                optional(entry.content.as_ref().map(|h| h.as_str().to_owned())),
+            ),
+            (
+                "spec".to_owned(),
+                optional(entry.spec().map(fpl::print_term)),
+            ),
+            (
+                "stream".to_owned(),
+                Value::Tuple(
+                    entry
+                        .stream
+                        .iter()
+                        .map(|name| Value::Str(name.as_str().to_owned()))
+                        .collect(),
+                ),
+            ),
+        ],
+    )
+}
+
+/// One `explain` tree as the vector grammar's `Node(...)`: the kind tag, the
+/// value, the notes, and the children in order.
+///
+/// THE DECORATION AND NOT THE TERM. The term's own shape is the case's `term`
+/// print, which the same vector holds; what explaining ADDS is a value and a
+/// set of notes at each node, and that is all this carries. (The JSON shape
+/// the browser reads is `prodrome-wasm`'s, pinned by its own vectors.)
+pub fn explanation_value(node: &prodrome::fpl::Explanation) -> Value {
+    let notes: Vec<Value> = node
+        .notes
+        .iter()
+        .map(|(key, note)| {
+            Value::call(
+                "NoteEntry",
+                vec![
+                    ("key".to_owned(), Value::Str(key.clone())),
+                    ("note".to_owned(), note_value(note)),
+                ],
+            )
+        })
+        .collect();
+    let children: Vec<Value> = node
+        .node
+        .children()
+        .into_iter()
+        .map(explanation_value)
+        .collect();
+    Value::call(
+        "Node",
+        vec![
+            ("kind".to_owned(), Value::Str(node.node.kind().to_owned())),
+            (
+                "value".to_owned(),
+                Value::float(node.value).expect("a fulfillment is finite"),
+            ),
+            ("notes".to_owned(), Value::Tuple(notes)),
+            ("terms".to_owned(), Value::Tuple(children)),
+        ],
+    )
+}
+
+fn note_value(note: &prodrome::fpl::Note) -> Value {
+    use prodrome::fpl::Note;
+    match note {
+        Note::One(s) => Value::call("One", vec![("value".to_owned(), scalar_value(s))]),
+        Note::Many(xs) => Value::call(
+            "Many",
+            vec![(
+                "values".to_owned(),
+                Value::Tuple(xs.iter().map(scalar_value).collect()),
+            )],
         ),
-        "content": entry.content.as_ref().map(Hash::as_str),
-        "spec": entry.spec().map(fpl::print_term),
-        "stream": Value::Array(
-            entry
-                .stream
-                .iter()
-                .map(|name| Value::String(name.as_str().to_owned()))
-                .collect(),
+        Note::Maps(ms) => Value::call(
+            "Maps",
+            vec![(
+                "maps".to_owned(),
+                Value::Tuple(
+                    ms.iter()
+                        .map(|m| {
+                            Value::call(
+                                "Fields",
+                                vec![(
+                                    "pairs".to_owned(),
+                                    Value::Tuple(
+                                        m.iter()
+                                            .map(|(k, v)| {
+                                                Value::call(
+                                                    "Pair",
+                                                    vec![
+                                                        ("key".to_owned(), Value::Str(k.clone())),
+                                                        ("value".to_owned(), scalar_value(v)),
+                                                    ],
+                                                )
+                                            })
+                                            .collect(),
+                                    ),
+                                )],
+                            )
+                        })
+                        .collect(),
+                ),
+            )],
         ),
-    })
+    }
+}
+
+fn scalar_value(s: &prodrome::fpl::Scalar) -> Value {
+    use prodrome::fpl::Scalar;
+    match s {
+        Scalar::Text(t) => Value::Str(t.clone()),
+        Scalar::Float(f) => Value::float(*f).expect("a note's float is finite"),
+        Scalar::Int(i) => Value::int(*i),
+        Scalar::Bool(b) => Value::Bool(*b),
+    }
 }

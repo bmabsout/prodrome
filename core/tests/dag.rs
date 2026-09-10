@@ -1,4 +1,4 @@
-//! SPEC §9 law 8 for §3, on `conformance/dag.json`: linearisations, tips,
+//! SPEC §9 law 8 for §3, on `conformance/dag.py`: linearisations, tips,
 //! parents and `verify` findings EXACTLY.
 //!
 //! Each vector is a store the reference built by appending, adopting another
@@ -8,12 +8,15 @@
 //! way to test a READER: nothing about the order or the findings may depend on
 //! this side having been the writer.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use common::vectors::{each, field, integer, strings, text_at, vectors};
 use prodrome::event::{parents_of, seal_hash, Actor, Hash};
+use prodrome::literal::Value;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::store::EventStore;
@@ -21,29 +24,6 @@ use prodrome::store::EventStore;
 /// The vectors were taken with the reference payload, so the store these read
 /// them into holds that record shape.
 type Store = EventStore<Todo, Untrusted>;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Vectors {
-    dags: Vec<Dag>,
-}
-
-#[derive(Deserialize)]
-struct Dag {
-    seed: u32,
-    objects: BTreeMap<String, String>,
-    tips: Vec<String>,
-    linearisation: Vec<String>,
-    parents: BTreeMap<String, Vec<String>>,
-    verify: Vec<String>,
-}
-
-fn conformance(name: &str) -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", "conformance", name]
-        .iter()
-        .collect()
-}
-
 fn roster() -> Untrusted {
     // The policy is the DEPLOYMENT's, never the engine's (§5) — it arrives as
     // a parameter here exactly as it does at every other call site. These
@@ -57,7 +37,21 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 /// Write a vector's objects and heads out as a store on disk. `refs/` exists
 /// only while there is more than one head, and HEAD names one of them — the
 /// shape `EventStore::set_heads` would have produced.
-fn materialise(dag: &Dag) -> Store {
+/// One vector's objects, by name — the map the JSON keyed and the literal
+/// holds as a tuple of `Object(name=, literal=)`.
+fn objects_of(dag: &Value) -> BTreeMap<String, String> {
+    each(dag, "objects")
+        .iter()
+        .map(|o| {
+            (
+                text_at(o, "name").to_owned(),
+                text_at(o, "literal").to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn materialise(dag: &Value) -> Store {
     let root = std::env::temp_dir().join(format!(
         "prodrome-dag-{}-{}",
         std::process::id(),
@@ -65,46 +59,58 @@ fn materialise(dag: &Dag) -> Store {
     ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("objects")).expect("creates the store");
-    for (name, text) in &dag.objects {
+    let objects = objects_of(dag);
+    let tips = strings(dag, "tips");
+    for (name, text) in &objects {
         fs::write(root.join("objects").join(format!("{name}.py")), text).expect("writes an object");
     }
-    if dag.tips.len() > 1 {
+    if tips.len() > 1 {
         fs::create_dir_all(root.join("refs")).expect("creates refs/");
-        for tip in &dag.tips {
+        for tip in &tips {
             fs::write(root.join("refs").join(tip), tip).expect("writes a ref");
         }
     }
-    fs::write(root.join("HEAD"), &dag.tips[0]).expect("writes HEAD");
+    fs::write(root.join("HEAD"), &tips[0]).expect("writes HEAD");
     Store::new(root, roster())
 }
 
 #[test]
 fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
-    let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
-    let vectors: Vectors = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
-    assert!(!vectors.dags.is_empty());
+    let data = vectors("dag.py");
+    let dags = each(&data, "dags");
+    assert!(!dags.is_empty());
     let mut merges = 0;
     let mut forked = 0;
     let mut findings = 0;
-    for dag in &vectors.dags {
+    for dag in dags {
+        let seed = integer(field(dag, "seed"));
+        let objects = objects_of(dag);
         let store = materialise(dag);
         let read: Vec<(Hash, prodrome::event::Envelope<Todo>)> = store
             .read_dag_named()
-            .unwrap_or_else(|e| panic!("seed {}: {e}", dag.seed));
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
 
         let order: Vec<&str> = read.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(order, dag.linearisation, "seed {}: linearisation", dag.seed);
+        assert_eq!(
+            order,
+            strings(dag, "linearisation"),
+            "seed {seed}: linearisation"
+        );
 
         let tips: Vec<String> = store
             .tips()
             .iter()
             .map(|tip| tip.as_str().to_owned())
             .collect();
-        assert_eq!(tips, dag.tips, "seed {}: tips", dag.seed);
+        assert_eq!(tips, strings(dag, "tips"), "seed {seed}: tips");
         if tips.len() > 1 {
             forked += 1;
         }
 
+        let parents_of_name: BTreeMap<String, Vec<String>> = each(dag, "parents")
+            .iter()
+            .map(|p| (text_at(p, "name").to_owned(), strings(p, "parents")))
+            .collect();
         for (name, object) in &read {
             let parents: Vec<String> = parents_of(object)
                 .iter()
@@ -112,23 +118,23 @@ fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
                 .collect();
             assert_eq!(
                 &parents,
-                &dag.parents[name.as_str()],
-                "seed {}: parents",
-                dag.seed
+                &parents_of_name[name.as_str()],
+                "seed {seed}: parents"
             );
             // Every object is still named by its own print.
             assert_eq!(seal_hash(object).as_str(), name.as_str());
             assert_eq!(
                 &prodrome::event::canonical_envelope(object),
-                &dag.objects[name.as_str()]
+                &objects[name.as_str()]
             );
             if object.event().is_none() {
                 merges += 1;
             }
         }
 
-        assert_eq!(store.verify(), dag.verify, "seed {}: verify", dag.seed);
-        findings += dag.verify.len();
+        let verify = strings(dag, "verify");
+        assert_eq!(store.verify(), verify, "seed {seed}: verify");
+        findings += verify.len();
         let _ = fs::remove_dir_all(store.root());
     }
     // The corpus exercises what it is for: forked stores, merge objects, and

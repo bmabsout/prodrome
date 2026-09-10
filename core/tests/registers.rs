@@ -1,4 +1,4 @@
-//! SPEC §9 law 6 and §6.6, on `conformance/dag.json` and `conformance/folds.json`.
+//! SPEC §9 law 6 and §6.6, on `conformance/dag.py` and `conformance/folds.py`.
 //!
 //! Two claims, and they are different claims. The FIRST is the vectors: each
 //! DAG's `conflicts` — every register both branches wrote, named by the exact
@@ -11,64 +11,39 @@
 //! rebuilds them: nothing about a frontier may depend on this side having been
 //! the writer.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use common::vectors::{each, field, integer, moment, strings, text, text_at, vectors};
 use prodrome::event::{parse_envelope, Actor, Envelope, Hash, TodoEvent};
 use prodrome::fold::{authored_at, env_at, specs_at, Env};
 use prodrome::fpl::{iso, print_term};
+use prodrome::literal::Value;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::registers::{
     conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Node,
 };
 use prodrome::store::EventStore;
-use serde::Deserialize;
 
 /// The vectors were taken with the reference payload, so that is the record
 /// shape they are read back under.
 type Event = TodoEvent<Todo>;
 type Chain = Node<Todo>;
-type Store = EventStore<Todo>;
+type Store = EventStore<Todo, Untrusted>;
 
-#[derive(Deserialize)]
-struct Dags {
-    dags: Vec<Dag>,
+/// An environment as the vectors hold it: `(todo, kind, instant)`.
+type Outcomes = BTreeMap<String, (String, String)>;
+
+fn dags() -> Vec<Value> {
+    each(&vectors("dag.py"), "dags").to_vec()
 }
 
-#[derive(Deserialize)]
-struct Dag {
-    seed: u32,
-    objects: BTreeMap<String, String>,
-    tips: Vec<String>,
-    env: BTreeMap<String, Outcome>,
-    conflicts: BTreeMap<String, BTreeMap<String, Vec<String>>>,
-}
-
-#[derive(Deserialize, PartialEq, Eq, Debug)]
-struct Outcome {
-    kind: String,
-    at: String,
-}
-
-#[derive(Deserialize)]
-struct Logs {
-    logs: Vec<Log>,
-}
-
-#[derive(Deserialize)]
-struct Log {
-    seed: u32,
-    untrusted: Vec<String>,
-    events: Vec<String>,
-}
-
-fn conformance(name: &str) -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", "conformance", name]
-        .iter()
-        .collect()
+fn logs() -> Vec<Value> {
+    each(&vectors("folds.py"), "logs").to_vec()
 }
 
 fn roster() -> Untrusted {
@@ -87,7 +62,19 @@ fn far() -> prodrome::literal::Datetime {
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-fn materialise(dag: &Dag) -> Store {
+fn objects_of(dag: &Value) -> BTreeMap<String, String> {
+    each(dag, "objects")
+        .iter()
+        .map(|o| {
+            (
+                text_at(o, "name").to_owned(),
+                text_at(o, "literal").to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn materialise(dag: &Value) -> Store {
     let root = std::env::temp_dir().join(format!(
         "prodrome-registers-{}-{}",
         std::process::id(),
@@ -95,31 +82,56 @@ fn materialise(dag: &Dag) -> Store {
     ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("objects")).expect("creates the store");
-    for (name, text) in &dag.objects {
+    let tips = strings(dag, "tips");
+    for (name, text) in &objects_of(dag) {
         fs::write(root.join("objects").join(format!("{name}.py")), text).expect("writes an object");
     }
-    if dag.tips.len() > 1 {
+    if tips.len() > 1 {
         fs::create_dir_all(root.join("refs")).expect("creates refs/");
-        for tip in &dag.tips {
+        for tip in &tips {
             fs::write(root.join("refs").join(tip), tip).expect("writes a ref");
         }
     }
-    fs::write(root.join("HEAD"), &dag.tips[0]).expect("writes HEAD");
+    fs::write(root.join("HEAD"), &tips[0]).expect("writes HEAD");
     Store::new(root, roster())
 }
 
-fn outcomes(env: &Env) -> BTreeMap<String, Outcome> {
+fn outcomes(env: &Env) -> Outcomes {
     env.iter()
         .map(|(todo, binding)| {
             (
                 todo.as_str().to_owned(),
-                Outcome {
-                    kind: binding.kind().to_owned(),
-                    at: iso(binding.at()),
-                },
+                (binding.kind().to_owned(), iso(binding.at())),
             )
         })
         .collect()
+}
+
+fn frozen_outcomes(dag: &Value) -> Outcomes {
+    each(dag, "env")
+        .iter()
+        .map(|bound| {
+            (
+                text_at(bound, "todo").to_owned(),
+                (
+                    text_at(bound, "kind").to_owned(),
+                    iso(prodrome::fpl::instant_of(moment(field(bound, "at")))),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// A DAG's conflicts as the vector holds them: by todo, then by register kind,
+/// each the object names that wrote it.
+fn frozen_conflicts(dag: &Value) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
+    let mut out: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    for held in each(dag, "conflicts") {
+        out.entry(text_at(held, "todo").to_owned())
+            .or_default()
+            .insert(text_at(held, "kind").to_owned(), strings(held, "writes"));
+    }
+    out
 }
 
 fn events_of(nodes: &[Chain]) -> Vec<Event> {
@@ -129,13 +141,14 @@ fn events_of(nodes: &[Chain]) -> Vec<Event> {
 /// A log's events as a CHAIN of nodes, each sealed on the one before — which
 /// is the DAG a single writer builds, and the shape the registers must agree
 /// with the folds on.
-fn chain_of(log: &Log) -> Vec<Chain> {
+fn chain_of(log: &Value) -> Vec<Chain> {
+    let seed = integer(field(log, "seed"));
     let mut prev = String::new();
     let mut nodes = Vec::new();
-    for text in &log.events {
-        let object = format!("Sealed(prev='{prev}', event={text})");
+    for item in each(log, "events") {
+        let object = format!("Sealed(prev='{prev}', event={})", text(item));
         let envelope: Envelope<Todo> =
-            parse_envelope(&object).unwrap_or_else(|e| panic!("seed {}: {e}", log.seed));
+            parse_envelope(&object).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         let name = prodrome::event::seal_hash(&envelope);
         prev = name.as_str().to_owned();
         nodes.push(Node::of(name, &envelope));
@@ -145,16 +158,16 @@ fn chain_of(log: &Log) -> Vec<Chain> {
 
 #[test]
 fn every_dag_vector_has_the_references_conflicts_and_environment() {
-    let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
-    let vectors: Dags = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
-    assert!(!vectors.dags.is_empty());
+    let dags = dags();
+    assert!(!dags.is_empty());
     let mut conflicted = 0;
     let mut registers = 0;
-    for dag in &vectors.dags {
+    for dag in &dags {
+        let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
         let objects: Vec<(Hash, Envelope<Todo>)> = store
             .read_dag_named()
-            .unwrap_or_else(|e| panic!("seed {}: {e}", dag.seed));
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         let nodes = nodes_of(&objects);
         let state = fold(&nodes, None, &roster());
 
@@ -179,10 +192,14 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
                 )
             })
             .collect();
-        assert_eq!(found, dag.conflicts, "seed {}: conflicts", dag.seed);
+        assert_eq!(found, frozen_conflicts(dag), "seed {seed}: conflicts");
         conflicted += found.len();
 
-        assert_eq!(outcomes(&env_of(&state)), dag.env, "seed {}: env", dag.seed);
+        assert_eq!(
+            outcomes(&env_of(&state)),
+            frozen_outcomes(dag),
+            "seed {seed}: env"
+        );
         registers += state.frontiers().len();
         let _ = fs::remove_dir_all(store.root());
     }
@@ -194,16 +211,15 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
 
 #[test]
 fn on_every_dag_the_registers_are_the_folds() {
-    let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
-    let vectors: Dags = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
+    let dags = dags();
     let policy = roster();
-    for dag in &vectors.dags {
+    for dag in &dags {
+        let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
         let objects = store.read_dag_named().expect("the DAG reads");
         let nodes = nodes_of(&objects);
         let events = events_of(&nodes);
         let state = fold(&nodes, None, &policy);
-        let seed = dag.seed;
 
         assert_eq!(
             env_of(&state),
@@ -237,19 +253,18 @@ fn printed(
 /// conflict: every write descends from the one before it.
 #[test]
 fn on_every_log_the_registers_are_the_folds_and_nothing_conflicts() {
-    let raw = fs::read_to_string(conformance("folds.json")).expect("folds.json");
-    let vectors: Logs = serde_json::from_str(&raw).expect("folds.json is the generator's shape");
+    let logs = logs();
     let mut written = 0;
-    for log in &vectors.logs {
+    for log in &logs {
+        let seed = integer(field(log, "seed"));
         let policy = Untrusted::of(
-            log.untrusted
+            strings(log, "untrusted")
                 .iter()
                 .map(|name| Actor::new(name.as_str()).expect("an actor name")),
         );
         let nodes = chain_of(log);
         let events = events_of(&nodes);
         let state = fold(&nodes, None, &policy);
-        let seed = log.seed;
         assert_eq!(
             conflicts_of(&state),
             BTreeMap::new(),
@@ -280,10 +295,10 @@ fn on_every_log_the_registers_are_the_folds_and_nothing_conflicts() {
 /// applying what is already folded changes nothing.
 #[test]
 fn the_fold_is_a_monoid_action_on_every_dag() {
-    let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
-    let vectors: Dags = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
+    let dags = dags();
     let policy = roster();
-    for dag in &vectors.dags {
+    for dag in &dags {
+        let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
         let objects = store.read_dag_named().expect("the DAG reads");
         let nodes = nodes_of(&objects);
@@ -295,7 +310,7 @@ fn the_fold_is_a_monoid_action_on_every_dag() {
                 None,
                 &policy,
             );
-            assert_eq!(whole, stepped, "seed {}: split at {split}", dag.seed);
+            assert_eq!(whole, stepped, "seed {seed}: split at {split}");
             // And the prefix that is already folded is exactly what `since`
             // declines to hand back.
             let prefix = fold(&nodes[..split], None, &policy);
@@ -303,15 +318,13 @@ fn the_fold_is_a_monoid_action_on_every_dag() {
             assert_eq!(
                 left,
                 nodes[split..].iter().collect::<Vec<_>>(),
-                "seed {}: since at {split}",
-                dag.seed
+                "seed {seed}: since at {split}"
             );
         }
         assert_eq!(
             extend(&whole, &nodes, None, &policy),
             whole,
-            "seed {}: re-extending with a prefix",
-            dag.seed
+            "seed {seed}: re-extending with a prefix"
         );
         let _ = fs::remove_dir_all(store.root());
     }
@@ -323,11 +336,11 @@ fn the_fold_is_a_monoid_action_on_every_dag() {
 /// itself computed.
 #[test]
 fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
-    let raw = fs::read_to_string(conformance("dag.json")).expect("dag.json");
-    let vectors: Dags = serde_json::from_str(&raw).expect("dag.json is the generator's shape");
+    let dags = dags();
     let policy = roster();
     let mut pairs = 0;
-    for dag in &vectors.dags {
+    for dag in &dags {
+        let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
         let objects = store.read_dag_named().expect("the DAG reads");
         let nodes = nodes_of(&objects);
@@ -338,14 +351,13 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
             let sorted: Vec<&str> = names.iter().map(|name| name.as_str()).collect();
             let mut expected = sorted.clone();
             expected.sort_unstable();
-            assert_eq!(sorted, expected, "seed {}: frontier order", dag.seed);
+            assert_eq!(sorted, expected, "seed {seed}: frontier order");
             for a in &names {
                 for b in &names {
                     if a != b {
                         assert!(
                             !state.descends(a, b),
-                            "seed {}: {a:?} descends from {b:?} and is still in the frontier",
-                            dag.seed
+                            "seed {seed}: {a:?} descends from {b:?} and is still in the frontier"
                         );
                         pairs += 1;
                     }

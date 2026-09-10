@@ -1,66 +1,57 @@
-//! SPEC §9.8 over `conformance/fpl.json`: 150 random terms, each as a literal
-//! print, six `fulfillment` samples and the `normalized` print. Prints are
-//! compared EXACTLY; floats to 1e-9.
+//! SPEC §9.8 over `conformance/fpl.py`: 150 random terms, each as a literal
+//! print, six `fulfillment` samples, the `normalized` print, and `explain` at
+//! one moment. Prints are compared EXACTLY; floats to 1e-9.
 //!
-//! The `json` and `explain` halves of these vectors went to `prodrome-wasm`
-//! with the JSON codec (0.4): JSON is the browser boundary's and its evidence
-//! belongs where it is produced. `wasm/conformance/term-json.json` holds them,
-//! unchanged, and `wasm/src/json.rs`'s test replays the same 150.
+//! WHAT `explain` IS HERE. The vector holds the DECORATION — a kind tag, a
+//! value and the notes at each node — and not the term's shape, which is the
+//! case's own `term` print. The JSON spelling a browser reads is
+//! `prodrome-wasm`'s (0.4: the codec went to the boundary JSON is for), and
+//! `wasm/conformance/term-json.json` freezes that, unchanged, for the same 150.
 
 mod common;
 
-use std::collections::BTreeMap;
+use common::vectors::{each, field, integer, moment, number, text_at, vectors};
+use prodrome::fpl::{
+    explained, fulfillment, instant_of, normalize, parse_term, print_term, Env, Outcome,
+};
+use prodrome::literal::Value;
 
-use prodrome::fpl::{self, fulfillment, normalize, parse_term, print_term, Env, Outcome, Term};
-use serde_json::Value;
-
-fn env_of(v: &Value) -> Env {
-    let mut env: Env = BTreeMap::new();
-    for (name, binding) in v.as_object().expect("env is an object") {
-        let at = parse_iso(binding["at"].as_str().expect("env.at is a string"));
-        env.insert(
-            name.clone(),
-            match binding["kind"].as_str().expect("env.kind is a string") {
+fn env_of(bounds: &[Value]) -> Env {
+    bounds
+        .iter()
+        .map(|bound| {
+            let at = instant_of(moment(field(bound, "at")));
+            let outcome = match text_at(bound, "kind") {
                 "Completed" => Outcome::Completed(at),
                 "Cancelled" => Outcome::Cancelled(at),
                 other => panic!("unknown env kind {other:?}"),
-            },
-        );
-    }
-    env
-}
-
-fn parse_iso(s: &str) -> fpl::Instant {
-    fpl::parse_iso(s).unwrap_or_else(|e| panic!("bad instant {s:?}: {e}"))
-}
-
-fn parsed(text: &str) -> Term {
-    parse_term(text).unwrap_or_else(|e| panic!("cannot parse {text}: {e}"))
+            };
+            (text_at(bound, "todo").to_owned(), outcome)
+        })
+        .collect()
 }
 
 #[test]
-fn every_term_prints_evaluates_and_normalises_as_the_reference() {
-    let data = common::vectors("fpl.json");
-    let terms = data["terms"]
-        .as_array()
-        .expect("fpl.json has a terms array");
+fn every_term_prints_evaluates_normalises_and_explains_as_the_reference() {
+    let data = vectors("fpl.py");
+    let terms = each(&data, "terms");
     assert_eq!(terms.len(), 150, "the vector file lost cases");
-    let mut samples = 0usize;
+    let (mut samples, mut explains) = (0usize, 0usize);
     for case in terms {
-        let seed = &case["seed"];
-        let text = case["term"].as_str().expect("term is a literal string");
-        let term = parsed(text);
+        let seed = integer(field(case, "seed"));
+        let text = text_at(case, "term");
+        let term = parse_term(text).unwrap_or_else(|e| panic!("seed {seed}: cannot parse: {e}"));
 
         // §2: the print is the identity — parse then print is byte-identical.
         assert_eq!(print_term(&term), text, "seed {seed}: print ∘ parse");
 
-        let env = env_of(&case["env"]);
-        for sample in case["samples"].as_array().expect("samples is an array") {
-            let now = parse_iso(sample["now"].as_str().expect("now is a string"));
-            common::agrees(
+        let env = env_of(each(case, "env"));
+        for sample in each(case, "samples") {
+            let now = instant_of(moment(field(sample, "now")));
+            common::close(
                 "fulfillment",
-                &Value::from(fulfillment(&term, now, &env)),
-                &sample["value"],
+                fulfillment(&term, now, &env),
+                number(field(sample, "value")),
             )
             .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
             samples += 1;
@@ -69,12 +60,21 @@ fn every_term_prints_evaluates_and_normalises_as_the_reference() {
         // §7 normal form: an EXACT print, not a reading.
         assert_eq!(
             print_term(&normalize(&term)),
-            case["normalized"].as_str().expect("normalized is a string"),
+            text_at(case, "normalized"),
             "seed {seed}: normalize"
         );
+
+        let at = instant_of(moment(field(case, "explain_at")));
+        common::agrees(
+            "explain",
+            &common::explanation_value(&explained(&term, at, &env)),
+            field(case, "explain"),
+        )
+        .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        explains += 1;
     }
     println!(
-        "fpl.json: {} terms, {samples} fulfillment samples; \
+        "fpl.py: {} terms, {samples} fulfillment samples, {explains} explain trees; \
          largest float deviation {:e}",
         terms.len(),
         common::worst_seen()

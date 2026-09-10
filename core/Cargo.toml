@@ -43,9 +43,3 @@ rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 proptest = "1"
-# THE MIGRATION ONLY. `conformance/*.json` is read, once, by
-# `examples/migrate_vectors.rs` and `tests/migration.rs` while both formats
-# are in the tree; the library has had no JSON in it since 0.4, and these two
-# go with the JSON.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"

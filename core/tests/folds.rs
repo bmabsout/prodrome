@@ -1,4 +1,4 @@
-//! SPEC §9 law 8 for §6.1–6.5, on `conformance/folds.json`: the five causal
+//! SPEC §9 law 8 for §6.1–6.5, on `conformance/folds.py`: the five causal
 //! folds, reproduced EXACTLY.
 //!
 //! Each vector is a random log the reference generated, a moment `t`, and what
@@ -8,64 +8,36 @@
 //! prints a different term is not the same fold. `flatten`'s print in
 //! particular carries `mk_piecewise`'s normal form, so a splice or an adjacent
 //! repeat this side missed shows up as a longer string and not as a number.
+//!
+//! The vector file is itself a literal of §2's grammar (0.4), read by the same
+//! parser the events inside it are read with — `tests/common/vectors.rs`.
+
+mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::PathBuf;
 
+use common::vectors::{each, field, integer, moment, strings, text, text_at, vectors};
 use prodrome::event::{canonical, parse_envelope, Actor, Envelope, TodoEvent};
 use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env};
-use prodrome::fpl::{iso, print_term};
-use prodrome::literal::{parse_literal, Datetime, Value};
+use prodrome::fpl::{instant_of, iso, print_term};
+use prodrome::literal::{print_literal, Datetime, Value};
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
-use serde::Deserialize;
 
 /// The vectors' `Authored(...)` prints are the reference payload's, so that is
 /// what they are parsed back as — §9.1 under the generic path.
 type Event = TodoEvent<Todo>;
 
-#[derive(Deserialize)]
-struct Vectors {
-    logs: Vec<Log>,
-}
-
-#[derive(Deserialize)]
-struct Log {
-    seed: u32,
-    untrusted: Vec<String>,
-    events: Vec<String>,
-    at: String,
-    env: BTreeMap<String, Outcome>,
-    specs: BTreeMap<String, String>,
-    content: BTreeMap<String, String>,
-    flatten: BTreeMap<String, String>,
-    history_at: BTreeMap<String, Outcome>,
-}
-
-#[derive(Deserialize, PartialEq, Eq, Debug)]
-struct Outcome {
-    kind: String,
-    at: String,
-}
-
-fn conformance(name: &str) -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", "conformance", name]
-        .iter()
-        .collect()
-}
-
 /// The generator prints each event on its own; reading one back means wrapping
 /// it in the envelope the loader knows, which is also the honest shape — an
 /// event only ever reaches a fold out of a stored object.
-fn events_of(log: &Log) -> Vec<Event> {
-    log.events
+fn events_of(log: &Value) -> Vec<Event> {
+    let seed = integer(field(log, "seed"));
+    each(log, "events")
         .iter()
-        .map(|text| {
-            let object = format!("Sealed(prev='', event={text})");
-            match parse_envelope::<Todo>(&object)
-                .unwrap_or_else(|e| panic!("seed {}: {e}", log.seed))
-            {
+        .map(|item| {
+            let object = format!("Sealed(prev='', event={})", text(item));
+            match parse_envelope::<Todo>(&object).unwrap_or_else(|e| panic!("seed {seed}: {e}")) {
                 Envelope::Sealed { event, .. } => event,
                 Envelope::Woven { .. } => unreachable!("the wrapper is a Sealed"),
             }
@@ -73,89 +45,113 @@ fn events_of(log: &Log) -> Vec<Event> {
         .collect()
 }
 
-fn moment(text: &str) -> Datetime {
-    // The generator writes `datetime.isoformat()`; the grammar reads a
-    // `datetime(...)` call, so the one parser in the crate does the work.
-    let (date, time) = text.split_once('T').expect("an isoformat instant");
-    let date: Vec<&str> = date.split('-').collect();
-    let time: Vec<&str> = time.split(':').collect();
-    let (second, micro) = match time[2].split_once('.') {
-        Some((s, us)) => (s.to_owned(), format!("{us:0<6}")),
-        None => (time[2].to_owned(), "0".to_owned()),
-    };
-    let call = format!(
-        "datetime({}, {}, {}, {}, {}, {}, {})",
-        date[0], date[1], date[2], time[0], time[1], second, micro
-    );
-    match parse_literal(&call, &prodrome::literal::Open).expect("a datetime literal") {
-        Value::Datetime(at) => at,
-        other => panic!("{other:?} is not a datetime"),
-    }
-}
+/// An environment as the vectors hold it: `(todo, kind, instant)`, ordered by
+/// todo, so a comparison is one equality and names what differs.
+type Outcomes = BTreeMap<String, (String, String)>;
 
-fn outcomes(env: &Env) -> BTreeMap<String, Outcome> {
+fn outcomes(env: &Env) -> Outcomes {
     env.iter()
         .map(|(todo, binding)| {
             (
                 todo.as_str().to_owned(),
-                Outcome {
-                    kind: binding.kind().to_owned(),
-                    at: iso(binding.at()),
-                },
+                (binding.kind().to_owned(), iso(binding.at())),
             )
         })
         .collect()
 }
 
-fn policy(names: &[String]) -> Untrusted {
+fn frozen_outcomes(log: &Value, key: &str) -> Outcomes {
+    each(log, key)
+        .iter()
+        .map(|bound| {
+            (
+                text_at(bound, "todo").to_owned(),
+                (
+                    text_at(bound, "kind").to_owned(),
+                    iso(instant_of(moment(field(bound, "at")))),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// A `(todo, print)` fold — `specs`, `content`, `flatten` — as the vector holds
+/// it, whichever field name that file gives the print.
+fn frozen_prints(log: &Value, key: &str, field_name: &str) -> BTreeMap<String, String> {
+    each(log, key)
+        .iter()
+        .map(|item| {
+            (
+                text_at(item, "todo").to_owned(),
+                text_at(item, field_name).to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn policy(log: &Value) -> Untrusted {
     Untrusted::of(
-        names
+        strings(log, "untrusted")
             .iter()
             .map(|name| Actor::new(name.as_str()).expect("an actor name")),
     )
 }
 
+fn logs() -> Vec<Value> {
+    each(&vectors("folds.py"), "logs").to_vec()
+}
+
 #[test]
 fn every_log_folds_to_the_references_env_specs_content_flatten_and_history() {
-    let raw = fs::read_to_string(conformance("folds.json")).expect("folds.json");
-    let vectors: Vectors = serde_json::from_str(&raw).expect("folds.json is the generator's shape");
-    assert!(!vectors.logs.is_empty());
+    let logs = logs();
+    assert!(!logs.is_empty());
     let mut flattened = 0;
     let mut piecewise = 0;
     let mut resolved = 0;
-    for log in &vectors.logs {
+    for log in &logs {
         let events = events_of(log);
-        let untrusted = policy(&log.untrusted);
-        let t = moment(&log.at);
-        let seed = log.seed;
+        let untrusted = policy(log);
+        let t = moment(field(log, "at"));
+        let seed = integer(field(log, "seed"));
 
         let env = env_at(&events, t, &untrusted);
-        assert_eq!(outcomes(&env), log.env, "seed {seed}: env_at");
+        assert_eq!(
+            outcomes(&env),
+            frozen_outcomes(log, "env"),
+            "seed {seed}: env_at"
+        );
         resolved += env.len();
 
         let specs: BTreeMap<String, String> = specs_at(&events, t, &untrusted)
             .iter()
             .map(|(todo, spec)| (todo.as_str().to_owned(), print_term(spec)))
             .collect();
-        assert_eq!(specs, log.specs, "seed {seed}: specs_at");
+        assert_eq!(
+            specs,
+            frozen_prints(log, "specs", "term"),
+            "seed {seed}: specs_at"
+        );
 
         let content: BTreeMap<String, String> = authored_at(&events, t)
             .iter()
-            .map(|(todo, record)| {
-                (
-                    todo.as_str().to_owned(),
-                    prodrome::literal::print_literal(&record.to_value()),
-                )
-            })
+            .map(|(todo, record)| (todo.as_str().to_owned(), print_literal(&record.to_value())))
             .collect();
-        assert_eq!(content, log.content, "seed {seed}: authored_at");
+        assert_eq!(
+            content,
+            frozen_prints(log, "content", "event"),
+            "seed {seed}: authored_at"
+        );
 
         let functions = flatten(&events, t, &untrusted).expect("the log folds");
         let printed: BTreeMap<String, String> = functions
             .iter()
             .map(|(todo, term)| (todo.as_str().to_owned(), print_term(term)))
             .collect();
-        assert_eq!(printed, log.flatten, "seed {seed}: flatten");
+        assert_eq!(
+            printed,
+            frozen_prints(log, "flatten", "term"),
+            "seed {seed}: flatten"
+        );
         flattened += functions.len();
         piecewise += printed
             .values()
@@ -167,7 +163,7 @@ fn every_log_folds_to_the_references_env_specs_content_flatten_and_history() {
         let past = history(&events, &untrusted);
         assert_eq!(
             outcomes(&past.at(t)),
-            log.history_at,
+            frozen_outcomes(log, "history_at"),
             "seed {seed}: history"
         );
         assert_eq!(past.at(t), env, "seed {seed}: history.at == env_at");
@@ -184,16 +180,15 @@ fn every_log_folds_to_the_references_env_specs_content_flatten_and_history() {
 /// what the reference memoises for the same reason, so it is checked here too.
 #[test]
 fn a_later_event_is_invisible_and_every_event_prints_as_the_reference_wrote_it() {
-    let raw = fs::read_to_string(conformance("folds.json")).expect("folds.json");
-    let vectors: Vectors = serde_json::from_str(&raw).expect("folds.json is the generator's shape");
     let mut dropped = 0;
-    for log in &vectors.logs {
+    for log in &logs() {
+        let seed = integer(field(log, "seed"));
         let events = events_of(log);
-        for (event, text) in events.iter().zip(&log.events) {
-            assert_eq!(&canonical(event), text, "seed {}: event print", log.seed);
+        for (event, item) in events.iter().zip(each(log, "events")) {
+            assert_eq!(canonical(event), text(item), "seed {seed}: event print");
         }
-        let t = moment(&log.at);
-        let untrusted = policy(&log.untrusted);
+        let t = moment(field(log, "at"));
+        let untrusted = policy(log);
         let known: Vec<&Event> = prodrome::fold::chronological(&events, t).collect();
         assert!(known.len() <= events.len());
         dropped += events.len() - known.len();
@@ -203,8 +198,7 @@ fn a_later_event_is_invisible_and_every_event_prints_as_the_reference_wrote_it()
         assert_eq!(
             env_at(&only_known, t, &untrusted),
             env_at(&events, t, &untrusted),
-            "seed {}",
-            log.seed
+            "seed {seed}"
         );
     }
     assert!(
@@ -218,52 +212,50 @@ fn a_later_event_is_invisible_and_every_event_prints_as_the_reference_wrote_it()
 /// vector pinned.
 #[test]
 fn history_equals_env_at_at_every_instant_a_log_mentions() {
-    let raw = fs::read_to_string(conformance("folds.json")).expect("folds.json");
-    let vectors: Vectors = serde_json::from_str(&raw).expect("folds.json is the generator's shape");
+    let logs = logs();
     let mut asked = 0;
-    for log in &vectors.logs {
+    for log in &logs {
+        let seed = integer(field(log, "seed"));
         let events = events_of(log);
-        let untrusted = policy(&log.untrusted);
+        let untrusted = policy(log);
         let past = history(&events, &untrusted);
         // Every instant the log names, plus the moment the vector pinned: the
         // transitions are where the two could differ, so they are what to ask.
         let instants: BTreeSet<Datetime> = events
             .iter()
             .map(TodoEvent::at)
-            .chain(std::iter::once(moment(&log.at)))
+            .chain(std::iter::once(moment(field(log, "at"))))
             .collect();
         for t in instants {
             assert_eq!(
                 past.at(t),
                 env_at(&events, t, &untrusted),
-                "seed {}: at {}",
-                log.seed,
-                iso(prodrome::fpl::instant_of(t))
+                "seed {seed}: at {}",
+                iso(instant_of(t))
             );
             asked += 1;
         }
     }
-    assert!(asked > vectors.logs.len(), "more instants than logs");
+    assert!(asked > logs.len(), "more instants than logs");
 }
 
 /// SPEC §9.1 ON THE GENERIC PATH. The vectors' record prints were taken with
 /// the REFERENCE PAYLOAD, and this is the law that says so out loud: every
-/// `Authored(...)` in `folds.json` parses under `reference::Todo` — through the
+/// `Authored(...)` in `folds.py` parses under `reference::Todo` — through the
 /// vocabulary that is now the core's names UNION the payload's — and prints
 /// back BYTE FOR BYTE. Making the record kind a type parameter changed the
 /// types and not one byte of the format, and a regression would show up here as
 /// a print that differs from the text it came from.
 #[test]
 fn every_record_print_round_trips_byte_for_byte_under_the_reference_payload() {
-    let raw = fs::read_to_string(conformance("folds.json")).expect("folds.json");
-    let vectors: Vectors = serde_json::from_str(&raw).expect("folds.json is the generator's shape");
     let mut records = 0;
-    for log in &vectors.logs {
-        for (event, text) in events_of(log).iter().zip(&log.events) {
+    for log in &logs() {
+        let seed = integer(field(log, "seed"));
+        for (event, item) in events_of(log).iter().zip(each(log, "events")) {
             if !matches!(event, TodoEvent::Authored(_)) {
                 continue;
             }
-            assert_eq!(&canonical(event), text, "seed {}: record print", log.seed);
+            assert_eq!(canonical(event), text(item), "seed {seed}: record print");
             records += 1;
         }
     }
@@ -277,12 +269,10 @@ fn every_record_print_round_trips_byte_for_byte_under_the_reference_payload() {
 /// different facts, and the vectors hold both.
 #[test]
 fn the_corpus_holds_both_outcomes() {
-    let raw = fs::read_to_string(conformance("folds.json")).expect("folds.json");
-    let vectors: Vectors = serde_json::from_str(&raw).expect("folds.json is the generator's shape");
     let mut kinds: BTreeSet<&'static str> = BTreeSet::new();
-    for log in &vectors.logs {
+    for log in &logs() {
         let events = events_of(log);
-        let env = env_at(&events, moment(&log.at), &policy(&log.untrusted));
+        let env = env_at(&events, moment(field(log, "at")), &policy(log));
         for binding in env.values() {
             kinds.insert(match binding {
                 Binding::Completed(_) => "Completed",

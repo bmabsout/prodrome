@@ -1,4 +1,4 @@
-//! SPEC §9.9 (§6.7) over `conformance/view/*.json`: every field of every
+//! SPEC §9.9 (§6.7) over `conformance/view/*.py`: every field of every
 //! `view::entries` row, replayed under the two reference policies the vectors
 //! were taken with — their `untrusted` arrays, read through `policy::Untrusted`.
 //!
@@ -7,7 +7,7 @@
 //! on, not paper over. Regeneration is `cargo run --example
 //! generate_view_vectors -p prodrome-core`, run by hand; CI never runs
 //! `cargo run --example` and this test never calls it either, which is what
-//! makes `conformance/view/*.json` evidence and not a cache. See that
+//! makes `conformance/view/*.py` evidence and not a cache. See that
 //! example's module doc for the seed and the generator (`tests/common/mod.rs`'s
 //! `a_log`, the same one `tests/fold_laws.rs`'s properties draw from — one
 //! generator, not a second).
@@ -23,70 +23,55 @@
 //! reader rebuild its DAG from object files rather than from a writer's
 //! in-memory graph.
 //!
-//! Each `Entry` is compared through `common::json_entry` — the same
-//! rendering `prodrome-wasm`'s `wire::json_entry` ships — because that is
-//! what the wire actually carries: `Confidence`'s three-way split collapses to
-//! one `unconfirmed` bool on the wire, and a vector that compared the richer
-//! Rust value would be pinning a distinction no consumer ever reads.
+//! Each `Entry` is compared through `common::entry_value` — the ten fields
+//! `prodrome-wasm`'s `wire::json_entry` puts on the wire, in the same forms —
+//! because that is what a consumer actually reads: `Confidence`'s three-way
+//! split collapses to one `unconfirmed` bool there, and a vector that compared
+//! the richer Rust value would be pinning a distinction nobody reads.
 
 mod common;
 
 use std::collections::BTreeMap;
 
+use common::vectors::{boolean, each, field, integer, moment, strings, text, vectors};
 use prodrome::event::parse_event;
 use prodrome::literal::Datetime;
+use prodrome::literal::Value;
 use prodrome::policy::Untrusted;
 use prodrome::view;
-use serde_json::Value;
 
 type Event = common::Event;
 
 struct Case {
-    seed: u64,
+    seed: i64,
     events: Vec<Event>,
-    instants: Vec<(String, Value)>,
+    instants: Vec<(Datetime, Vec<Value>)>,
 }
 
 fn cases(name: &str) -> (Vec<Case>, Untrusted) {
-    let data = common::vectors(&format!("view/{name}"));
+    let data = vectors(&format!("view/{name}"));
     let untrusted = Untrusted::of(
-        data["untrusted"]
-            .as_array()
-            .expect("untrusted is an array")
+        strings(&data, "untrusted")
             .iter()
-            .map(|actor| {
-                prodrome::event::Actor::new(actor.as_str().expect("an actor name"))
-                    .expect("a valid actor")
-            }),
+            .map(|actor| prodrome::event::Actor::new(actor.as_str()).expect("a valid actor")),
     );
-    let cases = data["cases"]
-        .as_array()
-        .expect("cases is an array")
+    let cases = each(&data, "cases")
         .iter()
         .map(|case| {
-            let seed = case["seed"].as_u64().expect("seed is a number");
+            let seed = integer(field(case, "seed"));
             // Every event, parsed back through the same closed vocabulary the
-            // store reads with, in the array's own append order.
-            let events: Vec<Event> = case["events"]
-                .as_array()
-                .expect("events is an array")
+            // store reads with, in the tuple's own append order.
+            let events: Vec<Event> = each(case, "events")
                 .iter()
                 .enumerate()
-                .map(|(i, text)| {
-                    let text = text.as_str().expect("an event print is a string");
-                    parse_event(text).unwrap_or_else(|e| panic!("seed {seed}: event {i}: {e}"))
+                .map(|(i, item)| {
+                    parse_event(text(item))
+                        .unwrap_or_else(|e| panic!("seed {seed}: event {i}: {e}"))
                 })
                 .collect();
-            let instants = case["instants"]
-                .as_array()
-                .expect("instants is an array")
+            let instants = each(case, "instants")
                 .iter()
-                .map(|instant| {
-                    (
-                        instant["at"].as_str().expect("at is a string").to_owned(),
-                        instant["entries"].clone(),
-                    )
-                })
+                .map(|asked| (moment(field(asked, "at")), each(asked, "entries").to_vec()))
                 .collect();
             Case {
                 seed,
@@ -98,26 +83,18 @@ fn cases(name: &str) -> (Vec<Case>, Untrusted) {
     (cases, untrusted)
 }
 
-fn parse_at(s: &str) -> Datetime {
-    let iso = s.replacen(' ', "T", 1);
-    prodrome::fpl::datetime_of(
-        prodrome::fpl::parse_iso(&iso).unwrap_or_else(|e| panic!("bad instant {s:?}: {e}")),
-    )
-    .unwrap_or_else(|e| panic!("bad instant {s:?}: {e}"))
-}
-
 fn replay(name: &str) -> (usize, usize) {
     let (cases, untrusted) = cases(name);
     assert!(!cases.is_empty(), "{name}: the vector file lost its cases");
     let (mut logs, mut rows) = (0usize, 0usize);
     for case in &cases {
         let nodes = common::chain_of(&case.events);
-        for (at, expected_entries) in &case.instants {
-            let t = parse_at(at);
-            let entries = view::entries(&nodes, t, &untrusted)
+        for (t, expected) in &case.instants {
+            let at = t.isoformat();
+            let entries = view::entries(&nodes, *t, &untrusted)
                 .unwrap_or_else(|e| panic!("{name} seed {}: entries at {at}: {e}", case.seed));
-            let mine = Value::Array(entries.iter().map(common::json_entry).collect());
-            common::agrees("entries", &mine, expected_entries)
+            let mine = Value::Tuple(entries.iter().map(common::entry_value).collect());
+            common::agrees("entries", &mine, &Value::Tuple(expected.clone()))
                 .unwrap_or_else(|e| panic!("{name} seed {} at {at}: {e}", case.seed));
             rows += entries.len();
         }
@@ -128,18 +105,18 @@ fn replay(name: &str) -> (usize, usize) {
 
 #[test]
 fn every_entry_agrees_under_the_triage_untrusted_policy() {
-    let (logs, rows) = replay("triage-untrusted.json");
-    assert_eq!(logs, 30, "view/triage-untrusted.json lost a case");
+    let (logs, rows) = replay("triage-untrusted.py");
+    assert_eq!(logs, 30, "view/triage-untrusted.py lost a case");
     assert!(rows > 0, "some case has at least one entry");
-    println!("view/triage-untrusted.json: {logs} logs, {rows} entry-instants");
+    println!("view/triage-untrusted.py: {logs} logs, {rows} entry-instants");
 }
 
 #[test]
 fn every_entry_agrees_under_the_bassel_untrusted_policy() {
-    let (logs, rows) = replay("bassel-untrusted.json");
-    assert_eq!(logs, 30, "view/bassel-untrusted.json lost a case");
+    let (logs, rows) = replay("bassel-untrusted.py");
+    assert_eq!(logs, 30, "view/bassel-untrusted.py lost a case");
     assert!(rows > 0, "some case has at least one entry");
-    println!("view/bassel-untrusted.json: {logs} logs, {rows} entry-instants");
+    println!("view/bassel-untrusted.py: {logs} logs, {rows} entry-instants");
 }
 
 /// §9.9 names TWO asymmetries — a claim, and a content record the policy does
@@ -151,16 +128,14 @@ fn every_entry_agrees_under_the_bassel_untrusted_policy() {
 #[test]
 fn the_vectors_show_a_claim_and_an_unconfirmed_record_between_them() {
     let mut unconfirmed = BTreeMap::new();
-    for name in ["triage-untrusted.json", "bassel-untrusted.json"] {
+    for name in ["triage-untrusted.py", "bassel-untrusted.py"] {
         let (cases, _) = cases(name);
         let mut any = false;
         for case in &cases {
             for (_, entries) in &case.instants {
                 if entries
-                    .as_array()
-                    .expect("entries is an array")
                     .iter()
-                    .any(|entry| entry["unconfirmed"].as_bool() == Some(true))
+                    .any(|entry| boolean(field(entry, "unconfirmed")))
                 {
                     any = true;
                 }

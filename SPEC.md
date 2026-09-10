@@ -5,7 +5,7 @@ DAG, folds that turn them into belief at a moment, and FPL, a fuzzy temporal
 logic whose terms are a todo's fulfillment as a function of time. This
 document is the contract; the crates in this repository are its reference
 implementation. §9 lists the laws every implementation must pass, bit for bit
-where this text says so and to 1e-9 where it says so, and `conformance/*.json`
+where this text says so and to 1e-9 where it says so, and `conformance/*.py`
 holds the vectors they are checked against.
 
 ## 1. Principles
@@ -56,6 +56,23 @@ Parsing admits exactly this grammar: no names, operators, comprehensions or
 attribute access. A call dispatches to its smart constructor, whose error is
 the parse error. Anything else is a refusal, never a crash; the parser is
 fuzzed.
+
+**The vector vocabulary.** `conformance/*.py` — the evidence §9 is checked
+against — is one expression of THIS grammar, printed by this printer and read
+by this parser, against a SECOND whitelist that is disjoint from a store's:
+`Folds`, `Dags`, `Fpl`, `Series`, `View`; `FoldCase`, `DagCase`, `FplCase`,
+`SeriesCase`, `ViewCase`; `Bound`, `Spec`, `Content`, `Object`, `Parents`,
+`Conflict`, `RowConflict`, `Sample`, `Knot`, `Asked`, `Row`; and, for an
+explanation's decoration, `Node`, `NoteEntry`, `One`, `Many`, `Maps`,
+`Fields`, `Pair`. A STORE's parse admits none of these and a VECTOR's parse
+admits none of §4's or §7's: two vocabularies, one grammar, one parser, and
+neither can widen the other.
+
+Inside a vector, every stored object, event and term is a STRING holding its
+canonical print — never a nested literal — because those exact bytes are what
+the vector is evidence of (§9.1). Instants are `datetime(...)`; the mappings a
+vector needs (by todo id, by object name) are tuples of a named constructor,
+since this grammar has tuples and no mapping.
 
 ## 3. Objects and the DAG
 
@@ -110,7 +127,7 @@ deployment's — so a host **payload** supplies
   carries (§6.2, §6.4) and its checklist length (§6.4).
 
 Nothing else about a record is read anywhere in this document. The REFERENCE
-PAYLOAD — the one `conformance/*.json` was taken with, and the one every
+PAYLOAD — the one `conformance/*.py` was taken with, and the one every
 `Authored(...)` in those vectors round-trips under — is `Authored(todo, at,
 actor, kind, created, body, spec, rationale, category, waiting_on, detail,
 source, subtodos, notes, note)`: `body` and `detail` are `MarkupSource`,
@@ -143,7 +160,7 @@ fold — §6.7's `confidence` field, and §3's clock rule — and a policy that 
 writer's events while still marking them as that writer's is why it is asked
 separately. `Claims` implies not `confirms`.
 
-**The reference policy** — the one `conformance/*.json`'s `untrusted` fields
+**The reference policy** — the one `conformance/*.py`'s `untrusted` fields
 name, and the one this repository's vectors were taken under — is a set of
 actor names. An event `Claims` when its actor is on the set and it is a
 lifecycle or `SpecRevised` event; everything else `Binds`, a content record
@@ -209,7 +226,7 @@ the events with `at <= t` in causal order.
    whose events are all dated after `t` is still a row, open and unpriced:
    `t` asks what is believed, not what exists. `confidence` says whether the
    answer is the confirmed reading whole: a claim refused, a winning content
-   record the policy does not `confirm`, or both. Checked against `conformance/view/*.json` — SEEDED, not
+   record the policy does not `confirm`, or both. Checked against `conformance/view/*.py` — SEEDED, not
    taken from the reference like the rest of `conformance/`: random logs
    drawn from this crate's own generator (`core/tests/common/mod.rs`'s
    `a_log`, the one `core/tests/fold_laws.rs`'s properties draw from too)
@@ -252,14 +269,17 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
 - **Explain** is a decoration, `Cofree TermF (value, notes)`: the term's shape
   with each node's fulfillment at the moment its parent used it, plus notes
   (`Conj`: certifies, shares; `Within`: peak instant and share; `After`:
-  bound; `Piecewise`: since, pieces). Its JSON is `to_json`'s shape plus those
-  keys.
+  bound; `Piecewise`: since, pieces). A serialization of one is the term's own
+  shape carrying those two at every node.
 - **Breakpoints**: the slope changes and jumps of the exact fragment (`Flat`,
   `Decay`, `Curve`, `Piecewise` of exact parts, `Offset`, `Shift`, constant
   composites). A series with a knot at each and a second knot before each jump
   is the curve; other terms are sampled and say so.
-- JSON: `to_json` and `from_json`, with the kind tags the `fpl` module
-  declares.
+- A term has ONE serialization and it is §2's literal print. A JavaScript
+  boundary may carry a JSON shape of the same term — the reference one is
+  `prodrome-wasm`'s `json` module, lowercase kind tags and spans in hours —
+  but that is a boundary's business and not the database's, exactly as a
+  rendering is (§1).
 
 ## 8. Types an implementation must have
 
@@ -279,7 +299,7 @@ code never calls a raw constructor.
 
 ## 9. Laws
 
-Against `conformance/*.json` and on generated inputs:
+Against `conformance/*.py` and on generated inputs:
 
 1. `print ∘ parse` is the identity on every stored object, and `hash(print)`
    is its name. Records included: every `KIND(...)` print in the vectors
@@ -302,7 +322,7 @@ Against `conformance/*.json` and on generated inputs:
    linearisations, frontiers and `verify` findings exactly.
 9. **The view is the composition** (§6.7): on any DAG and at any moment,
    every field of every entry equals the fold it is named by, and the rows
-   are exactly the todos the events mention. Against `conformance/view/*.json`
+   are exactly the todos the events mention. Against `conformance/view/*.py`
    (seeded, §6.7) on linear chains and against `core/tests/fold_laws.rs`'s
    property on random DAGs.
 

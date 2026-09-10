@@ -1,4 +1,4 @@
-//! SPEC §9.7/§9.8 over `conformance/series.json`: 60 random terms drawn over a
+//! SPEC §9.7/§9.8 over `conformance/series.py`: 60 random terms drawn over a
 //! window. The knot INSTANTS are exact — they are the term's own transitions —
 //! and the values agree to 1e-9. Beside that, the law: between two adjacent
 //! knots of an exact fragment, the straight line IS the evaluator.
@@ -6,9 +6,9 @@
 mod common;
 
 use chrono::Duration;
+use common::vectors::{boolean, each, field, integer, moment, number, text_at, vectors};
 use prodrome::breaks::series_knots;
-use prodrome::fpl::{self, fulfillment, iso, parse_term, Env, Instant};
-use serde_json::Value;
+use prodrome::fpl::{fulfillment, instant_of, parse_term, Env, Instant, Term};
 
 /// The series vectors are drawn against an empty history, as the reference's
 /// generator does: `history([])` binds nothing at any instant.
@@ -16,47 +16,54 @@ fn nothing(_: Instant) -> Env {
     Env::new()
 }
 
-fn parse_iso(s: &str) -> Instant {
-    fpl::parse_iso(s).unwrap_or_else(|e| panic!("bad instant {s:?}: {e}"))
+/// One case's term, its window and its seed — the three every test here starts
+/// from.
+fn case_of(case: &prodrome::literal::Value) -> (i64, Term, Instant, Instant) {
+    let seed = integer(field(case, "seed"));
+    let term = parse_term(text_at(case, "term"))
+        .unwrap_or_else(|e| panic!("seed {seed}: cannot parse: {e}"));
+    (
+        seed,
+        term,
+        instant_of(moment(field(case, "from"))),
+        instant_of(moment(field(case, "to"))),
+    )
 }
 
 #[test]
 fn every_series_has_the_reference_knots() {
-    let data = common::vectors("series.json");
-    let cases = data["series"]
-        .as_array()
-        .expect("series.json has a series array");
+    let data = vectors("series.py");
+    let cases = each(&data, "series");
     assert_eq!(cases.len(), 60, "the vector file lost cases");
     let (mut knots, mut exact_cases) = (0usize, 0usize);
     for case in cases {
-        let seed = &case["seed"];
-        let text = case["term"].as_str().expect("term is a literal string");
-        let term = parse_term(text).unwrap_or_else(|e| panic!("seed {seed}: cannot parse: {e}"));
-        let from = parse_iso(case["from"].as_str().expect("from is a string"));
-        let to = parse_iso(case["to"].as_str().expect("to is a string"));
-
+        let (seed, term, from, to) = case_of(case);
         let series = series_knots(&term, from, to, nothing);
         assert_eq!(
             series.exact,
-            case["exact"].as_bool().expect("exact is a bool"),
+            boolean(field(case, "exact")),
             "seed {seed}: exactness"
         );
-        let mine: Value = Value::Array(
-            series
-                .knots
-                .iter()
-                .map(|k| Value::Array(vec![Value::String(iso(k.at)), Value::from(k.value)]))
-                .collect(),
-        );
-        common::agrees("knots", &mine, &case["knots"])
-            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
-        knots += series.knots.len();
+        let frozen = each(case, "knots");
+        assert_eq!(series.knots.len(), frozen.len(), "seed {seed}: knot count");
+        for (mine, theirs) in series.knots.iter().zip(frozen) {
+            // The INSTANT exactly — it is the term's own transition, not a
+            // sample — and the value to 1e-9.
+            assert_eq!(
+                mine.at,
+                instant_of(moment(field(theirs, "at"))),
+                "seed {seed}: knot instant"
+            );
+            common::close("knot", mine.value, number(field(theirs, "value")))
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            knots += 1;
+        }
         if series.exact {
             exact_cases += 1;
         }
     }
     println!(
-        "series.json: {} windows ({exact_cases} exact), {knots} knots; \
+        "series.py: {} windows ({exact_cases} exact), {knots} knots; \
          largest float deviation {:e}",
         cases.len(),
         common::worst_seen()
@@ -74,22 +81,15 @@ fn every_series_has_the_reference_knots() {
 /// is the step. Every other interval is the curve exactly.
 #[test]
 fn interpolation_between_exact_knots_equals_evaluation() {
-    let data = common::vectors("series.json");
+    let data = vectors("series.py");
     let mut probes = 0usize;
     let mut brackets = 0usize;
     let mut worst = 0.0f64;
-    for case in data["series"]
-        .as_array()
-        .expect("series.json has a series array")
-    {
-        if !case["exact"].as_bool().expect("exact is a bool") {
+    for case in each(&data, "series") {
+        if !boolean(field(case, "exact")) {
             continue;
         }
-        let seed = &case["seed"];
-        let term = parse_term(case["term"].as_str().expect("term is a string"))
-            .unwrap_or_else(|e| panic!("seed {seed}: cannot parse: {e}"));
-        let from = parse_iso(case["from"].as_str().expect("from is a string"));
-        let to = parse_iso(case["to"].as_str().expect("to is a string"));
+        let (seed, term, from, to) = case_of(case);
         let series = series_knots(&term, from, to, nothing);
         for pair in series.knots.windows(2) {
             let (a, b) = (pair[0], pair[1]);

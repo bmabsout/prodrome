@@ -1,4 +1,4 @@
-//! Regenerates `conformance/view/*.json` — SPEC §6.7's `view::entries`,
+//! Regenerates `conformance/view/*.py` — SPEC §6.7's `view::entries`,
 //! frozen. Run BY HAND (`cargo run --example generate_view_vectors -p
 //! prodrome-core`); nothing under `cargo test` and nothing CI runs calls
 //! this, which is what makes the two files FROZEN evidence rather than a
@@ -30,11 +30,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use prodrome::event::{canonical, Actor};
+use prodrome::literal::{print_literal, Value};
 use prodrome::policy::Untrusted;
 use prodrome::view;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-use serde_json::{json, Value};
 
 /// However many times this runs, the same 32 bytes: a fixed seed is the
 /// whole reason to call this "frozen" rather than "cached".
@@ -57,6 +57,17 @@ fn draw<S: Strategy>(run: &mut TestRunner, strategy: &S) -> S::Value {
         .new_tree(run)
         .expect("a strategy with no filters never fails to produce a tree")
         .current()
+}
+
+/// A vector value: one call, its fields in declared order.
+fn call(name: &str, fields: Vec<(&str, Value)>) -> Value {
+    Value::call(
+        name,
+        fields
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
 }
 
 fn conformance_dir() -> PathBuf {
@@ -82,9 +93,9 @@ fn generate(name: &str, untrusted: &Untrusted) -> Value {
         // `common::chain_of`, so the names it gets — the ones `stream`,
         // `content` and `conflicts` carry — agree without either side
         // freezing them.
-        let events: Value = Value::Array(
+        let events = Value::Tuple(
             log.iter()
-                .map(|event| Value::String(canonical(event)))
+                .map(|event| Value::Str(canonical(event)))
                 .collect(),
         );
         // The three drawn instants, plus `far()` so every log is also asked
@@ -96,23 +107,79 @@ fn generate(name: &str, untrusted: &Untrusted) -> Value {
             .into_iter()
             .map(|at| {
                 let entries = view::entries(&nodes, at, untrusted).expect("a chain always folds");
-                json!({
-                    "at": prodrome::fpl::iso(prodrome::fpl::instant_of(at)).replace('T', " "),
-                    "entries": entries.iter().map(common::json_entry).collect::<Vec<_>>(),
-                })
+                call(
+                    "Asked",
+                    vec![
+                        ("at", Value::Datetime(at)),
+                        (
+                            "entries",
+                            Value::Tuple(entries.iter().map(common::entry_value).collect()),
+                        ),
+                    ],
+                )
             })
             .collect();
-        cases.push(json!({
-            "seed": seed,
-            "events": events,
-            "instants": instants,
-        }));
+        cases.push(call(
+            "ViewCase",
+            vec![
+                ("seed", Value::int(seed as i64)),
+                ("events", events),
+                ("instants", Value::Tuple(instants)),
+            ],
+        ));
     }
-    json!({
-        "policy": name,
-        "untrusted": untrusted.actors().iter().map(|actor| actor.as_str().to_owned()).collect::<Vec<_>>(),
-        "cases": cases,
-    })
+    call(
+        "View",
+        vec![
+            ("policy", Value::Str(name.to_owned())),
+            (
+                "untrusted",
+                Value::Tuple(
+                    untrusted
+                        .actors()
+                        .iter()
+                        .map(|actor| Value::Str(actor.as_str().to_owned()))
+                        .collect(),
+                ),
+            ),
+            ("cases", Value::Tuple(cases)),
+        ],
+    )
+}
+
+/// The file: a header comment, then the root with ONE CASE PER LINE, each line
+/// the canonical print of that case's own value — the layout
+/// `conformance/*.py` was migrated into, so a diff is readable and the printer
+/// is still the only thing that writes a value.
+fn lay_out(name: &str, root: &Value) -> String {
+    let call = root.as_call().expect("the root is a call");
+    let mut out = format!(
+        "# conformance/view/{name} — SPEC §6.7 vectors, SEEDED (not taken from the
+# reference) and frozen: `examples/generate_view_vectors.rs` is the only thing
+# that writes this file, by hand. One case per line.\n"
+    );
+    out.push_str(&call.name);
+    out.push('(');
+    for (index, (key, value)) in call.fields.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(key);
+        out.push('=');
+        match value {
+            Value::Tuple(cases) if key == "cases" => {
+                out.push_str("(\n");
+                for case in cases {
+                    out.push_str(&print_literal(case));
+                    out.push_str(",\n");
+                }
+                out.push(')');
+            }
+            inline => out.push_str(&print_literal(inline)),
+        }
+    }
+    out.push_str(")\n");
+    out
 }
 
 fn main() {
@@ -123,12 +190,11 @@ fn main() {
     let bassel = Untrusted::of([Actor::new("bassel").expect("valid")]);
 
     for (file, policy, untrusted) in [
-        ("triage-untrusted.json", "triage-untrusted", &triage),
-        ("bassel-untrusted.json", "bassel-untrusted", &bassel),
+        ("triage-untrusted.py", "triage-untrusted", &triage),
+        ("bassel-untrusted.py", "bassel-untrusted", &bassel),
     ] {
-        let doc = generate(policy, untrusted);
-        let text = serde_json::to_string_pretty(&doc).expect("the doc serialises");
-        fs::write(dir.join(file), text + "\n").expect("conformance/view/*.json is writable");
-        println!("wrote conformance/view/{file}");
+        let text = lay_out(file, &generate(policy, untrusted));
+        fs::write(dir.join(file), &text).expect("conformance/view/*.py is writable");
+        println!("wrote conformance/view/{file} ({} bytes)", text.len());
     }
 }
