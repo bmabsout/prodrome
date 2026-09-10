@@ -1,0 +1,1 @@
+Sealed(prev='089854fdfec6d7e600bfa3bdc78e8df262ada49d057b01f90561b70fd726f545', event=Created(todo='chain-compiler', at=datetime(2026, 9, 10, 21, 57, 25, 866488), actor='bassel', text='The chain compiler: After erased against a snapshot, so a dependency chain composes into one evaluable term', note=''))
