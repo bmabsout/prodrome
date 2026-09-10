@@ -1,0 +1,1 @@
+Sealed(prev='993a2c87ec81ee05849a80520e15a4e5ff336aa7b649fb9e43d40c82cccd16f8', event=Created(todo='shift-monoid-action-law', at=datetime(2026, 9, 10, 5, 48, 9, 896652), actor='bassel', text='A property test that Shift is a monoid action', note=''))

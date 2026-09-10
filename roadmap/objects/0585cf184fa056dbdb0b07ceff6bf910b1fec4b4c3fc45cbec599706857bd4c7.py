@@ -1,0 +1,1 @@
+Sealed(prev='6ddbe397132b3c206cfd980e01466d556f6a56be873527b98aa5d360797abaf7', event=SpecRevised(todo='one-annotated-fold', at=datetime(2026, 9, 10, 5, 48, 9, 909361), actor='bassel', spec=Flat(value=0.9), note=''))
