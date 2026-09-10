@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "prodrome-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "prodrome-wasm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "prodrome-core",
  "serde",

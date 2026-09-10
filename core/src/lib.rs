@@ -97,7 +97,7 @@ pub mod fpl;
 pub mod literal;
 pub mod payload;
 pub mod policy;
-/// The reference payload — the record shape `conformance/*.json` was taken
+/// The reference payload — the record shape `conformance/*.py` was taken
 /// with. A host defines its own; this one is behind a default feature so a
 /// host that wants none of it can turn it off.
 #[cfg(feature = "reference")]

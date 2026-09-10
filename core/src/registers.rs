@@ -1,7 +1,7 @@
 //! §6.6 — registers over the DAG: the fold as a monoid action, conflicts as
 //! values.
 //!
-//! See ../../SPEC.md; implemented against ../../conformance/dag.json and
+//! See ../../SPEC.md; implemented against ../../conformance/dag.py and
 //! ported from the reference's `registers.py`.
 //!
 //! Every fold in [`crate::fold`] is a last-writer-wins map keyed by todo, and

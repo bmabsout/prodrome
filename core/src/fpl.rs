@@ -1,6 +1,6 @@
 //! §7 — FPL: the term language, one evaluator.
 //!
-//! See ../../SPEC.md. Implemented against ../../conformance/fpl.json, and
+//! See ../../SPEC.md. Implemented against ../../conformance/fpl.py, and
 //! ported from the reference `fpl.py` — the arithmetic ORDER is part
 //! of the port, because the vectors are the reference's floats.
 //!

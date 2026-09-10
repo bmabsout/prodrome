@@ -77,7 +77,7 @@ use wire::{
 /// §4's record kind is the host's (`prodrome::payload::Payload`), and a store
 /// is parsed against one closed vocabulary — so a `.wasm` is built for one
 /// payload, and this is the choice. `prodrome::reference::Todo` is the shape
-/// `conformance/*.json` was taken with; a host with its own payload compiles
+/// `conformance/*.py` was taken with; a host with its own payload compiles
 /// its own wasm from this crate with the type swapped, and every export below
 /// is written so that is the ONLY line that changes.
 type Record = prodrome::reference::Todo;
@@ -763,7 +763,7 @@ pub fn fulfillment(term: &str, now: &str, env: &str) -> Result<f64, JsError> {
 /// everything else here speaks.
 ///
 /// The one place the literal grammar is reachable from JavaScript, and it
-/// exists because the grammar is the STORED form: `conformance/series.json`
+/// exists because the grammar is the STORED form: `conformance/series.py`
 /// gives each term as a print, an object's literal carries its spec as a
 /// print, and without this the two would have to be re-parsed on the JS side —
 /// which is the second implementation of §2 that this crate exists to prevent.

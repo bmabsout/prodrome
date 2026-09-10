@@ -91,8 +91,9 @@ pub fn parse_term(field: &str, json_text: &str) -> Result<Term, Refusal> {
 }
 
 /// `{"<name>": {"kind": "Completed" | "Cancelled", "at": "<iso>"}}` — §7's
-/// environment, and byte for byte the `env` of `conformance/fpl.json`, so a
-/// vector file is a legal argument without translation.
+/// environment, with the same two fields `conformance/fpl.py`'s `Bound(...)`
+/// carries, so a vector's environment reaches this without a translation step
+/// that could disagree.
 pub fn parse_env(json_text: &str) -> Result<fpl::Env, Refusal> {
     let raw: BTreeMap<String, EnvEntry> =
         serde_json::from_str(json_text).map_err(|e| format!("env: {e}"))?;
@@ -181,9 +182,8 @@ impl History {
 /// ADT and never a boolean, because they mean OPPOSITE things downstream.
 ///
 /// ONE ENV SHAPE, and this is it — `{kind, at}` with an ISO instant, which is
-/// what `parse_env` reads, what `conformance/fpl.json` holds, and therefore
-/// what a caller can hand straight back to [`crate::fulfillment`] without
-/// rewriting anything. [`json_entry`]'s `state`/`at` is a RENDERING of this
+/// what `parse_env` reads, and therefore what a caller can hand straight back
+/// to [`crate::fulfillment`] without rewriting anything. [`json_entry`]'s `state`/`at` is a RENDERING of this
 /// (lowercased, `isoformat(" ")`), which `Entry::state`/`Entry::at` perform in
 /// the core so that both bindings spell it one way.
 pub fn json_binding(binding: Binding) -> Value {
