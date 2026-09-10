@@ -1,0 +1,1 @@
+Sealed(prev='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', event=SpecRevised(todo='the-record-is-the-hosts', at=datetime(2026, 9, 9, 0, 0, 0), actor='bassel', spec=Flat(value=0.35), note=''))

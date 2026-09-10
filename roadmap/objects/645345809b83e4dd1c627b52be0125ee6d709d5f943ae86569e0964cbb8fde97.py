@@ -1,0 +1,1 @@
+Sealed(prev='908df3948fbd58fbc601b296ced542decbf95a6cd9fe9b7ddaa9908dac689ece', event=SpecRevised(todo='json-entry-evidence', at=datetime(2026, 9, 10, 0, 31, 34, 145718), actor='bassel', spec=Flat(value=0.8), note=''))

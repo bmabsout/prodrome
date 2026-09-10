@@ -1,0 +1,1 @@
+Sealed(prev='458d2bc2783add00f9ac3f151fcdf4e3546b777ea2a032b9a34c7417e45372de', event=Created(todo='json-entry-evidence', at=datetime(2026, 9, 10, 0, 31, 34, 145718), actor='bassel', text="freeze json_entry's shape as vectors in wasm/conformance/", note=''))

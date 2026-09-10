@@ -1,0 +1,1 @@
+Sealed(prev='', event=Created(todo='the-record-is-the-hosts', at=datetime(2026, 9, 9, 0, 0, 0), actor='bassel', text="make a record's fields the host's, not the database's", note=''))
