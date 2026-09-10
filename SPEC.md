@@ -281,6 +281,78 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
   but that is a boundary's business and not the database's, exactly as a
   rendering is (§1).
 
+### 7.1 The chain compiler
+
+`After` is the ONE term that reads history. Every other constructor is a
+function of `now` and its subterms, so a term with no `After` anywhere in it
+can be evaluated against no environment at all. The compiler is that erasure:
+given a term and the environment as of one instant, it answers a term with the
+same reading and no `After` left.
+
+```
+compile(term, env) : Compiled
+compile_chain(functions, env) : (todo → Compiled) | ChainError::Cycle(path)
+```
+
+`Compiled` is the term the compiler produced together with the LINKS it
+resolved. Its readers — `term`, `fulfillment(now)`, `explain(now)`, `notes` —
+take no environment, and that is the whole claim: a compiled term cannot
+consult one, because the only constructor that would has been compiled away.
+
+**Per link.** With `After(e, anchor, term, pending, needs)` and what the
+snapshot says about `e`:
+
+- ABSENT — `compile(pending)`. `bound` answers `None` at every instant, so the
+  link is its pending branch and nothing else.
+- `Completed(τ)` — `Piecewise(compile(pending), [(τ, Shift(anchor − τ,
+  compile(term)))])`. Before τ the link is unbound; from τ the body slides by
+  the slippage, and sliding `now` by a constant IS a `Shift`.
+- `Cancelled(τ)` — `Piecewise(compile(pending), [(τ, Offset(1.0,
+  compile(term)))])`. `x·(1 − |1|) + max(0, 1) = 1` for every `x`: the moot
+  constant is a graded offset at δ = 1, and writing it as one keeps the mooted
+  demand in the tree where a reader can still see what was dropped.
+
+So each link contributes ONE graded offset δ ∈ [0, 1] — its MOOT GRADE, 1
+where the upstream was cancelled and 0 everywhere else — applied with §7's
+corrected form; δ = 0 is elided because `offset(x, 0) = x`, and so is a zero
+`Shift`. The result is `normalize`d, so a chain (A needs B needs C) is ONE
+schedule at the root over the merged partition of the links' instants, and not
+three freeze quantifiers the evaluator re-enters at every sample.
+
+**`needs` is the COMPILER's field, not the evaluator's.** §7's semantics have
+never read it and this does not change that: consuming it as a VALUE would
+move a reading, and the law below forbids that. It is the link's declared LEAD
+TIME, and the compiler is the first reader holding it beside the upstream's
+actual instant — so a resolved link reports `ready = τ + needs`, the earliest
+moment the link's own demand could be met, in its note. A host schedules by
+it. The evaluator still does not read it.
+
+**Cancellation is reported, never silent.** Every link becomes a note on the
+compiled term — `pending`; `completed` with its slippage and its `ready`;
+`moot` with its instant — and `explain` puts the moot ones at the root under
+`moot`. §7's "a Cancelled upstream prices as moot and MUST be surfaced by
+reporting" is a requirement on the REPORTING, and compiling is where it is
+cheapest to honour: a 1.0 from a cancellation is indistinguishable from a 1.0
+from a demand met, and the note is the only thing that tells them apart.
+
+**Cycles are a value.** A single term is a tree and cannot cycle.
+`compile_chain` is handed a MAP of todo to function whose links draw a graph
+over those todos, and a cycle in that graph is a modelling error the compiler
+is the first reader to see whole. It is refused as `ChainError::Cycle(path)`,
+carrying the path so the host can name the loop, and never as a partial answer.
+
+**This is an OPTIMISATION and not a semantics change.** Its law is §9.13,
+`fulfillment(compile(t, env).term, now, ∅) == fulfillment(t, now, env)`. No
+stored byte moves, no vector moves, and a host that never compiles reads
+exactly what it read before.
+
+**The cost.** The interpreter consults the environment once per `After` node
+per evaluation, and `Within` is 65 evaluations of its subterm — so one link
+under a window costs 65 lookups, and a chain of `d` links under one costs
+65·d, at every query. The compiler pays one walk of the term (the resolution,
+then `normalize`'s merge of the partition) ONCE, and every evaluation
+afterwards pays none, because there is no `After` left to pay for.
+
 ## 8. Types an implementation must have
 
 `Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Payload`, §4's record kind as a
@@ -291,7 +363,10 @@ since one store holds one record shape; `Standing = Binds | Claims` and
 value like the payload and for the same reason, since one store reads under one
 policy; `Envelope = Sealed | Woven`;
 `TodoEvent`; `Term` as `Fix TermF`;
-`Explanation = Cofree TermF Annotation`; `Frontier`, a non-empty ordered set
+`Explanation = Cofree TermF Annotation`; `Compiled` (§7.1), a term with every
+`After` resolved beside the `Link`s it resolved, whose readers take no
+environment because a compiled term cannot consult one, and `ChainError`, whose
+`Cycle` carries the path; `Frontier`, a non-empty ordered set
 of writes; `Folded`; `Breaks`; `Entry` (§6.7), whose price and function are
 absent together and whose `Confidence` is a sum with no "provisional for no
 reason" inhabitant. Smart constructors validate; records are data; engine
@@ -347,6 +422,19 @@ say the parameter cannot do anything but select.
     commutes with reordering. Which events count is a function of the event
     SET; law 3 is the other half, that only which of them WINS is a function
     of the order.
+
+Law 13 quantifies over the ENVIRONMENT, and it is what makes §7.1's compiler an
+optimisation rather than a second evaluator.
+
+13. **Compilation preserves every reading** (§7.1). For every term and every
+    environment, `fulfillment(compile(t, env).term, now, ∅)` equals
+    `fulfillment(t, now, env)` to 1e-9 at every instant — the compiled side
+    read against the EMPTY environment, which is the statement's teeth: it
+    answers the same while unable to look anything up, because `After` is the
+    only constructor that reads the environment and compiling leaves none. On
+    `core/tests/fpl_laws.rs`'s own generators, the `a_term()` and `an_env()`
+    §9.5 is checked over; and pinned by every §9.8 vector, which the compiler
+    does not touch.
 
 ## 10. Non-goals
 
