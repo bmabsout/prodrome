@@ -1,0 +1,38 @@
+[package]
+name = "prodrome-cli"
+description = "A command line over a Prodrome store: append todos, price them, and fold the store at any instant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "../README.md"
+keywords = ["cli", "event-sourcing", "content-addressed", "todo", "roadmap"]
+categories = ["command-line-utilities", "database-implementations"]
+
+# THE LOGIC IS A LIBRARY AND THE BINARY IS A PRINTER. Every verb answers with a
+# string and an exit status rather than writing to stdout itself, so a test
+# drives the verb and reads the answer instead of spawning a process and
+# parsing its output.
+[lib]
+name = "prodrome_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "prodrome"
+path = "src/main.rs"
+
+[dependencies]
+# The reference payload and the reference policy: this binary is a HOST, and a
+# host names both (§4, §5). A deployment with its own record shape or its own
+# standing rule builds its own binary over the same core.
+prodrome-core.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+# THE CLOCK LIVES HERE. The core has none — an event's `at` is data — so the
+# machine's clock is the host's, read in exactly two places: the instant a
+# write is stamped with, and the instant a read folds at.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# The refusals are values, and this is the derive that spells their `Display`
+# — the same one the core uses, so a message crossing the boundary reads the
+# same on both sides.
+thiserror = "2"
