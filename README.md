@@ -167,6 +167,14 @@ another todo's completion) and `Piecewise`. `fulfillment` evaluates a term at
 an instant; `explain` returns the same computation with a value at every node;
 `series_knots` gives a term's curve over a window.
 
+**The chain compiler.** `After` is the one term that reads history, so
+`chain::compile(term, env)` resolves every one of them against a snapshot and
+hands back a term with the same reading and no lookup left in it — each link
+as one graded offset, a chain as one schedule. A cancelled upstream compiles to
+the moot 1.0 and is REPORTED beside it, because nothing in the number says so.
+An optimisation with an equivalence law (SPEC §9.13), not a second semantics:
+the interpreted path is unchanged and compiling is opt-in.
+
 **View.** `entries` composes the above into one row per todo: outcome, claim,
 function, value, current content, conflicts, and the objects that mention it.
 
@@ -194,13 +202,13 @@ $ nix build .#prodrome-wasm
 
 Produces `result/web/` for a bundler and `result/nodejs/` for a script. The
 exports (`verify_objects`, `fold`, `registers`, `entries`, `fulfillment`,
-`explain`, `series_knots`, `term_json`, `lifecycle`, `seal`, `merge_object`)
-each parse their arguments, call the core, and return JSON. The JSON shape of a
-term is this crate's — `wasm/src/json.rs`, since 0.4 — because JSON is
-JavaScript's literal grammar and the core has its own. A record crosses as
-its payload's own field names; the module is built with one payload, named once
-at the top of `wasm/src/lib.rs`, so a host with its own compiles its own wasm
-from this crate with that line changed.
+`explain`, `compile`, `series_knots`, `term_json`, `lifecycle`, `seal` and
+`merge_object`) each parse their arguments, call the core, and return JSON.
+The JSON shape of a term is this crate's — `wasm/src/json.rs`, since 0.4 —
+because JSON is JavaScript's literal grammar and the core has its own. A
+record crosses as its payload's own field names; the module is built with one
+payload, named once at the top of `wasm/src/lib.rs`, so a host with its own
+compiles its own wasm from this crate with that line changed.
 
 ## Documentation
 
@@ -238,7 +246,7 @@ flake check` and CI never run.
 ## Repository layout
 
 ```
-core/         prodrome-core: literal, payload, policy, event, store, fpl, fold, registers, breaks, view
+core/         prodrome-core: literal, payload, policy, event, store, fpl, chain, fold, registers, breaks, view
               plus `reference`, the payload the vectors were taken with
 cli/          prodrome-cli: the `prodrome` binary — the verbs, over that payload
               and the reference policy, and the only clock in the workspace

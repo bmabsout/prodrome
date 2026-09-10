@@ -3,7 +3,7 @@ resolver = "2"
 members = ["cli", "core", "wasm"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 # The Rust default, so that using this crate is a decision about the code and
 # not about a licence: MIT for the permissive reading, Apache-2.0 for the
@@ -38,4 +38,4 @@ strip = true
 # would resolve to), and the two live here beside `workspace.package.version`
 # so that a release bumps one file.
 [workspace.dependencies]
-prodrome-core = { path = "core", version = "0.5.0" }
+prodrome-core = { path = "core", version = "0.6.0" }

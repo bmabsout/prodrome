@@ -8,6 +8,74 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-10
+
+A VERSION because the core's public API grew: `prodrome::chain` is a module a
+reader can depend on. NOTHING ELSE MOVED — no stored byte changes, no vector
+changes, no reading changes, and the interpreted path is the one it was.
+
+### Added
+
+- **`chain`, the chain compiler (SPEC §7.1).** `After` is the ONE term that
+  reads history; every other constructor is a function of `now` and its
+  subterms. `chain::compile(term, env)` erases it — the term comes back with
+  every `After` resolved against the snapshot and `normalize`d, so a chain of
+  dependencies is ONE schedule at the root instead of a freeze quantifier the
+  evaluator re-enters at every sample. `Compiled`'s readers — `term`,
+  `fulfillment(now)`, `explain(now)`, `notes`, `links`, `moot` — take NO
+  ENVIRONMENT, which is the claim: a compiled term cannot consult one, because
+  the only constructor that would is gone.
+- EACH LINK IS ONE GRADED OFFSET δ ∈ [0, 1], applied with §7's corrected form.
+  `x·(1 − |1|) + max(0, 1) = 1` for every `x`, so a CANCELLED upstream is
+  `Offset(1.0, …)` — the moot constant written as the offset it is, with the
+  demand that was dropped still in the tree where a reader can see it. δ = 0 is
+  the identity and is elided, as is a zero `Shift`. A completed upstream is a
+  `Piecewise` whose piece slides the body by the slippage; an unbound one is
+  its pending branch and nothing else.
+- A cancellation is REPORTED and never silent (§7): every link is a `Link` on
+  the compiled term, `moot()` names the cancelled ones, and `explain` carries
+  them at the root under `moot`. A 1.0 from a cancellation is indistinguishable
+  from a 1.0 from a demand met, and the note is the only thing that tells them
+  apart.
+- `chain_order` and `compile_chain` take the chain as a MAP of todo to
+  function — `fold::flatten`'s answer — and read the graph its links draw over
+  those todos. A cycle is refused as a VALUE, `ChainError::Cycle(path)`, the
+  path naming the loop; a link onto something outside the map is not an edge,
+  because the snapshot answers it.
+- **`After.needs` is CONSUMED, by the compiler and not by the evaluator.** §7's
+  semantics have never read it and this does not start: consuming it as a value
+  would move a reading. It is the link's declared LEAD TIME, and the compiler
+  is the first reader holding it beside the upstream's actual instant, so a
+  resolved link reports `ready = at + needs`. A host schedules by it.
+- **SPEC §9.13**, the law that makes the above an OPTIMISATION and not a second
+  semantics: `fulfillment(compile(t, env).term, now, ∅)` equals
+  `fulfillment(t, now, env)` to 1e-9 at every instant, the compiled side read
+  against the EMPTY environment. `core/tests/fpl_laws.rs` quantifies it over
+  the same `a_term()` and `an_env()` §9.5 runs on, with two more properties
+  beside it — no `After` survives, and an environment that answers differently
+  about everything changes nothing.
+- `core/tests/chain.rs` pins the cases: what each link compiles to, as an exact
+  print; the cancellation report; that `needs` moves no number; the cycle and
+  its message; and THE COST, as a test rather than as a claim — a chain of
+  three links under one `Within` costs up to 65·3 = 195 environment lookups per
+  interpreted evaluation and none at all compiled, asserted on the counting env
+  in both its readings (the `After` nodes that could ask, and an environment
+  that would show if one did) and never on the clock.
+- `prodrome-wasm` gains ONE export, `compile(term, env)`, returning the
+  compiled term's canonical print beside its links. The other exports are
+  unchanged in shape and in answer.
+
+### Unchanged
+
+- **The stored bytes**, and every conformance vector. The compiler adds no
+  constructor, reads no new field and changes no existing term's value; §9.8's
+  150 terms answer exactly what they answered, which is the frozen pin under
+  §9.13's property.
+- **The interpreted path.** `fpl::fulfillment`, `fpl::explained` and
+  `breaks::series_knots` are untouched, and a host that never compiles reads
+  what it read before. Compiling is an optimisation a caller opts into.
+- The wasm wire, apart from the one export added above.
+
 ## [0.5.0] — 2026-09-10
 
 A VERSION AND NOT AN `Unreleased`: a new crate ships in the workspace and
