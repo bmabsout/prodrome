@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "prodrome-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "clap",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "prodrome-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "prodrome-wasm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "prodrome-core",
  "serde",
