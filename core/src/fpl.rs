@@ -935,8 +935,9 @@ pub fn mk_piecewise(head: Term, pieces: Vec<(Instant, Term)>) -> Result<Term, Fp
 }
 
 /// `mk_piecewise` with the ordering precondition already established — the
-/// internal path, so `normalize` needs no `Result` it could not produce.
-fn piecewise(head: Term, pieces: Vec<(Instant, Term)>) -> Term {
+/// internal path, so `normalize` needs no `Result` it could not produce, and
+/// `chain` (§7.1) none either when it puts one link on one instant.
+pub(crate) fn piecewise(head: Term, pieces: Vec<(Instant, Term)>) -> Term {
     let first = pieces.first().map(|p| p.0);
     let (start, start_pieces) = opened(head);
     let mut schedule: Vec<(Instant, Term)> = start_pieces
