@@ -106,6 +106,20 @@ pub enum TermF<A> {
         pending: A,
         needs: Option<Delta>,
     },
+    /// `term`, authored against `anchor`, re-anchored to the last tending of
+    /// `todo` as `After` is to a completion; `pending` before the first.
+    Recur {
+        todo: String,
+        anchor: Instant,
+        term: A,
+        pending: A,
+    },
+    /// `term` on `[anchor, anchor + period)`, repeated on the calendar.
+    Periodic {
+        period: Delta,
+        anchor: Instant,
+        term: A,
+    },
     Piecewise {
         head: A,
         pieces: Vec<(Instant, A)>,
@@ -176,6 +190,26 @@ impl<A> TermF<A> {
                 pending: f(pending),
                 needs,
             },
+            TermF::Recur {
+                todo,
+                anchor,
+                term,
+                pending,
+            } => TermF::Recur {
+                todo,
+                anchor,
+                term: f(term),
+                pending: f(pending),
+            },
+            TermF::Periodic {
+                period,
+                anchor,
+                term,
+            } => TermF::Periodic {
+                period,
+                anchor,
+                term: f(term),
+            },
             TermF::Piecewise { head, pieces } => TermF::Piecewise {
                 head: f(head),
                 pieces: pieces.into_iter().map(|(at, t)| (at, f(t))).collect(),
@@ -197,8 +231,11 @@ impl<A> TermF<A> {
             TermF::Conj { terms, .. } => terms.iter().collect(),
             TermF::Offset { term, .. } | TermF::Shift { term, .. } => vec![term],
             TermF::Within { term, .. } | TermF::Importance { term, .. } => vec![term],
+            TermF::Periodic { term, .. } => vec![term],
             TermF::Gate { gate, body } => vec![gate, body],
-            TermF::After { term, pending, .. } => vec![term, pending],
+            TermF::After { term, pending, .. } | TermF::Recur { term, pending, .. } => {
+                vec![term, pending]
+            }
             TermF::Piecewise { head, pieces } => {
                 let mut out = vec![head];
                 out.extend(pieces.iter().map(|(_, t)| t));
@@ -223,6 +260,8 @@ impl<A> TermF<A> {
             TermF::Within { .. } => "within",
             TermF::Importance { .. } => "importance",
             TermF::After { .. } => "after",
+            TermF::Recur { .. } => "recur",
+            TermF::Periodic { .. } => "periodic",
             TermF::Piecewise { .. } => "piecewise",
             TermF::OffsetBy { .. } => "offsetBy",
             TermF::Ref { .. } => "ref",
@@ -278,6 +317,26 @@ impl<A, E> TermF<Result<A, E>> {
                 term: term?,
                 pending: pending?,
                 needs,
+            },
+            TermF::Recur {
+                todo,
+                anchor,
+                term,
+                pending,
+            } => TermF::Recur {
+                todo,
+                anchor,
+                term: term?,
+                pending: pending?,
+            },
+            TermF::Periodic {
+                period,
+                anchor,
+                term,
+            } => TermF::Periodic {
+                period,
+                anchor,
+                term: term?,
             },
             TermF::Piecewise { head, pieces } => TermF::Piecewise {
                 head: head?,
@@ -545,6 +604,12 @@ pub fn last_tended(env: &Env, todo: &str, now: Instant) -> Option<Instant> {
     env.tended.get(todo)?.range(..=now).next_back().copied()
 }
 
+/// Where a `Periodic` reads its body: `now` folded into `[anchor, anchor +
+/// period)` by a Euclidean remainder, so a moment before `anchor` folds too.
+pub fn phase(period: Delta, anchor: Instant, now: Instant) -> Instant {
+    after(anchor, us_of(now - anchor).rem_euclid(us_of(period)))
+}
+
 /// Evaluate a closed term at a moment against what history says. Total by
 /// structure; every branch returns a value in [0, 1].
 pub fn fulfillment(term: &Closed, now: Instant, env: &Env) -> f64 {
@@ -593,6 +658,21 @@ fn eval(term: &Term, now: Instant, env: &Env) -> f64 {
             // Moot AS PRICING — reporting must surface it (§7, After).
             Some(Outcome::Cancelled(_)) => 1.0,
         },
+        TermF::Recur {
+            todo,
+            anchor,
+            term,
+            pending,
+        } => match last_tended(env, todo, now) {
+            None => eval(pending, now, env),
+            // After's slide, from the last pass instead of the completion.
+            Some(tended) => eval(term, after(now, -us_of(tended - *anchor)), env),
+        },
+        TermF::Periodic {
+            period,
+            anchor,
+            term,
+        } => eval(term, phase(*period, *anchor, now), env),
         TermF::Piecewise { head, pieces } => eval(in_force(head, pieces, now).1, now, env),
         TermF::OffsetBy { delta, term } => offset(eval(term, now, env), eval(delta, now, env)),
         TermF::Ref { todo } => unreachable!("Ref({todo:?}) inside a Closed term"),
@@ -760,6 +840,17 @@ fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
         TermF::Ref { todo } => {
             n.insert("todo".into(), Note::One(Scalar::Text(todo.clone())));
         }
+        TermF::Recur { todo, anchor, .. } => {
+            n.insert("todo".into(), Note::One(Scalar::Text(todo.clone())));
+            n.insert("anchor".into(), iso_note(*anchor));
+        }
+        TermF::Periodic { period, anchor, .. } => {
+            n.insert(
+                "periodHours".into(),
+                Note::One(Scalar::Float(total_seconds(*period) / 3600.0)),
+            );
+            n.insert("anchor".into(), iso_note(*anchor));
+        }
         // Gate, OffsetBy: every field is a subterm. Piecewise: its head and
         // pieces are transitions, and `explained` writes `pieces`/`since`.
         TermF::Gate { .. } | TermF::OffsetBy { .. } | TermF::Piecewise { .. } => {}
@@ -770,8 +861,8 @@ fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
 /// The term's own shape, with every node carrying its own fulfillment.
 ///
 /// ⚠️ CHILDREN ARE ANNOTATED AT THE TIME THE PARENT ACTUALLY USED: Shift,
-/// Within and After re-anchor time for their subterm, and a child evaluated at
-/// `now` would report a number the parent never consumed.
+/// Within, After, Recur and Periodic re-anchor time for their subterm, and a
+/// child evaluated at `now` would report a number the parent never consumed.
 pub fn explained(term: &Closed, now: Instant, env: &Env) -> Explanation {
     explain(term.term(), now, env)
 }
@@ -875,6 +966,50 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
                 term: explain(term, at, env),
                 pending: explain(pending, now, env),
                 needs: *needs,
+            }
+        }
+        TermF::Recur {
+            todo,
+            anchor,
+            term,
+            pending,
+        } => {
+            let at = match last_tended(env, todo, now) {
+                None => {
+                    notes.insert("bound".into(), Note::One(Scalar::Text("pending".into())));
+                    now
+                }
+                Some(tended) => {
+                    notes.insert("bound".into(), Note::One(Scalar::Text("tended".into())));
+                    notes.insert("tended".into(), iso_note(tended));
+                    notes.insert(
+                        "agoHours".into(),
+                        Note::One(Scalar::Float(total_seconds(now - tended) / 3600.0)),
+                    );
+                    after(now, -us_of(tended - *anchor))
+                }
+            };
+            TermF::Recur {
+                todo: todo.clone(),
+                anchor: *anchor,
+                term: explain(term, at, env),
+                pending: explain(pending, now, env),
+            }
+        }
+        TermF::Periodic {
+            period,
+            anchor,
+            term,
+        } => {
+            let at = phase(*period, *anchor, now);
+            notes.insert(
+                "cycleStart".into(),
+                iso_note(after(now, -us_of(at - *anchor))),
+            );
+            TermF::Periodic {
+                period: *period,
+                anchor: *anchor,
+                term: explain(term, at, env),
             }
         }
         TermF::Piecewise { head, pieces } => {
@@ -1032,6 +1167,35 @@ pub fn mk_after(
     }))
 }
 
+/// `term` re-anchored to the last tending of `todo`, whose id obeys the rule
+/// a [`crate::event::TodoId`] does.
+pub fn mk_recur(
+    todo: String,
+    anchor: Instant,
+    term: Term,
+    pending: Term,
+) -> Result<Term, FplError> {
+    crate::event::TodoId::new(todo.as_str()).map_err(|e| FplError(format!("Recur.todo: {e}")))?;
+    Ok(Term::new(TermF::Recur {
+        todo,
+        anchor,
+        term,
+        pending,
+    }))
+}
+
+/// `term` repeated every `period` from `anchor`, both ways in time.
+pub fn mk_periodic(period: Delta, anchor: Instant, term: Term) -> Result<Term, FplError> {
+    if period <= Duration::zero() {
+        return err("Periodic.period must be positive");
+    }
+    Ok(Term::new(TermF::Periodic {
+        period,
+        anchor,
+        term,
+    }))
+}
+
 /// A reference to todo `todo`'s fulfillment. The id obeys the rule a
 /// [`crate::event::TodoId`] does, checked by that type's own constructor.
 pub fn mk_ref(todo: String) -> Result<Term, FplError> {
@@ -1144,9 +1308,10 @@ fn spliced(piece: &(Instant, Term), until: Option<Instant>) -> Vec<(Instant, Ter
 /// The Piecewise-outermost normal form: every operator that reads its subterms
 /// POINTWISE (Conj, Offset, Gate, Importance, OffsetBy) is pushed under a
 /// Piecewise over the merged partition of its parts' instants, and a Shift
-/// translates the instants it crosses. Within averages over a window and After
-/// binds history, so neither commutes with a partition; their subterms are
-/// normalised and they stay where they are.
+/// translates the instants it crosses. Within averages over a window, After
+/// and Recur bind history, and Periodic folds time onto one cycle, so none
+/// commutes with a partition; their subterms are normalised and they stay
+/// where they are.
 pub fn normalize(term: &Term) -> Term {
     match term.out() {
         // A Ref is a leaf here: what it stands for is not known until `link`.
@@ -1245,6 +1410,26 @@ pub fn normalize(term: &Term) -> Term {
             term: normalize(term),
             pending: normalize(pending),
             needs: *needs,
+        }),
+        TermF::Recur {
+            todo,
+            anchor,
+            term,
+            pending,
+        } => Term::new(TermF::Recur {
+            todo: todo.clone(),
+            anchor: *anchor,
+            term: normalize(term),
+            pending: normalize(pending),
+        }),
+        TermF::Periodic {
+            period,
+            anchor,
+            term,
+        } => Term::new(TermF::Periodic {
+            period: *period,
+            anchor: *anchor,
+            term: normalize(term),
         }),
     }
 }
@@ -1427,6 +1612,8 @@ pub const TERM_SIGNATURES: &[(&str, &[&str])] = &[
     ("Within", &["window", "p", "term"]),
     ("Importance", &["w", "term"]),
     ("After", &["event", "anchor", "term", "pending", "needs"]),
+    ("Recur", &["todo", "anchor", "term", "pending"]),
+    ("Periodic", &["period", "anchor", "term"]),
     ("Piecewise", &["head", "pieces"]),
     ("Piece", &["at", "term"]),
     ("OffsetBy", &["delta", "term"]),
@@ -1679,6 +1866,32 @@ impl Term {
                     f("needs", needs.map_or(literal::Value::None, delta_value)),
                 ],
             ),
+            TermF::Recur {
+                todo,
+                anchor,
+                term,
+                pending,
+            } => call(
+                "Recur",
+                vec![
+                    f("todo", literal::Value::str(todo.clone())),
+                    f("anchor", instant_value(*anchor)),
+                    f("term", term.to_value()),
+                    f("pending", pending.to_value()),
+                ],
+            ),
+            TermF::Periodic {
+                period,
+                anchor,
+                term,
+            } => call(
+                "Periodic",
+                vec![
+                    f("period", delta_value(*period)),
+                    f("anchor", instant_value(*anchor)),
+                    f("term", term.to_value()),
+                ],
+            ),
             TermF::Piecewise { head, pieces } => call(
                 "Piecewise",
                 vec![
@@ -1782,6 +1995,17 @@ impl Term {
                     None | Some(literal::Value::None) => None,
                     Some(value) => Some(delta_field(value, "After.needs")?),
                 },
+            ),
+            "Recur" => mk_recur(
+                lit_text(call, "todo")?,
+                instant_field(lit_field(call, "anchor")?, "Recur.anchor")?,
+                term("term")?,
+                term("pending")?,
+            ),
+            "Periodic" => mk_periodic(
+                delta_field(lit_field(call, "period")?, "Periodic.period")?,
+                instant_field(lit_field(call, "anchor")?, "Periodic.anchor")?,
+                term("term")?,
             ),
             "Piecewise" => {
                 let mut pieces = Vec::new();

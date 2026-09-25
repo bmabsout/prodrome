@@ -8,6 +8,10 @@
 //! And §7's `link`, as bind: a closed term is its own link, a reference reads
 //! what its spec reads, linking commutes with the order of substitution, and
 //! a cycle is refused with its path. Print and parse round-trip `Ref`.
+//!
+//! And the recurrence laws: `last_tended` reads as of now, `Recur` re-anchors
+//! to the last tending, waits for the first and ignores later ones, and
+//! `Periodic` repeats its first cycle.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -197,6 +201,17 @@ fn grown_to(
                 .prop_map(|(e, a, t, p)| ok(fpl::mk_after(e.to_string(), moment(a), t, p, None)))
                 .boxed(),
             (
+                prop::sample::select(EVENTS.to_vec()),
+                hours(),
+                inner.clone(),
+                inner.clone(),
+            )
+                .prop_map(|(e, a, t, p)| ok(fpl::mk_recur(e.to_string(), moment(a), t, p)))
+                .boxed(),
+            (1i64..400, hours(), inner.clone())
+                .prop_map(|(p, a, t)| ok(fpl::mk_periodic(Duration::hours(p), moment(a), t)))
+                .boxed(),
+            (
                 inner.clone(),
                 instants(3),
                 prop::collection::vec(inner.clone(), 3),
@@ -221,24 +236,35 @@ fn grown_to(
     .boxed()
 }
 
+/// Each of `EVENTS` bound or not, and tended at a few grid instants or not.
 fn an_env() -> impl Strategy<Value = Env> {
-    prop::collection::vec(prop::option::of((any::<bool>(), hours())), 3).prop_map(|choices| {
-        let mut env = Env::new();
-        for (name, choice) in EVENTS.iter().zip(choices) {
-            if let Some((completed, at)) = choice {
-                let at = moment(at);
-                env.outcomes.insert(
-                    (*name).to_string(),
-                    if completed {
-                        Outcome::Completed(at)
-                    } else {
-                        Outcome::Cancelled(at)
-                    },
-                );
+    (
+        prop::collection::vec(prop::option::of((any::<bool>(), hours())), 3),
+        prop::collection::vec(prop::collection::btree_set(hours(), 0..4), 3),
+    )
+        .prop_map(|(choices, tended)| {
+            let mut env = Env::new();
+            for ((name, choice), tendings) in EVENTS.iter().zip(choices).zip(tended) {
+                if let Some((completed, at)) = choice {
+                    let at = moment(at);
+                    env.outcomes.insert(
+                        (*name).to_string(),
+                        if completed {
+                            Outcome::Completed(at)
+                        } else {
+                            Outcome::Cancelled(at)
+                        },
+                    );
+                }
+                if !tendings.is_empty() {
+                    env.tended.insert(
+                        (*name).to_string(),
+                        tendings.into_iter().map(moment).collect(),
+                    );
+                }
             }
-        }
-        env
-    })
+            env
+        })
 }
 
 /// Every node of a term, the root included.
@@ -440,10 +466,10 @@ proptest! {
     }
 
     /// The law's TEETH: nothing survives compilation that could read history.
-    /// `After` is the only constructor whose evaluation consults the
-    /// environment — every other one is a function of `now` and its subterms —
-    /// so no `After` anywhere is the proof that no lookup happens, and the
-    /// environment that answers differently about everything is the same
+    /// `After` and `Recur` are the only constructors whose evaluation consults
+    /// the environment — every other one is a function of `now` and its
+    /// subterms — so neither anywhere is the proof that no lookup happens, and
+    /// the environment that answers differently about everything is the same
     /// proof taken behaviourally.
     #[test]
     fn compilation_leaves_nothing_that_reads_history(
@@ -456,8 +482,8 @@ proptest! {
         nodes(compiled.term().term(), &mut all);
         for node in &all {
             prop_assert!(
-                !matches!(node.out(), TermF::After { .. }),
-                "an After survived compilation",
+                !matches!(node.out(), TermF::After { .. } | TermF::Recur { .. }),
+                "an After or a Recur survived compilation",
             );
             prop_assert!(schedule_is_normal(node).is_ok(), "{:?}", schedule_is_normal(node));
         }
@@ -466,7 +492,10 @@ proptest! {
                 .iter()
                 .map(|e| ((*e).to_string(), Outcome::Cancelled(moment(-10_000))))
                 .collect(),
-            ..Env::new()
+            tended: EVENTS
+                .iter()
+                .map(|e| ((*e).to_string(), [moment(-10_000)].into()))
+                .collect(),
         };
         for h in probes {
             let now = moment(h);
@@ -710,5 +739,165 @@ proptest! {
         env.tended.entry("alpha".to_owned()).or_default().insert(moment(now + later));
         prop_assert_eq!(fpl::last_tended(&env, "alpha", moment(now)), expected);
         prop_assert_eq!(fpl::last_tended(&env, "beta", moment(now)), None);
+    }
+}
+
+// --- Recur and Periodic -------------------------------------------------------
+
+/// `env` with `todo`'s tendings replaced by `tendings`.
+fn tended(mut env: Env, todo: &str, tendings: &BTreeSet<i64>) -> Env {
+    env.tended.insert(
+        todo.to_owned(),
+        tendings.iter().map(|h| moment(*h)).collect(),
+    );
+    env
+}
+
+fn recur(todo: &str, anchor: i64, body: &Term, pending: &Term) -> Term {
+    ok(fpl::mk_recur(
+        todo.to_owned(),
+        moment(anchor),
+        body.clone(),
+        pending.clone(),
+    ))
+}
+
+#[test]
+fn recur_and_periodic_refuse_what_they_must() {
+    let flat = ok(fpl::mk_flat(0.5));
+    for bad in ["", "Todo", "a b"] {
+        assert!(fpl::mk_recur(bad.to_owned(), moment(0), flat.clone(), flat.clone()).is_err());
+    }
+    for hours in [0, -24] {
+        assert!(fpl::mk_periodic(Duration::hours(hours), moment(0), flat.clone()).is_err());
+    }
+    for print in [
+        "Recur(todo='', anchor=datetime(2026, 9, 1, 0, 0, 0), term=Flat(value=0.5), pending=Flat(value=0.5))",
+        "Periodic(period=timedelta(), anchor=datetime(2026, 9, 1, 0, 0, 0), term=Flat(value=0.5))",
+        "Periodic(period=timedelta(days=-1), anchor=datetime(2026, 9, 1, 0, 0, 0), term=Flat(value=0.5))",
+    ] {
+        assert!(fpl::parse_term(print).is_err(), "{print} parsed");
+    }
+}
+
+/// The toothbrush: vinegar every two months, a decay over sixty days that a
+/// pass restarts. Its explanation names the pass and how long ago it was.
+#[test]
+fn a_recurrence_explains_its_last_tending() {
+    let print = "Recur(todo='toothbrushvinegar', anchor=datetime(2026, 8, 12, 0, 0, 0), \
+                 term=Decay(start=0.98, end=0.3, end_date=datetime(2026, 10, 11, 0, 0, 0), \
+                 lead_up=timedelta(days=60), start_date=None), pending=Flat(value=0.3))";
+    let term = fpl::parse_term(print).expect("parses");
+    assert_eq!(fpl::print_term(&term), print);
+    let day = |m, d| {
+        NaiveDate::from_ymd_opt(2026, m, d)
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .expect("a real date")
+    };
+    let mut env = Env::new();
+    env.tended
+        .insert("toothbrushvinegar".to_owned(), [day(8, 12)].into());
+    let explanation = fpl::explained(&closed(&term), day(9, 25), &env);
+    let note = |key: &str| explanation.notes[key].clone();
+    assert_eq!(
+        note("bound"),
+        fpl::Note::One(fpl::Scalar::Text("tended".into()))
+    );
+    assert_eq!(
+        note("tended"),
+        fpl::Note::One(fpl::Scalar::Text("2026-08-12T00:00:00".into()))
+    );
+    assert_eq!(
+        note("agoHours"),
+        fpl::Note::One(fpl::Scalar::Float(44.0 * 24.0))
+    );
+    assert!((explanation.value - (0.98 - 0.68 * 44.0 / 60.0)).abs() < 1e-12);
+    assert_eq!(fpl::fulfillment(&closed(&term), day(8, 1), &env), 0.3);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// RECUR RE-ANCHORS: with the last tending at `s`, `Recur` at `s + d` is
+    /// its body at `anchor + d` — `After`'s slide, from the last pass.
+    #[test]
+    fn recur_re_anchors_to_the_last_tending(
+        body in a_term(),
+        pending in a_term(),
+        anchor in hours(),
+        env in an_env(),
+        tendings in prop::collection::btree_set(hours(), 1..5),
+        d in 0i64..800,
+    ) {
+        let env = tended(env, "alpha", &tendings);
+        let s = *tendings.last().expect("at least one tending");
+        prop_assert_eq!(
+            fulfillment(&recur("alpha", anchor, &body, &pending), moment(s + d), &env),
+            fulfillment(&body, moment(anchor + d), &env)
+        );
+    }
+
+    /// RECUR WAITS: with no tending at or before `now`, it is `pending`.
+    #[test]
+    fn recur_waits_for_the_first_tending(
+        body in a_term(),
+        pending in a_term(),
+        anchor in hours(),
+        env in an_env(),
+        tendings in prop::collection::btree_set(hours(), 0..5),
+        early in 1i64..400,
+    ) {
+        let env = tended(env, "alpha", &tendings);
+        let now = moment(tendings.first().map_or(0, |first| first - early));
+        prop_assert_eq!(
+            fulfillment(&recur("alpha", anchor, &body, &pending), now, &env),
+            fulfillment(&pending, now, &env)
+        );
+    }
+
+    /// RECUR IGNORES THE FUTURE: a tending dated after `now` changes nothing
+    /// at `now`. Stated for the Recur's OWN lookup — `delta` is a todo the
+    /// generated bodies never read — because a tending before the anchor slides
+    /// the body LATER than `now`, and a body that itself reads history there
+    /// sees what is recorded there, exactly as under `After` or `Shift`.
+    #[test]
+    fn a_later_tending_changes_no_earlier_recur(
+        body in a_term(),
+        pending in a_term(),
+        anchor in hours(),
+        env in an_env(),
+        tendings in prop::collection::btree_set(hours(), 0..5),
+        now in hours(),
+        later in 1i64..400,
+    ) {
+        let term = recur("delta", anchor, &body, &pending);
+        let before = tended(env, "delta", &tendings);
+        let mut more = tendings.clone();
+        more.insert(now + later);
+        let after = tended(before.clone(), "delta", &more);
+        prop_assert_eq!(
+            fulfillment(&term, moment(now), &after),
+            fulfillment(&term, moment(now), &before)
+        );
+    }
+
+    /// PERIODIC REPEATS: one period on it reads the same, and on its first
+    /// cycle `[anchor, anchor + period)` it is its body.
+    #[test]
+    fn periodic_repeats_its_first_cycle(
+        body in a_term(),
+        period in 1i64..400,
+        anchor in hours(),
+        env in an_env(),
+        now in hours(),
+        into in 0.0f64..1.0,
+    ) {
+        let term = ok(fpl::mk_periodic(Duration::hours(period), moment(anchor), body.clone()));
+        prop_assert_eq!(
+            fulfillment(&term, moment(now + period), &env),
+            fulfillment(&term, moment(now), &env)
+        );
+        let inside = moment(anchor) + Duration::seconds((into * (period * 3600) as f64) as i64);
+        prop_assert_eq!(fulfillment(&term, inside, &env), fulfillment(&body, inside, &env));
     }
 }
