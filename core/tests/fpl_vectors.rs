@@ -17,18 +17,21 @@ use prodrome::fpl::{
 use prodrome::literal::Value;
 
 fn env_of(bounds: &[Value]) -> Env {
-    bounds
-        .iter()
-        .map(|bound| {
-            let at = instant_of(moment(field(bound, "at")));
-            let outcome = match text_at(bound, "kind") {
-                "Completed" => Outcome::Completed(at),
-                "Cancelled" => Outcome::Cancelled(at),
-                other => panic!("unknown env kind {other:?}"),
-            };
-            (text_at(bound, "todo").to_owned(), outcome)
-        })
-        .collect()
+    Env {
+        outcomes: bounds
+            .iter()
+            .map(|bound| {
+                let at = instant_of(moment(field(bound, "at")));
+                let outcome = match text_at(bound, "kind") {
+                    "Completed" => Outcome::Completed(at),
+                    "Cancelled" => Outcome::Cancelled(at),
+                    other => panic!("unknown env kind {other:?}"),
+                };
+                (text_at(bound, "todo").to_owned(), outcome)
+            })
+            .collect(),
+        ..Env::new()
+    }
 }
 
 #[test]

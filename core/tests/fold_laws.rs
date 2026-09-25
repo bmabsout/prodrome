@@ -9,10 +9,10 @@
 //! composition of those folds and nothing else.
 //!
 //! The generators mirror the reference generator's `a_log`/`an_event` — the
-//! same three todos, the same seven kinds in the same proportions, the same
-//! two actors with one of them on the reference policy's roster — so a failure
-//! here is a failure the
-//! vector generator could have produced, and a fix is checkable against it.
+//! same three todos, its seven kinds in its proportions with `Tended` beside
+//! them, the same two actors with one of them on the reference policy's
+//! roster — so a failure here is a failure the vector generator could have
+//! produced, and a fix is checkable against it.
 //!
 //! The DAG laws build REAL stores in temp directories and drive them the way a
 //! second replica would: append, adopt, write concurrently, merge. Nothing
@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use prodrome::event::{mk_completed, mk_spec_revised, Actor, TodoEvent, TodoId};
+use prodrome::event::{mk_completed, mk_spec_revised, mk_tended, Actor, TodoEvent, TodoId};
 use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env, History};
 use prodrome::fpl::{self, print_term, Term};
 use prodrome::literal::Datetime;
@@ -64,12 +64,12 @@ fn closed(term: &Term) -> fpl::Closed {
 }
 
 /// A draft the reference policy can only let CLAIM: a lifecycle write or a
-/// repricing, from the one actor on the roster. `Draft`'s rolls 3..7 are
-/// `SpecRevised`, `Completed`, `Cancelled` and `Reopened` — the kinds §5 makes
-/// provisional — and rolls 0..3 (`Created`, `Authored`) are the ones it does
-/// not, which is why the range is exactly this one.
+/// repricing, from the one actor on the roster. `Draft`'s rolls 3..8 are
+/// `SpecRevised`, `Completed`, `Cancelled`, `Reopened` and `Tended` — the
+/// kinds §5 makes provisional — and rolls 0..3 (`Created`, `Authored`) are the
+/// ones it does not, which is why the range is exactly this one.
 fn a_claim() -> impl Strategy<Value = Draft> {
-    (a_draft(), 3u8..7).prop_map(|(draft, roll)| Draft {
+    (a_draft(), 3u8..8).prop_map(|(draft, roll)| Draft {
         actor: "triage",
         roll,
         ..draft
@@ -257,7 +257,7 @@ proptest! {
         let moved = moment(at + shift);
 
         let kinds = |env: &Env| -> BTreeMap<String, &'static str> {
-            env.iter()
+            env.outcomes.iter()
                 .map(|(todo, binding)| (todo.as_str().to_owned(), binding.kind()))
                 .collect()
         };
@@ -389,6 +389,61 @@ proptest! {
                 log.iter().filter(|e| matches!(e, TodoEvent::Authored(_))).count()
             );
             prop_assert_eq!(folds(&kept, t, &Everything), folds(log, t, &policy));
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// A TENDING LEAVES STATE ALONE. Append a binding `Tended` about any todo
+    /// at any instant, and at every moment every outcome, spec, content record
+    /// and function is what it was, no register is written, and every entry
+    /// keeps its state, its function and its content — an open todo stays on
+    /// the open list. Only the tendings grow, and only from the tending on.
+    #[test]
+    fn a_tending_changes_no_state_spec_or_content(
+        log in a_log(),
+        todo in prop::sample::select(common::TODOS.to_vec()),
+        when in 0i64..WINDOW,
+        asked in prop::collection::vec(0i64..WINDOW, 1..5),
+    ) {
+        let policy = roster();
+        let mut tended = log.clone();
+        tended.push(mk_tended(todo, moment(when), "bassel", "").expect("valid"));
+        let (before, after) = (chain_of(&log), chain_of(&tended));
+        let id = TodoId::new(todo).expect("valid");
+        for seconds in asked.into_iter().chain([when, WINDOW]) {
+            let t = moment(seconds);
+            let (was, is) = (folds(&log, t, &policy), folds(&tended, t, &policy));
+            prop_assert_eq!(&is.env.outcomes, &was.env.outcomes);
+            prop_assert_eq!(&is.specs, &was.specs);
+            prop_assert_eq!(&is.content, &was.content);
+            prop_assert_eq!(&is.flatten, &was.flatten);
+            let grown = is.env.tended.get(&id).is_some_and(|set| set.contains(&fpl::instant_of(moment(when))));
+            prop_assert_eq!(grown, seconds >= when);
+
+            let (unwritten, written) = (fold(&before, Some(t), &policy), fold(&after, Some(t), &policy));
+            prop_assert_eq!(written.frontiers(), unwritten.frontiers());
+
+            let rows = view::entries(&before, t, &policy).expect("the log folds");
+            for row in view::entries(&after, t, &policy).expect("the log folds") {
+                match rows.iter().find(|was| was.todo == row.todo) {
+                    Some(was) => {
+                        prop_assert_eq!(row.outcome, was.outcome, "state");
+                        prop_assert_eq!(row.claim, was.claim, "claim");
+                        prop_assert_eq!(row.spec(), was.spec(), "spec");
+                        prop_assert_eq!(&row.content, &was.content, "content");
+                    }
+                    // The tending is the todo's first mention: an open row,
+                    // unpriced and with no content, like any mention.
+                    None => {
+                        prop_assert_eq!(row.outcome, None);
+                        prop_assert_eq!(row.spec(), None);
+                        prop_assert_eq!(row.content, None);
+                    }
+                }
+            }
         }
     }
 }
@@ -715,14 +770,14 @@ proptest! {
 
         for row in &rows {
             let todo = &row.todo;
-            prop_assert_eq!(row.outcome, bound.get(todo).copied(), "outcome");
+            prop_assert_eq!(row.outcome, bound.outcomes.get(todo).copied(), "outcome");
 
             // The CLAIM is the CLAIMED reading where the two name different
             // outcomes, and absent where they agree — the instants alone do
             // not disagree.
             let kinds = |b: Option<Binding>| b.map_or("open", Binding::kind);
-            let disputed = kinds(claimed_side.get(todo).copied()) != kinds(bound.get(todo).copied());
-            prop_assert_eq!(row.claim, if disputed { claimed_side.get(todo).copied() } else { None }, "claim");
+            let disputed = kinds(claimed_side.outcomes.get(todo).copied()) != kinds(bound.outcomes.get(todo).copied());
+            prop_assert_eq!(row.claim, if disputed { claimed_side.outcomes.get(todo).copied() } else { None }, "claim");
 
             // The PRICE: §6.4's function, valued at `t` under the CONFIRMED
             // environment, and absent exactly where the function is.
@@ -771,6 +826,52 @@ proptest! {
                 .map(|node| &node.name)
                 .collect();
             prop_assert_eq!(row.stream.iter().collect::<Vec<_>>(), stream, "stream");
+        }
+    }
+}
+
+fn tendings(drawn: &[(&'static str, i64)], note: &str) -> Vec<Event> {
+    drawn
+        .iter()
+        .map(|(todo, at)| mk_tended(todo, moment(*at), "bassel", note).expect("valid"))
+        .collect()
+}
+
+fn a_tending() -> impl Strategy<Value = (&'static str, i64)> {
+    (prop::sample::select(common::TODOS.to_vec()), 0i64..WINDOW)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// TENDINGS MERGE BY UNION. Two replicas tend concurrently; the merged
+    /// store's tendings are the union of what each side folds to, before the
+    /// merge object and after it, and not one register — so not one conflict
+    /// — is written by a tending.
+    #[test]
+    fn tendings_merge_by_union(
+        shared in a_schedule(1..6),
+        mine in prop::collection::vec(a_tending(), 1..5),
+        theirs in prop::collection::vec(a_tending(), 1..5),
+    ) {
+        let policy = roster();
+        let shared = realise(&shared, 0);
+        let (mine, theirs) = (tendings(&mine, "mine"), tendings(&theirs, "theirs"));
+        let side = |branch: &[Event]| {
+            env_at(&[shared.clone(), branch.to_vec()].concat(), far(), &policy).tended
+        };
+        let mut union = side(&mine);
+        for (todo, set) in side(&theirs) {
+            union.entry(todo).or_default().extend(set);
+        }
+
+        let (_guard, store) = diverged(&shared, &mine, &theirs);
+        let state = fold(&nodes_from(&store), None, &policy);
+        prop_assert_eq!(&env_of(&state).tended, &union);
+        prop_assert!(conflicted(&state).is_empty(), "a tending wrote a register");
+        if store.tips().len() > 1 {
+            store.merge(None, None).expect("merges");
+            prop_assert_eq!(&env_of(&fold(&nodes_from(&store), None, &policy)).tended, &union);
         }
     }
 }

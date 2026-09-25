@@ -97,7 +97,8 @@ fn materialise(dag: &Value) -> Store {
 }
 
 fn outcomes(env: &Env) -> Outcomes {
-    env.iter()
+    env.outcomes
+        .iter()
         .map(|(todo, binding)| {
             (
                 todo.as_str().to_owned(),

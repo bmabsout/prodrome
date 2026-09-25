@@ -265,7 +265,7 @@ fn resolve(term: &Term, env: &Env, links: &mut Vec<Link>) -> Term {
         // else, so compiling it is compiling its children.
         return Term::new(term.out().clone().map(|child| resolve(&child, env, links)));
     };
-    let link = match env.get(event) {
+    let link = match env.outcomes.get(event) {
         None => Link::Pending {
             event: event.clone(),
         },

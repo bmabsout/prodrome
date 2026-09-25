@@ -31,18 +31,21 @@ fn every_reference_links_to_its_print_and_reads_its_samples() {
             )
         })
         .collect();
-    let env: Env = each(&data, "env")
-        .iter()
-        .map(|bound| {
-            let at = instant_of(moment(field(bound, "at")));
-            let outcome = match text_at(bound, "kind") {
-                "Completed" => Outcome::Completed(at),
-                "Cancelled" => Outcome::Cancelled(at),
-                other => panic!("unknown env kind {other:?}"),
-            };
-            (text_at(bound, "todo").to_owned(), outcome)
-        })
-        .collect();
+    let env = Env {
+        outcomes: each(&data, "env")
+            .iter()
+            .map(|bound| {
+                let at = instant_of(moment(field(bound, "at")));
+                let outcome = match text_at(bound, "kind") {
+                    "Completed" => Outcome::Completed(at),
+                    "Cancelled" => Outcome::Cancelled(at),
+                    other => panic!("unknown env kind {other:?}"),
+                };
+                (text_at(bound, "todo").to_owned(), outcome)
+            })
+            .collect(),
+        ..Env::new()
+    };
 
     let cases = each(&data, "cases");
     assert_eq!(cases.len(), 9, "the vector file lost cases");

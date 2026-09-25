@@ -363,8 +363,21 @@ impl Outcome {
     }
 }
 
-/// `After`'s freeze variables: what history binds, as a snapshot.
-pub type Env = BTreeMap<String, Outcome>;
+/// What history says, as a snapshot: `After`'s freeze variables, and the
+/// tendings `Recur` re-anchors to — a grow-only set per todo, so two replicas'
+/// tendings merge by union and never conflict.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Env {
+    pub outcomes: BTreeMap<String, Outcome>,
+    pub tended: BTreeMap<String, BTreeSet<Instant>>,
+}
+
+impl Env {
+    /// The environment that binds nothing and records no tending.
+    pub fn new() -> Env {
+        Env::default()
+    }
+}
 
 // --- Time arithmetic, in the reference's units ------------------------------
 
@@ -520,10 +533,16 @@ pub fn in_force<'a>(
 /// hold a binding dated after `now`; that binding is not in force yet, and
 /// reading it would let a later completion rewrite an earlier moment.
 pub fn bound(env: &Env, event: &str, now: Instant) -> Option<Outcome> {
-    match env.get(event) {
+    match env.outcomes.get(event) {
         Some(o) if o.at() <= now => Some(*o),
         _ => None,
     }
+}
+
+/// The latest tending of `todo` AS OF `now`, under `bound`'s guard: a pass
+/// recorded later never rewrites an earlier moment.
+pub fn last_tended(env: &Env, todo: &str, now: Instant) -> Option<Instant> {
+    env.tended.get(todo)?.range(..=now).next_back().copied()
 }
 
 /// Evaluate a closed term at a moment against what history says. Total by

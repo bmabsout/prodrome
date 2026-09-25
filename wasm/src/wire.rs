@@ -119,7 +119,7 @@ pub fn parse_env(json_text: &str) -> Result<fpl::Env, Refusal> {
         serde_json::from_str(json_text).map_err(|e| format!("env: {e}"))?;
     let mut env = fpl::Env::new();
     for (name, entry) in raw {
-        env.insert(name, entry.outcome()?);
+        env.outcomes.insert(name, entry.outcome()?);
     }
     Ok(env)
 }
@@ -189,7 +189,7 @@ impl History {
                 }
             }
             if let Some(outcome) = current {
-                env.insert(todo.clone(), outcome);
+                env.outcomes.insert(todo.clone(), outcome);
             }
         }
         env
@@ -212,7 +212,8 @@ pub fn json_binding(binding: Binding) -> Value {
 
 pub fn json_env(env: &Env) -> Value {
     Value::Object(
-        env.iter()
+        env.outcomes
+            .iter()
             .map(|(todo, binding)| (todo.as_str().to_owned(), json_binding(*binding)))
             .collect(),
     )
