@@ -22,7 +22,7 @@
 
 use prodrome::fpl::{
     delta_from_hours, explained, iso, mk_after, mk_conj, mk_curve, mk_decay, mk_flat, mk_gate,
-    mk_importance, mk_offset, mk_offset_by, mk_piecewise, mk_shift, mk_within, parse_iso,
+    mk_importance, mk_offset, mk_offset_by, mk_piecewise, mk_ref, mk_shift, mk_within, parse_iso,
     total_seconds, CurvePoint, Env, Explanation, FplError, Instant, Note, Scalar, Term, TermF,
     PRIORITY_POWER,
 };
@@ -67,7 +67,7 @@ pub fn explanation_json(node: &Explanation) -> Value {
         out.insert(k.clone(), note_json(n));
     }
     match &*node.node {
-        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } => {}
+        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Ref { .. } => {}
         TermF::Conj { terms, .. } => {
             out.insert(
                 "terms".into(),
@@ -202,6 +202,9 @@ pub fn to_json(term: &Term) -> Value {
             out.insert("delta".into(), to_json(delta));
             out.insert("term".into(), to_json(term));
         }
+        TermF::Ref { todo } => {
+            out.insert("todo".into(), Value::String(todo.clone()));
+        }
         TermF::Piecewise { head, pieces } => {
             out.insert("head".into(), to_json(head));
             out.insert(
@@ -318,6 +321,7 @@ pub fn from_json(d: &Value) -> Result<Term, FplError> {
             }
             mk_piecewise(from_json(field(d, "head")?)?, pieces)
         }
+        "ref" => mk_ref(text(d, "todo")?),
         other => err(format!("unknown term kind: {other:?}")),
     }
 }

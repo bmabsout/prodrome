@@ -110,6 +110,10 @@ pub enum TermF<A> {
         delta: A,
         term: A,
     },
+    /// The fulfillment of todo `todo`: a free variable, which `link` binds.
+    Ref {
+        todo: String,
+    },
 }
 
 impl<A> TermF<A> {
@@ -176,13 +180,16 @@ impl<A> TermF<A> {
                 delta: f(delta),
                 term: f(term),
             },
+            TermF::Ref { todo } => TermF::Ref { todo },
         }
     }
 
     /// The child positions, in declaration order.
     pub fn children(&self) -> Vec<&A> {
         match self {
-            TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } => vec![],
+            TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Ref { .. } => {
+                vec![]
+            }
             TermF::Conj { terms, .. } => terms.iter().collect(),
             TermF::Offset { term, .. } | TermF::Shift { term, .. } => vec![term],
             TermF::Within { term, .. } | TermF::Importance { term, .. } => vec![term],
@@ -214,6 +221,7 @@ impl<A> TermF<A> {
             TermF::After { .. } => "after",
             TermF::Piecewise { .. } => "piecewise",
             TermF::OffsetBy { .. } => "offsetBy",
+            TermF::Ref { .. } => "ref",
         }
     }
 }
@@ -468,6 +476,7 @@ pub fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
         TermF::OffsetBy { delta, term } => {
             offset(fulfillment(term, now, env), fulfillment(delta, now, env))
         }
+        TermF::Ref { todo } => panic!("Ref({todo:?}) is unlinked: link before evaluating"),
     }
 }
 
@@ -629,6 +638,9 @@ fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
                 );
             }
         }
+        TermF::Ref { todo } => {
+            n.insert("todo".into(), Note::One(Scalar::Text(todo.clone())));
+        }
         // Gate, OffsetBy: every field is a subterm. Piecewise: its head and
         // pieces are transitions, and `explained` writes `pieces`/`since`.
         TermF::Gate { .. } | TermF::OffsetBy { .. } | TermF::Piecewise { .. } => {}
@@ -754,6 +766,7 @@ pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
                 pieces: vec![],
             }
         }
+        TermF::Ref { todo } => TermF::Ref { todo: todo.clone() },
     };
     Explanation {
         value,
@@ -896,6 +909,13 @@ pub fn mk_after(
     }))
 }
 
+/// A reference to todo `todo`'s fulfillment. The id obeys the rule a
+/// [`crate::event::TodoId`] does, checked by that type's own constructor.
+pub fn mk_ref(todo: String) -> Result<Term, FplError> {
+    crate::event::TodoId::new(todo.as_str()).map_err(|e| FplError(format!("Ref.todo: {e}")))?;
+    Ok(Term::new(TermF::Ref { todo }))
+}
+
 /// A todo's fulfillment function given its own spec and its checklist: each
 /// item is a leaf worth 0.5, the checklist is their conjunction, and the
 /// parent's own value is an OFFSET on that aggregate. No items: the spec
@@ -1006,7 +1026,10 @@ fn spliced(piece: &(Instant, Term), until: Option<Instant>) -> Vec<(Instant, Ter
 /// normalised and they stay where they are.
 pub fn normalize(term: &Term) -> Term {
     match term.out() {
-        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } => term.clone(),
+        // A Ref is a leaf here: what it stands for is not known until `link`.
+        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Ref { .. } => {
+            term.clone()
+        }
         TermF::Piecewise { head, pieces } => piecewise(
             normalize(head),
             pieces.iter().map(|(at, t)| (*at, normalize(t))).collect(),
@@ -1203,6 +1226,7 @@ pub const TERM_SIGNATURES: &[(&str, &[&str])] = &[
     ("Piecewise", &["head", "pieces"]),
     ("Piece", &["at", "term"]),
     ("OffsetBy", &["delta", "term"]),
+    ("Ref", &["todo"]),
 ];
 
 /// The vocabulary of a BARE term — what [`parse_term`] reads against. A stored
@@ -1471,6 +1495,7 @@ impl Term {
                 "OffsetBy",
                 vec![f("delta", delta.to_value()), f("term", term.to_value())],
             ),
+            TermF::Ref { todo } => call("Ref", vec![f("todo", literal::Value::str(todo.clone()))]),
         }
     }
 
@@ -1558,6 +1583,7 @@ impl Term {
                 }
                 mk_piecewise(term("head")?, pieces)
             }
+            "Ref" => mk_ref(lit_text(call, "todo")?),
             other => err(format!("{other:?} is not one of SPEC §7's terms")),
         }
     }

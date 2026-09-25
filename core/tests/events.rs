@@ -185,6 +185,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "OffsetBy",
             "Piece",
             "Piecewise",
+            "Ref",
             "Reopened",
             "Sealed",
             "Shift",
