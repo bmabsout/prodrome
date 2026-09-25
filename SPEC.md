@@ -60,13 +60,14 @@ fuzzed.
 **The vector vocabulary.** `conformance/*.py` — the evidence §9 is checked
 against — is one expression of THIS grammar, printed by this printer and read
 by this parser, against a SECOND whitelist that is disjoint from a store's:
-`Folds`, `Dags`, `Fpl`, `Series`, `View`, `Links`; `FoldCase`, `DagCase`,
-`FplCase`, `SeriesCase`, `ViewCase`, `LinkCase`; `Bound`, `Spec`, `Content`,
-`Object`, `Parents`, `Conflict`, `RowConflict`, `Refused`, `Sample`, `Knot`,
-`Asked`, `Row`; and, for an explanation's decoration, `Node`, `NoteEntry`,
-`One`, `Many`, `Maps`, `Fields`, `Pair`. A STORE's parse admits none of these and a VECTOR's parse
-admits none of §4's or §7's: two vocabularies, one grammar, one parser, and
-neither can widen the other.
+`Folds`, `Dags`, `Fpl`, `Series`, `View`, `Links`, `Recurs`; `FoldCase`,
+`DagCase`, `FplCase`, `SeriesCase`, `ViewCase`, `LinkCase`, `RecurCase`;
+`Bound`, `Spec`, `Content`, `Object`, `Parents`, `Conflict`, `RowConflict`,
+`Refused`, `Sample`, `Knot`, `Asked`, `Row`; and, for an explanation's
+decoration, `Node`, `NoteEntry`, `One`, `Many`, `Maps`, `Fields`, `Pair`. A
+STORE's parse admits none of these and a VECTOR's parse admits none of §4's
+or §7's: two vocabularies, one grammar, one parser, and neither can widen the
+other.
 
 Inside a vector, every stored object, event and term is a STRING holding its
 canonical print — never a nested literal — because those exact bytes are what
@@ -110,10 +111,13 @@ Kinds and fields, in order; all shipped; `""` means absent.
 
 - `Created(todo, at, actor, text, note)`
 - `Completed(todo, at, actor, note)`, `Cancelled(…)`, `Reopened(…)`
+- `Tended(todo, at, actor, note)` — care taken on a todo that is never done,
+  a pass at a recurring chore. It changes no state, spec or content: §6.1
+  folds it into the tendings, and §7.3's `Recur` reads them.
 - `SpecRevised(todo, at, actor, spec, note)`
 - **The record kind**: `KIND(todo, at, actor, <the host's fields>)`.
 
-The five kinds above are the DATABASE's: their fields are its semantics, and
+The six kinds above are the DATABASE's: their fields are its semantics, and
 they are frozen here. A record is a todo's CONTENT, and content is a
 deployment's — so a host **payload** supplies
 
@@ -163,12 +167,12 @@ separately. `Claims` implies not `confirms`.
 **The reference policy** — the one `conformance/*.py`'s `untrusted` fields
 name, and the one this repository's vectors were taken under — is a set of
 actor names. An event `Claims` when its actor is on the set and it is a
-lifecycle or `SpecRevised` event; everything else `Binds`, a content record
-included, because writing content is what such a writer is for and a fold that
-hid its writes would be an outage that reports success. It `confirms` an event
-exactly when the actor is not on the set — so a content record from a named
-actor binds and is still shown as that actor's. The empty set is the policy
-under which everything binds and nothing is a claim.
+lifecycle, `Tended` or `SpecRevised` event; everything else `Binds`, a
+content record included, because writing content is what such a writer is for
+and a fold that hid its writes would be an outage that reports success. It
+`confirms` an event exactly when the actor is not on the set — so a content
+record from a named actor binds and is still shown as that actor's. The empty
+set is the policy under which everything binds and nothing is a claim.
 
 **Both readings stay in the database** (§6.7): the CONFIRMED one, under the
 host's policy, and the CLAIMED one, under the policy where everything binds. A
@@ -180,9 +184,12 @@ showing one is the whole point of storing it.
 Every fold takes the linearised events, a moment `t` and a §5 POLICY, and reads
 the events with `at <= t` in causal order.
 
-1. `env_at(events, t, policy) : TodoId → Completed(at) | Cancelled(at)`.
-   The last binding write wins; `Reopened` clears; only events the policy
-   says `Binds` write.
+1. `env_at(events, t, policy)`, the environment, in two halves. `outcomes :
+   TodoId → Completed(at) | Cancelled(at)`: the last binding write wins and
+   `Reopened` clears. `tended : TodoId → set of instants`: the instant of
+   every binding `Tended`, a grow-only set folded by union, so nothing
+   removes a tending and no order among them matters. Only events the policy
+   says `Binds` write either half.
 2. `specs_at`: the latest spec per todo, from a record's payload (whoever
    wrote it) or a `SpecRevised` the policy binds.
 3. `authored_at`: the latest record per todo, whoever wrote it — no policy
@@ -193,7 +200,9 @@ the events with `at <= t` in causal order.
    `Piece(at, term)`: a flat 1.0 while resolved, else `checklist(spec in
    force, items in force)`; assembled by `mk_piecewise`. "Spec" and "items"
    are the payload's two readings (§4) and the whole of what a record
-   contributes. The head extends to
+   contributes. A `Tended` puts no piece: it is care and not a transition,
+   and the terms that read tendings read them from the environment (§7.3),
+   so no stored function changes meaning. The head extends to
    −∞: a todo's function is total over time, and before anything was recorded
    about a half its unit is the earliest recorded demand of that half. A
    completion recorded before its record therefore stands against the demand
@@ -203,14 +212,18 @@ the events with `at <= t` in causal order.
    a spec or a checklist. `checklist(own, n)` is `own` when `n == 0`;
    `Conj(n × Flat(0.5))` when `own` is `None`; else `OffsetBy(own, Conj(…))`.
 5. `history(events, policy)`: the environment as a function of time; per
-   todo, the sequence of `(at, binding | None)`; `history.at(t)` equals
-   `env_at(events, t)`.
+   todo, the sequence of `(at, binding | None)`, and every binding tending,
+   a grow-only set being its own history; `history.at(t)` equals
+   `env_at(events, t)`, the tendings dated at or before `t` included.
 6. **Registers** over nodes `(name, parents, event)`: one register per `(kind
    ∈ {state, spec, content}, todo)` holds its frontier, the writes no later
-   write descends from. One write is a value; more is a conflict.
+   write descends from. One write is a value; more is a conflict. A `Tended`
+   writes no register: it joins the tendings, a grow-only set kept beside the
+   frontiers, so concurrent tendings are their union and never a conflict.
    `extend(state, nodes)` is a monoid action. Projections pick the write
-   latest in the linearisation, so on any DAG `env_of`, `specs_of` and
-   `content_of` equal folds 1–3, and `conflicts_of` names the rest.
+   latest in the linearisation, so on any DAG `env_of` (the tendings with
+   it), `specs_of` and `content_of` equal folds 1–3, and `conflicts_of` names
+   the rest.
 7. **The entry.** `entries(nodes, t, policy) : [Entry]`, one row per todo
    any event mentions, ordered by id. It is the composition of the folds and
    §7, stated once so every consumer performs it once. With `confirmed =
@@ -246,6 +259,7 @@ the events with `at <= t` in causal order.
 Flat(value) | Decay(start, end, end_date, lead_up, start_date?) | Curve(points)
 | Conj(terms, p) | Offset(delta, a) | Gate(gate, body) | Shift(delta, a)
 | Within(window, p, a) | Importance(w, a) | After(event, anchor, term, pending, needs?)
+| Recur(todo, anchor, term, pending) | Periodic(period, anchor, term)
 | Piecewise(head, pieces) | OffsetBy(delta, term) | Ref(todo)
 ```
 
@@ -261,6 +275,11 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
   `[now, now + window]`. `Importance`: `⟦a⟧^w`.
 - `After`: unbound, `⟦pending⟧(now)`; `Completed(done)`, `⟦term⟧(now − (done
   − anchor))`; `Cancelled`, 1.0. A binding counts only when `done <= now`.
+- `Recur`: with `s = last_tended(env, todo, now)`, the latest tending of
+  `todo` at or before `now`: none, `⟦pending⟧(now)`; else `⟦term⟧(now − (s −
+  anchor))` — `After`'s slide, from the last pass (§7.3).
+- `Periodic`: `⟦term⟧(anchor + ((now − anchor) mod period))`, the remainder
+  Euclidean (non-negative), in microseconds.
 - `Piecewise`: the piece in force, the last with `at <= now`, else the head.
   `OffsetBy`: `offset(⟦term⟧, ⟦delta⟧)`.
 - `Ref(todo)`: no reading of its own. It is a variable, bound by `link`
@@ -269,11 +288,15 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
   are spliced; no adjacent equal pieces; instants strictly increasing.
   `normalize` pushes `Conj`, `Offset`, `Gate`, `Importance` and `OffsetBy`
   under `Piecewise` over the merged partition, translates instants under
-  `Shift`, and leaves `Within` and `After` in place.
+  `Shift`, and leaves `Within`, `After`, `Recur` and `Periodic` in place: a
+  window, a lookup and a fold of time onto one cycle do not commute with a
+  partition.
 - **Explain** is a decoration, `Cofree TermF (value, notes)`: the term's shape
   with each node's fulfillment at the moment its parent used it, plus notes
   (`Conj`: certifies, shares; `Within`: peak instant and share; `After`:
-  bound; `Piecewise`: since, pieces). A serialization of one is the term's own
+  bound; `Recur`: bound — `pending` or `tended` — and, when tended, the last
+  tending and the hours since it; `Periodic`: the start of the cycle in
+  force; `Piecewise`: since, pieces). A serialization of one is the term's own
   shape carrying those two at every node.
 - **Breakpoints**: the slope changes and jumps of the exact fragment (`Flat`,
   `Decay`, `Curve`, `Piecewise` of exact parts, `Offset`, `Shift`, constant
@@ -287,11 +310,11 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
 
 ### 7.1 The chain compiler
 
-`After` is the ONE term that reads history. Every other constructor is a
-function of `now` and its subterms, so a term with no `After` anywhere in it
-can be evaluated against no environment at all. The compiler is that erasure:
-given a term and the environment as of one instant, it answers a term with the
-same reading and no `After` left.
+`After` and `Recur` (§7.3) are the terms that read history. Every other
+constructor is a function of `now` and its subterms, so a term with neither
+anywhere in it can be evaluated against no environment at all. The compiler
+is that erasure: given a term and the environment as of one instant, it
+answers a term with the same reading and no `After` or `Recur` left.
 
 ```
 compile(term, env) : Compiled
@@ -301,7 +324,7 @@ compile_chain(functions, env) : (todo → Compiled) | ChainError::Cycle(path)
 `Compiled` is the term the compiler produced together with the LINKS it
 resolved. Its readers — `term`, `fulfillment(now)`, `explain(now)`, `notes` —
 take no environment, and that is the whole claim: a compiled term cannot
-consult one, because the only constructor that would has been compiled away.
+consult one, because the constructors that would have been compiled away.
 
 **Per link.** With `After(e, anchor, term, pending, needs)` and what the
 snapshot says about `e`:
@@ -322,6 +345,13 @@ corrected form; δ = 0 is elided because `offset(x, 0) = x`, and so is a zero
 `Shift`. The result is `normalize`d, so a chain (A needs B needs C) is ONE
 schedule at the root over the merged partition of the links' instants, and not
 three freeze quantifiers the evaluator re-enters at every sample.
+
+**Per recurrence.** `Recur(todo, anchor, term, pending)` with the snapshot's
+tendings `s₁ < … < sₙ` of `todo` compiles to `Piecewise(compile(pending),
+[(sᵢ, Shift(anchor − sᵢ, compile(term)))])`: `Completed(τ)`'s case once per
+pass, exact because `last_tended` picks the latest tending at or before `now`
+and a piece at `sᵢ` is in force from `sᵢ` until the next. A recurrence is not
+a link: it contributes no note and no graph edge.
 
 **`needs` is the COMPILER's field, not the evaluator's.** §7's semantics have
 never read it and this does not change that: consuming it as a VALUE would
@@ -398,6 +428,56 @@ loop elsewhere do not stop a term that never names them from linking.
 No stored byte moves: `Ref` is a new constructor (§1), and a store without one
 reads exactly what it read before.
 
+### 7.3 Recurrence
+
+A recurring todo is never done: vinegar the toothbrush every two months, pay
+the rent on the first. Recording a pass as `Completed` would close it, so a
+pass is a `Tended` (§4), which leaves the todo's state alone and joins the
+environment's TENDINGS — per todo, a grow-only set of instants (§6.1). Two
+replicas' tendings merge by union and never conflict (§6.6).
+
+```
+last_tended(env, todo, now) : Instant | None
+```
+
+is the latest tending of `todo` at or before `now`, under `bound`'s guard: a
+pass recorded later never rewrites an earlier moment. Two terms read time
+cyclically:
+
+- `Recur(todo, anchor, term, pending)` repeats from the LAST PASS. `term` is
+  authored against `anchor` and re-anchored to the last tending exactly as
+  `After` re-anchors to a completion: a pass at `s` reads `term` at `now − (s
+  − anchor)`, and no pass yet reads `pending`. `todo` obeys `TodoId`'s rule.
+  The toothbrush is
+
+  ```
+  Recur(todo='toothbrushvinegar', anchor=datetime(2026, 8, 12, 0, 0, 0),
+        term=Decay(start=0.98, end=0.3, end_date=datetime(2026, 10, 11, 0, 0, 0),
+                   lead_up=timedelta(days=60), start_date=None),
+        pending=Flat(value=0.3))
+  ```
+
+  — a decay from 0.98 on the day of a pass to 0.3 sixty days on, restarted by
+  every pass, and 0.3 while it was never done.
+- `Periodic(period, anchor, term)` repeats ON THE CALENDAR, whatever is done:
+  `term` on `[anchor, anchor + period)`, and every instant, before `anchor`
+  too, folded onto that cycle by a Euclidean remainder. `period` is positive.
+  Rent and quarterly taxes are this.
+
+Neither stores a curve and a `Tended` creates no piece, so `flatten` (§6.4)
+gains no case and no stored object changes meaning: this is evolution by
+adding kinds (§1). Both are temporal, so `normalize` leaves them in place;
+`Recur` reads history, so the compiler resolves it (§7.1); neither is in the
+exact fragment of the breakpoints, so a series over one is sampled.
+
+A caution on reading the future, which `After` shares: a pass BEFORE the
+anchor reads `term` later than `now`, so a `term` that itself reads history —
+a nested `Recur` or `After` — reads it there. `Recur`'s own lookup never
+looks past `now`; its body is a function of time like any other.
+
+No stored byte moves: `Tended`, `Recur` and `Periodic` are new constructors
+(§1), and a store without them reads exactly what it read before.
+
 ## 8. Types an implementation must have
 
 `Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Payload`, §4's record kind as a
@@ -409,9 +489,11 @@ value like the payload and for the same reason, since one store reads under one
 policy; `Envelope = Sealed | Woven`;
 `TodoEvent`; `Term` as `Fix TermF`; `Closed` (§7.2), a term with no `Ref`,
 which is what every evaluator takes, and `LinkError = Unknown | Cycle`;
+`Env`, the environment, outcomes beside the grow-only tendings (§6.1, §7.3);
 `Explanation = Cofree TermF Annotation`; `Compiled` (§7.1), a term with every
-`After` resolved beside the `Link`s it resolved, whose readers take no
-environment because a compiled term cannot consult one, and `ChainError`, whose
+`After` and `Recur` resolved beside the `Link`s it resolved, whose readers
+take no environment because a compiled term cannot consult one, and
+`ChainError`, whose
 `Cycle` carries the path; `Frontier`, a non-empty ordered set
 of writes; `Folded`; `Breaks`; `Entry` (§6.7), whose price and function are
 absent together and whose `Confidence` is a sum with no "provisional for no
@@ -476,11 +558,12 @@ optimisation rather than a second evaluator.
     environment, `fulfillment(compile(t, env).term, now, ∅)` equals
     `fulfillment(t, now, env)` to 1e-9 at every instant — the compiled side
     read against the EMPTY environment, which is the statement's teeth: it
-    answers the same while unable to look anything up, because `After` is the
-    only constructor that reads the environment and compiling leaves none. On
-    `core/tests/fpl_laws.rs`'s own generators, the `a_term()` and `an_env()`
-    §9.5 is checked over; and pinned by every §9.8 vector, which the compiler
-    does not touch.
+    answers the same while unable to look anything up, because `After` and
+    `Recur` are the only constructors that read the environment and compiling
+    leaves neither. On `core/tests/fpl_laws.rs`'s own generators, the
+    `a_term()` and `an_env()` §9.5 is checked over, tendings included; and
+    pinned by every §9.8 vector, which the compiler does not touch, and every
+    `conformance/recur.py` sample, which it reads the same.
 
 Law 14 quantifies over the SPECS, and it is what makes §7.2's `link` a
 substitution and nothing more.
@@ -497,6 +580,32 @@ substitution and nothing more.
     acyclic specs; and against `conformance/link.py`, written BY HAND from
     these laws — exact linked prints, readings to 1e-9, an unknown todo and a
     cycle refused.
+
+Laws 15 and 16 are §7.3's: care is a set, and recurrence reads it as of now.
+
+15. **A tending is care, not state** (§4, §6). A `Tended` changes no
+    outcome, spec, content record, function or register at any moment, and
+    every entry keeps its state, its function and its content — an open todo
+    stays open. The tendings are a grow-only set: `history.at(t)` holds the
+    ones dated at or before `t` (law 4), the registers' tendings are the
+    folds' on any DAG (law 6), a merge of two histories folds to the union of
+    their tendings, and a tending writes no register, so never a conflict.
+    `last_tended(env, x, now)` is the latest tending at or before `now`, and
+    a tending dated later changes nothing it answers. On
+    `core/tests/fold_laws.rs`'s generators, which draw `Tended` among the
+    other kinds, and `core/tests/fpl_laws.rs`'s.
+16. **Recurrence reads time as §7.3 says.** With the last tending of `x` at
+    `s`, `Recur(x, anchor, term, pending)` at `s + d` equals `term` at
+    `anchor + d`; with no tending at or before `now` it equals `pending` at
+    `now`; and a tending of `x` dated after `now` changes nothing its own
+    lookup reads at `now`. `Periodic(period, anchor, term)` at `now + period`
+    equals itself at `now`, and on `[anchor, anchor + period)` equals `term`.
+    Both round-trip through print and parse (law 1), and the smart
+    constructors refuse a `Recur` whose `todo` is not a `TodoId` and a
+    `Periodic` whose `period` is not positive. On `core/tests/fpl_laws.rs`'s
+    generators; and against `conformance/recur.py`, written BY HAND from
+    these laws — `Tended` prints folded under the reference policy, a claimed
+    pass among them, and exact term prints with readings to 1e-9.
 
 ## 10. Non-goals
 

@@ -26,7 +26,7 @@
 //! `json_entry`'s `at` is `isoformat(" ")` and used to be the page's to spell;
 //! since §6.7 it is `Entry::at`, in the core — one spelling, in one place.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
 use prodrome::fold::{Binding, Env};
@@ -110,18 +110,47 @@ pub fn parse_closed(field: &str, json_text: &str) -> Result<Closed, Refusal> {
         .ok_or_else(|| format!("{field}: holds a ref; link it first"))
 }
 
-/// `{"<name>": {"kind": "Completed" | "Cancelled", "at": "<iso>"}}` — §7's
-/// environment, with the same two fields `conformance/fpl.py`'s `Bound(...)`
-/// carries, so a vector's environment reaches this without a translation step
-/// that could disagree.
+/// `{"outcomes": {"<name>": {"kind": "Completed" | "Cancelled", "at":
+/// "<iso>"}}, "tended": {"<todo>": ["<iso>", …]}}` — §7's environment, its two
+/// halves as the core holds them. An outcome has the same two fields
+/// `conformance/fpl.py`'s `Bound(...)` carries, so a vector's environment
+/// reaches this without a translation step that could disagree. A half left
+/// out is empty, so `{}` is the environment that binds nothing; any other key
+/// is refused, never ignored.
 pub fn parse_env(json_text: &str) -> Result<fpl::Env, Refusal> {
-    let raw: BTreeMap<String, EnvEntry> =
-        serde_json::from_str(json_text).map_err(|e| format!("env: {e}"))?;
+    let raw: EnvIn = serde_json::from_str(json_text).map_err(|e| format!("env: {e}"))?;
     let mut env = fpl::Env::new();
-    for (name, entry) in raw {
+    for (name, entry) in raw.outcomes {
         env.outcomes.insert(name, entry.outcome()?);
     }
+    env.tended = parse_tended("env.tended", raw.tended)?;
     Ok(env)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvIn {
+    #[serde(default)]
+    outcomes: BTreeMap<String, EnvEntry>,
+    #[serde(default)]
+    tended: BTreeMap<String, Vec<String>>,
+}
+
+/// Per todo, its tendings as ISO instants — a set, so order and repeats on the
+/// wire mean nothing.
+fn parse_tended(
+    field: &str,
+    raw: BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, BTreeSet<Instant>>, Refusal> {
+    raw.into_iter()
+        .map(|(todo, instants)| {
+            let set = instants
+                .iter()
+                .map(|at| parse_instant(field, at))
+                .collect::<Result<_, _>>()?;
+            Ok((todo, set))
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,8 +173,11 @@ impl EnvEntry {
 }
 
 /// The environment as a FUNCTION OF TIME (§6.5), as `fold`'s `history` emits
-/// it and `series_knots` reads it back: per todo, the chain's writes in causal
-/// order, `null` where a `Reopened` cleared the binding.
+/// it and `series_knots` reads it back: `bindings`, per todo, the chain's
+/// writes in causal order, `null` where a `Reopened` cleared the binding; and
+/// `tended`, per todo, every tending, which as a grow-only set is its own
+/// history. The same two-halves rule as [`parse_env`]: either may be left out,
+/// and nothing else is admitted.
 ///
 /// It is a separate argument from `env` and not a convenience over it: a knot
 /// at a past instant must be evaluated against the environment AS OF that
@@ -157,31 +189,47 @@ pub struct HistoryEntry {
     pub binding: Option<EnvEntry>,
 }
 
-pub struct History(BTreeMap<String, Vec<(Instant, Option<Outcome>)>>);
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryIn {
+    #[serde(default)]
+    bindings: BTreeMap<String, Vec<HistoryEntry>>,
+    #[serde(default)]
+    tended: BTreeMap<String, Vec<String>>,
+}
+
+pub struct History {
+    bindings: BTreeMap<String, Vec<(Instant, Option<Outcome>)>>,
+    tended: BTreeMap<String, BTreeSet<Instant>>,
+}
 
 impl History {
     pub fn parse(json_text: &str) -> Result<History, Refusal> {
-        let raw: BTreeMap<String, Vec<HistoryEntry>> =
+        let raw: HistoryIn =
             serde_json::from_str(json_text).map_err(|e| format!("history: {e}"))?;
-        let mut out = BTreeMap::new();
-        for (todo, entries) in raw {
+        let mut bindings = BTreeMap::new();
+        for (todo, entries) in raw.bindings {
             let mut timeline = Vec::with_capacity(entries.len());
             for entry in entries {
                 let at = parse_instant("history.at", &entry.at)?;
                 let binding = entry.binding.map(|b| b.outcome()).transpose()?;
                 timeline.push((at, binding));
             }
-            out.insert(todo, timeline);
+            bindings.insert(todo, timeline);
         }
-        Ok(History(out))
+        Ok(History {
+            bindings,
+            tended: parse_tended("history.tended", raw.tended)?,
+        })
     }
 
-    /// The environment at `t`: per todo, the last write dated at or before it.
-    /// The timeline is in CHAIN order and is never sorted — §6's ordering rule
-    /// holds on this side of the boundary too.
+    /// The environment at `t`: per todo, the last write dated at or before it,
+    /// and the tendings dated at or before it. The timeline is in CHAIN order
+    /// and is never sorted — §6's ordering rule holds on this side of the
+    /// boundary too.
     pub fn at(&self, t: Instant) -> fpl::Env {
         let mut env = fpl::Env::new();
-        for (todo, timeline) in &self.0 {
+        for (todo, timeline) in &self.bindings {
             let mut current = None;
             for (at, binding) in timeline {
                 if *at <= t {
@@ -190,6 +238,12 @@ impl History {
             }
             if let Some(outcome) = current {
                 env.outcomes.insert(todo.clone(), outcome);
+            }
+        }
+        for (todo, tendings) in &self.tended {
+            let known: BTreeSet<Instant> = tendings.range(..=t).copied().collect();
+            if !known.is_empty() {
+                env.tended.insert(todo.clone(), known);
             }
         }
         env
@@ -210,11 +264,31 @@ pub fn json_binding(binding: Binding) -> Value {
     json!({ "kind": binding.kind(), "at": fpl::iso(binding.at()) })
 }
 
+/// §6.1's environment in [`parse_env`]'s shape: the outcomes, and the
+/// tendings.
 pub fn json_env(env: &Env) -> Value {
+    json!({
+        "outcomes": Value::Object(
+            env.outcomes
+                .iter()
+                .map(|(todo, binding)| (todo.as_str().to_owned(), json_binding(*binding)))
+                .collect(),
+        ),
+        "tended": json_tended(&env.tended),
+    })
+}
+
+/// Per todo, its tendings as ISO instants, ascending.
+pub fn json_tended(tended: &BTreeMap<TodoId, BTreeSet<Instant>>) -> Value {
     Value::Object(
-        env.outcomes
+        tended
             .iter()
-            .map(|(todo, binding)| (todo.as_str().to_owned(), json_binding(*binding)))
+            .map(|(todo, tendings)| {
+                (
+                    todo.as_str().to_owned(),
+                    strings(tendings.iter().map(|at| fpl::iso(*at))),
+                )
+            })
             .collect(),
     )
 }
@@ -486,6 +560,63 @@ mod tests {
         let closed = parse_closed("term", &json.to_string()).expect("closed");
         let now = instant_of(at(1));
         assert_eq!(fpl::fulfillment(&closed, now, &fpl::Env::new()), 0.25);
+    }
+
+    /// The environment crosses as its two halves and comes back as the core's:
+    /// what `fold` emits is what `fulfillment` reads, and a `recur` term reads
+    /// the tendings in it. `{}` is the empty environment; an environment in
+    /// the pre-0.8 shape, a bare map of outcomes, is refused and not misread.
+    #[test]
+    fn the_environment_crosses_with_its_tendings() {
+        let mut env = Env::new();
+        let todo = TodoId::new("brush").expect("valid");
+        env.outcomes
+            .insert(todo.clone(), Binding::Completed(instant_of(at(2))));
+        env.tended
+            .insert(todo, [instant_of(at(1)), instant_of(at(10))].into());
+        let json = json_env(&env);
+        assert_eq!(
+            json,
+            json!({
+                "outcomes": {"brush": {"kind": "Completed", "at": "2026-09-02T12:00:00"}},
+                "tended": {"brush": ["2026-09-01T12:00:00", "2026-09-10T12:00:00"]},
+            })
+        );
+        let back = parse_env(&json.to_string()).expect("the shape fold emits");
+        assert_eq!(back, prodrome::fold::evaluation_env(&env));
+
+        let recur = parse_closed(
+            "term",
+            r#"{"kind": "recur", "todo": "brush", "anchor": "2026-09-01T12:00:00",
+                "term": {"kind": "curve", "points": [
+                    {"at": "2026-09-01T12:00:00", "value": 1.0},
+                    {"at": "2026-09-05T12:00:00", "value": 0.0}]},
+                "pending": {"kind": "flat", "value": 0.3}}"#,
+        )
+        .expect("a closed term");
+        assert_eq!(fpl::fulfillment(&recur, instant_of(at(3)), &back), 0.5);
+        assert_eq!(fpl::fulfillment(&recur, instant_of(at(10)), &back), 1.0);
+        let empty = parse_env("{}").expect("the empty environment");
+        assert_eq!(fpl::fulfillment(&recur, instant_of(at(3)), &empty), 0.3);
+        assert!(
+            parse_env(r#"{"brush": {"kind": "Completed", "at": "2026-09-02T12:00:00"}}"#).is_err()
+        );
+    }
+
+    /// The history crosses the same way: a tending is in force at a knot from
+    /// its own instant on, never before.
+    #[test]
+    fn the_history_crosses_with_its_tendings() {
+        let past = History::parse(
+            r#"{"bindings": {"a": [{"at": "2026-09-02T12:00:00",
+                    "binding": {"kind": "Cancelled", "at": "2026-09-02T12:00:00"}}]},
+                "tended": {"brush": ["2026-09-05T12:00:00"]}}"#,
+        )
+        .expect("a history");
+        assert!(past.at(instant_of(at(4))).tended.is_empty());
+        assert_eq!(past.at(instant_of(at(4))).outcomes.len(), 1);
+        assert_eq!(past.at(instant_of(at(5))).tended["brush"].len(), 1);
+        assert!(History::parse(r#"{"a": []}"#).is_err());
     }
 
     #[test]

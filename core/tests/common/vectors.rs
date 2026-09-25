@@ -35,13 +35,14 @@ use prodrome::literal::{parse_literal, Call, Datetime, Table, Value};
 /// crate, and `Signature::Fields` throughout, so a field order is checked
 /// rather than assumed.
 pub const VECTORS: Table = Table(&[
-    // --- the six roots ------------------------------------------------------
+    // --- the seven roots ----------------------------------------------------
     ("Folds", &["logs"]),
     ("Dags", &["dags"]),
     ("Fpl", &["terms"]),
     ("Series", &["series"]),
     ("View", &["policy", "untrusted", "cases"]),
     ("Links", &["specs", "env", "cases"]),
+    ("Recurs", &["untrusted", "events", "at", "cases"]),
     // --- one case of each ---------------------------------------------------
     (
         "FoldCase",
@@ -89,6 +90,8 @@ pub const VECTORS: Table = Table(&[
     ("ViewCase", &["seed", "events", "instants"]),
     // A term, what it links to (None where refused), and its readings.
     ("LinkCase", &["term", "linked", "samples", "refused"]),
+    // A term that reads the tendings, and its readings against them.
+    ("RecurCase", &["term", "samples"]),
     // --- what a case is made of ---------------------------------------------
     // One todo's outcome: §6.1's environment as a tuple instead of a map.
     ("Bound", &["todo", "kind", "at"]),
