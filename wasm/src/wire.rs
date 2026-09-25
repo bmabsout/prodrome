@@ -90,6 +90,20 @@ pub fn parse_term(field: &str, json_text: &str) -> Result<Term, Refusal> {
     crate::json::from_json(&value).map_err(|e| format!("{field}: {e}"))
 }
 
+/// `{"<todo>": <term>}` — what [`crate::link`] binds each `ref` to, every
+/// term in the JSON shape above.
+pub fn parse_specs(json_text: &str) -> Result<BTreeMap<String, Term>, Refusal> {
+    let raw: BTreeMap<String, Value> =
+        serde_json::from_str(json_text).map_err(|e| format!("specs: {e}"))?;
+    raw.into_iter()
+        .map(|(todo, term)| {
+            crate::json::from_json(&term)
+                .map(|term| (todo.clone(), term))
+                .map_err(|e| format!("specs.{todo}: {e}"))
+        })
+        .collect()
+}
+
 /// A term the evaluator can read: one with no `ref` in it (SPEC §7).
 pub fn parse_closed(field: &str, json_text: &str) -> Result<Closed, Refusal> {
     Closed::of(parse_term(field, json_text)?)
@@ -310,6 +324,7 @@ pub fn json_entry(entry: &Entry) -> Value {
         "at": entry.at(),
         "claimed": entry.claimed(),
         "value": entry.value(),
+        "unlinked": entry.unlinked().map(ToString::to_string),
         "unconfirmed": entry.confidence.is_provisional(),
         "conflicts": Value::Object(
             entry
@@ -372,13 +387,13 @@ mod tests {
     }
 
     /// THE ENTRY'S WIRE SHAPE (§6.7), pinned here rather than inferred from
-    /// the struct: `conformance/view/*.py` freezes the same ten fields' VALUES
+    /// the struct: `conformance/view/*.py` freezes ten of these fields' VALUES
     /// in the core, and this freezes the JSON keys and forms the browser reads
     /// them under — the lowercased state, `isoformat(" ")`, `""` for an absent
     /// claim, `null` for an absent value, and a term as its §2 PRINT and never
     /// as `to_json`'s shape.
     #[test]
-    fn an_entry_crosses_as_the_ten_keys_the_page_reads() {
+    fn an_entry_crosses_as_the_eleven_keys_the_page_reads() {
         let entry = Entry {
             todo: TodoId::new("alpha").expect("valid"),
             outcome: Some(Binding::Completed(instant_of(at(3)))),
@@ -402,6 +417,7 @@ mod tests {
                 "at": "2026-09-03 12:00:00",
                 "claimed": "",
                 "value": 0.25,
+                "unlinked": Value::Null,
                 "unconfirmed": true,
                 "conflicts": {"state": ["b".repeat(64), "c".repeat(64)]},
                 "content": "a".repeat(64),
@@ -434,6 +450,7 @@ mod tests {
                 "at": "",
                 "claimed": "cancelled",
                 "value": Value::Null,
+                "unlinked": Value::Null,
                 "unconfirmed": true,
                 "conflicts": {},
                 "content": Value::Null,
@@ -441,5 +458,66 @@ mod tests {
                 "stream": [],
             })
         );
+    }
+
+    /// `link`'s two arguments and its answer, as the browser holds them: the
+    /// linked term is closed, so it is what `fulfillment` reads next.
+    #[test]
+    fn a_ref_links_over_json_and_the_answer_evaluates() {
+        let term = parse_term(
+            "term",
+            r#"{"kind": "conj", "p": -1.0, "terms": [{"kind": "ref", "todo": "a"}, {"kind": "ref", "todo": "b"}]}"#,
+        )
+        .expect("a term");
+        let specs = parse_specs(
+            r#"{"a": {"kind": "flat", "value": 0.25}, "b": {"kind": "ref", "todo": "a"}}"#,
+        )
+        .expect("specs");
+        let linked = fpl::link(&term, &specs).expect("links");
+        let json = crate::json::to_json(linked.term());
+        assert_eq!(
+            json,
+            json!({"kind": "conj", "p": -1.0, "terms": [
+                {"kind": "flat", "value": 0.25}, {"kind": "flat", "value": 0.25}
+            ]})
+        );
+        let closed = parse_closed("term", &json.to_string()).expect("closed");
+        let now = instant_of(at(1));
+        assert_eq!(fpl::fulfillment(&closed, now, &fpl::Env::new()), 0.25);
+    }
+
+    #[test]
+    fn an_open_term_is_refused_where_a_closed_one_is_read() {
+        let refusal = parse_closed("term", r#"{"kind": "ref", "todo": "a"}"#);
+        assert_eq!(
+            refusal.expect_err("an open term"),
+            "term: holds a ref; link it first"
+        );
+        assert!(parse_specs(r#"{"a": {"kind": "ref", "todo": "Not An Id"}}"#).is_err());
+    }
+
+    /// A function that does not link crosses with no value and the reason.
+    #[test]
+    fn an_unlinked_entry_crosses_with_its_reason() {
+        let entry = Entry {
+            todo: TodoId::new("alpha").expect("valid"),
+            outcome: None,
+            claim: None,
+            confidence: Confidence::Confirmed,
+            priced: Some(Priced {
+                spec: fpl::mk_ref("ghost".to_owned()).expect("valid"),
+                value: Err(fpl::LinkError::Unknown("ghost".to_owned())),
+            }),
+            content: None,
+            conflicts: BTreeMap::new(),
+            stream: vec![],
+        };
+        let json = json_entry(&entry);
+        assert_eq!(json["value"], Value::Null);
+        assert_eq!(
+            json["unlinked"],
+            "Ref(\"ghost\") names no todo with a function"
+        );
+        assert_eq!(json["spec"], "Ref(todo='ghost')");
     }
 }

@@ -29,6 +29,7 @@
 //! | `fulfillment`    | §7: what is this term worth now                          |
 //! | `explain`        | §7: what is that number made of                          |
 //! | `series_knots`   | §7 knots: what is that term's curve over a window        |
+//! | `link`           | §7.2: every ref in a term bound to the todo it names     |
 //! | `term_json`      | §2 → §7: a stored term's print, as the JSON shape above  |
 //!
 //! `store` is not reachable from here except for [`prodrome::store::linearise`],
@@ -69,8 +70,8 @@ mod wire;
 
 use wire::{
     json_content, json_entry, json_env, json_marker, json_record, json_terms, object, parse_closed,
-    parse_env, parse_instant, parse_moment, parse_objects, parse_untrusted, strings, History,
-    ObjectIn, Refusal,
+    parse_env, parse_instant, parse_moment, parse_objects, parse_specs, parse_term,
+    parse_untrusted, strings, History, ObjectIn, Refusal,
 };
 
 /// THE RECORD SHAPE THIS MODULE WAS BUILT WITH.
@@ -844,6 +845,22 @@ pub fn compile(term: &str, env: &str) -> Result<String, JsError> {
             Value::Array(compiled.links().iter().map(json_link).collect()),
         ),
     ]))
+}
+
+/// §7.2 — every `ref` in `term` bound to the todo it names, recursively.
+///
+/// `specs` is `{"<todo>": <term>}`, each todo's own function in the JSON shape
+/// (a `fold`'s `flatten`, for a chain). The answer is the linked term in that
+/// same shape, CLOSED, so it goes straight back into [`fulfillment`],
+/// [`explain`], [`compile`] and [`series_knots`], which refuse a term that
+/// still holds a `ref`. An unknown todo or a loop is the thrown refusal, the
+/// loop named.
+#[wasm_bindgen]
+pub fn link(term: &str, specs: &str) -> Result<String, JsError> {
+    let term = parse_term("term", term).map_err(refused)?;
+    let specs = parse_specs(specs).map_err(refused)?;
+    let linked = prodrome::fpl::link(&term, &specs).map_err(|e| refused(format!("link: {e}")))?;
+    printed(&crate::json::to_json(linked.term()))
 }
 
 /// §7's knots — the curve a graph draws over `[from, to]`, and whether the
