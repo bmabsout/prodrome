@@ -88,7 +88,6 @@ pub fn iso(at: Datetime) -> String {
 mod tests {
     use super::*;
     use prodrome::fpl::{print_term, Closed, Env, Instant, Term};
-    use std::collections::BTreeMap;
 
     fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
         prodrome::fpl::fulfillment(&Closed::of(term.clone()).expect("no Ref"), now, env)
@@ -117,7 +116,7 @@ mod tests {
 
     #[test]
     fn low_is_urgent() {
-        let env = BTreeMap::new();
+        let env = Env::new();
         let now = fpl::parse_iso("2026-09-10T09:00:00").expect("an instant");
         let urgent = term_of(&Price {
             priority: Some(10),
@@ -150,7 +149,7 @@ mod tests {
 
     #[test]
     fn a_deadline_bites_as_it_approaches() {
-        let env = BTreeMap::new();
+        let env = Env::new();
         let term = term_of(&Price {
             deadline: Some("2026-09-15".to_owned()),
             ..price()

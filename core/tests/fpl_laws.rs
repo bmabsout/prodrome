@@ -223,11 +223,11 @@ fn grown_to(
 
 fn an_env() -> impl Strategy<Value = Env> {
     prop::collection::vec(prop::option::of((any::<bool>(), hours())), 3).prop_map(|choices| {
-        let mut env: Env = BTreeMap::new();
+        let mut env = Env::new();
         for (name, choice) in EVENTS.iter().zip(choices) {
             if let Some((completed, at)) = choice {
                 let at = moment(at);
-                env.insert(
+                env.outcomes.insert(
                     (*name).to_string(),
                     if completed {
                         Outcome::Completed(at)
@@ -461,10 +461,13 @@ proptest! {
             );
             prop_assert!(schedule_is_normal(node).is_ok(), "{:?}", schedule_is_normal(node));
         }
-        let poisoned: Env = EVENTS
-            .iter()
-            .map(|e| ((*e).to_string(), Outcome::Cancelled(moment(-10_000))))
-            .collect();
+        let poisoned = Env {
+            outcomes: EVENTS
+                .iter()
+                .map(|e| ((*e).to_string(), Outcome::Cancelled(moment(-10_000))))
+                .collect(),
+            ..Env::new()
+        };
         for h in probes {
             let now = moment(h);
             prop_assert_eq!(
@@ -684,5 +687,28 @@ proptest! {
                 "{} does not reference {}", step[0], step[1]
             );
         }
+    }
+}
+
+// --- tendings: the grow-only set, read as of now -----------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// `last_tended` reads AS OF `now`: the latest tending at or before it, none
+    /// before the first, and a tending dated later changes nothing.
+    #[test]
+    fn the_last_tending_is_read_as_of_now(
+        tendings in prop::collection::btree_set(hours(), 0..6),
+        now in hours(),
+        later in 1i64..400,
+    ) {
+        let mut env = Env::new();
+        env.tended.insert("alpha".to_owned(), tendings.iter().map(|h| moment(*h)).collect());
+        let expected = tendings.range(..=now).next_back().map(|h| moment(*h));
+        prop_assert_eq!(fpl::last_tended(&env, "alpha", moment(now)), expected);
+        env.tended.entry("alpha".to_owned()).or_default().insert(moment(now + later));
+        prop_assert_eq!(fpl::last_tended(&env, "alpha", moment(now)), expected);
+        prop_assert_eq!(fpl::last_tended(&env, "beta", moment(now)), None);
     }
 }

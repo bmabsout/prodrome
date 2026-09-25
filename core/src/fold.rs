@@ -10,7 +10,8 @@
 //! (a deadline, a completion's instant, the time machine's window) and the
 //! writer stamped it.
 //!
-//! Each fold is a last-write-wins map keyed by todo. They differ in exactly
+//! Each fold is a last-write-wins map keyed by todo, save the tendings, which
+//! are a grow-only set and have no last write to pick. They differ in exactly
 //! two ways, and those two are the whole of §5 and §6: WHICH kinds write, and
 //! WHICH events the host's [`Policy`] says bind. The policy is a parameter, so
 //! a call site cannot inherit an answer it never considered — and nothing here
@@ -60,16 +61,45 @@ impl Binding {
     }
 }
 
-/// §6.1's answer: which todos are resolved, and when.
-pub type Env = BTreeMap<TodoId, Binding>;
+/// §6.1's answer: which todos are resolved, and when — and which were tended,
+/// and when.
+///
+/// The halves fold differently. `outcomes` is last-write-wins: the latest
+/// binding write stands and `Reopened` clears. `tended` is a GROW-ONLY SET per
+/// todo: every binding `Tended` joins it and nothing leaves, so two histories
+/// fold to the union of their tendings and a merge has nothing to settle.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Env {
+    pub outcomes: BTreeMap<TodoId, Binding>,
+    pub tended: BTreeMap<TodoId, BTreeSet<Instant>>,
+}
+
+impl Env {
+    pub fn new() -> Env {
+        Env::default()
+    }
+
+    fn tend(&mut self, todo: &TodoId, at: Instant) {
+        self.tended.entry(todo.clone()).or_default().insert(at);
+    }
+}
 
 /// The environment as the EVALUATOR reads it (§7). One function rather than a
 /// conversion written out at each consumer, because forgetting it would be a
 /// type error in the evaluator rather than a wrong answer.
 pub fn evaluation_env(env: &Env) -> fpl::Env {
-    env.iter()
-        .map(|(todo, binding)| (todo.as_str().to_owned(), binding.outcome()))
-        .collect()
+    fpl::Env {
+        outcomes: env
+            .outcomes
+            .iter()
+            .map(|(todo, binding)| (todo.as_str().to_owned(), binding.outcome()))
+            .collect(),
+        tended: env
+            .tended
+            .iter()
+            .map(|(todo, tendings)| (todo.as_str().to_owned(), tendings.clone()))
+            .collect(),
+    }
 }
 
 /// [`flatten`]'s functions as [`fpl::link`] reads them: a `Ref(x)` in one
@@ -92,8 +122,9 @@ pub fn chronological<P: Payload>(
 }
 
 /// §6.1 — fold history into the environment as of `t`: last binding write
-/// wins, `Reopened` clears, and only the events the policy binds write at
-/// all. `Created`, `SpecRevised` and `Authored` have no env effect.
+/// wins, `Reopened` clears, a `Tended` joins its todo's tendings, and only the
+/// events the policy binds write at all. `Created`, `SpecRevised` and
+/// `Authored` have no env effect.
 ///
 /// This is what makes `fulfillment(term, t, env_at(…, t))` a time machine: the
 /// belief at any past moment is a query over the log, never a stored snapshot.
@@ -105,14 +136,17 @@ pub fn env_at<P: Payload>(events: &[TodoEvent<P>], t: Datetime, policy: &impl Po
         }
         match event {
             TodoEvent::Completed(e) => {
-                env.insert(e.todo.clone(), Binding::Completed(fpl::instant_of(e.at)));
+                env.outcomes
+                    .insert(e.todo.clone(), Binding::Completed(fpl::instant_of(e.at)));
             }
             TodoEvent::Cancelled(e) => {
-                env.insert(e.todo.clone(), Binding::Cancelled(fpl::instant_of(e.at)));
+                env.outcomes
+                    .insert(e.todo.clone(), Binding::Cancelled(fpl::instant_of(e.at)));
             }
             TodoEvent::Reopened(e) => {
-                env.remove(&e.todo);
+                env.outcomes.remove(&e.todo);
             }
+            TodoEvent::Tended(e) => env.tend(&e.todo, fpl::instant_of(e.at)),
             TodoEvent::Created(_) | TodoEvent::SpecRevised(_) | TodoEvent::Authored(_) => {}
         }
     }
@@ -149,6 +183,7 @@ pub fn specs_at<P: Payload>(
             | TodoEvent::Completed(_)
             | TodoEvent::Cancelled(_)
             | TodoEvent::Reopened(_)
+            | TodoEvent::Tended(_)
             | TodoEvent::SpecRevised(_) => {}
         }
     }
@@ -211,6 +246,7 @@ fn latest_spec(timeline: &[(Instant, Term)], m: Instant, default: Option<Term>) 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct History {
     bindings: BTreeMap<TodoId, Vec<(Instant, Option<Binding>)>>,
+    tended: BTreeMap<TodoId, BTreeSet<Instant>>,
 }
 
 impl History {
@@ -219,7 +255,12 @@ impl History {
         let mut env = Env::new();
         for (todo, timeline) in &self.bindings {
             if let Some(binding) = latest(timeline, m, None) {
-                env.insert(todo.clone(), binding);
+                env.outcomes.insert(todo.clone(), binding);
+            }
+        }
+        for (todo, tendings) in &self.tended {
+            for at in tendings.range(..=m) {
+                env.tend(todo, *at);
             }
         }
         env
@@ -231,14 +272,20 @@ impl History {
     pub fn bindings(&self) -> &BTreeMap<TodoId, Vec<(Instant, Option<Binding>)>> {
         &self.bindings
     }
+
+    /// Per todo, every tending the chain binds. A grow-only set is its own
+    /// history: `at(t)` is the part of it dated at or before `t`.
+    pub fn tended(&self) -> &BTreeMap<TodoId, BTreeSet<Instant>> {
+        &self.tended
+    }
 }
 
 /// Fold the whole log into a [`History`]. Same writers and the same policy
-/// question as [`env_at`]: `Completed`/`Cancelled` bind, `Reopened` clears, and
-/// the rest — every other kind, and every event the policy only lets CLAIM —
-/// do nothing.
+/// question as [`env_at`]: `Completed`/`Cancelled` bind, `Reopened` clears,
+/// `Tended` joins, and the rest — every other kind, and every event the policy
+/// only lets CLAIM — do nothing.
 pub fn history<P: Payload>(events: &[TodoEvent<P>], policy: &impl Policy<P>) -> History {
-    let mut bindings: BTreeMap<TodoId, Vec<(Instant, Option<Binding>)>> = BTreeMap::new();
+    let mut past = History::default();
     for event in events {
         if policy.standing(event).claims() {
             continue;
@@ -253,14 +300,21 @@ pub fn history<P: Payload>(events: &[TodoEvent<P>], policy: &impl Policy<P>) -> 
                 (&e.todo, at, Some(Binding::Cancelled(at)))
             }
             TodoEvent::Reopened(e) => (&e.todo, fpl::instant_of(e.at), None),
+            TodoEvent::Tended(e) => {
+                past.tended
+                    .entry(e.todo.clone())
+                    .or_default()
+                    .insert(fpl::instant_of(e.at));
+                continue;
+            }
             TodoEvent::Created(_) | TodoEvent::SpecRevised(_) | TodoEvent::Authored(_) => continue,
         };
-        bindings
+        past.bindings
             .entry(todo.clone())
             .or_default()
             .push((at, binding));
     }
-    History { bindings }
+    past
 }
 
 /// §6.4 — fold each todo's history as of `t` into ONE fulfillment function.
@@ -337,10 +391,12 @@ pub fn flatten<P: Payload>(
                     .or_default()
                     .push((fpl::instant_of(e.at), false));
             }
+            // A tending is care, not a transition: it puts no piece in force.
             TodoEvent::Created(_)
             | TodoEvent::Completed(_)
             | TodoEvent::Cancelled(_)
             | TodoEvent::Reopened(_)
+            | TodoEvent::Tended(_)
             | TodoEvent::SpecRevised(_) => {}
         }
     }
@@ -449,8 +505,8 @@ mod tests {
             mk_reopened("alpha", at(4), "bassel", "").expect("valid"),
         ];
         let policy = roster();
-        assert_eq!(env_at(&log, at(3), &policy).len(), 1);
-        assert!(env_at(&log, at(5), &policy).is_empty());
+        assert_eq!(env_at(&log, at(3), &policy).outcomes.len(), 1);
+        assert!(env_at(&log, at(5), &policy).outcomes.is_empty());
         // And the history reads the same at both moments, which is §9.4.
         let past = history(&log, &policy);
         assert_eq!(past.at(at(3)), env_at(&log, at(3), &policy));
@@ -460,8 +516,8 @@ mod tests {
     #[test]
     fn a_claiming_completion_is_a_claim_and_not_a_binding() {
         let log: Vec<Event> = vec![mk_completed("alpha", at(2), "triage", "").expect("valid")];
-        assert!(env_at(&log, at(3), &roster()).is_empty());
-        assert_eq!(env_at(&log, at(3), &Untrusted::none()).len(), 1);
+        assert!(env_at(&log, at(3), &roster()).outcomes.is_empty());
+        assert_eq!(env_at(&log, at(3), &Untrusted::none()).outcomes.len(), 1);
     }
 
     #[test]

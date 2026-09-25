@@ -5,12 +5,12 @@
 //! field changes what the canonical printer emits and would orphan every
 //! stored object from its hash. Evolution is a NEW KIND.
 //!
-//! FIVE KINDS ARE THE DATABASE'S AND ONE IS THE HOST'S. `Created`, `Completed`,
-//! `Cancelled`, `Reopened` and `SpecRevised` are lifecycle and price — the
-//! semantics §5 and §6 are written about — and their fields are here. The
-//! RECORD kind is a todo's CONTENT, and content is a deployment's: it is
-//! `KIND(todo, at, actor, <the host's fields>)`, where a [`Payload`] supplies
-//! the constructor name, the fields, their parse and their print. See
+//! SIX KINDS ARE THE DATABASE'S AND ONE IS THE HOST'S. `Created`, `Completed`,
+//! `Cancelled`, `Reopened`, `Tended` and `SpecRevised` are lifecycle, care and
+//! price — the semantics §5 and §6 are written about — and their fields are
+//! here. The RECORD kind is a todo's CONTENT, and content is a deployment's:
+//! it is `KIND(todo, at, actor, <the host's fields>)`, where a [`Payload`]
+//! supplies the constructor name, the fields, their parse and their print. See
 //! [`crate::payload`]; the payload the conformance vectors were taken with is
 //! [`crate::reference`].
 //!
@@ -222,9 +222,9 @@ pub struct Created {
     pub note: String,
 }
 
-/// The three lifecycle kinds that share a shape: `Completed`, `Cancelled`,
-/// `Reopened`, each `(todo, at, actor, note)`. They are DIFFERENT kinds — the
-/// enum below keeps them apart — and one record type is what stops the three
+/// The four kinds that share a shape: `Completed`, `Cancelled`, `Reopened`
+/// and `Tended`, each `(todo, at, actor, note)`. They are DIFFERENT kinds — the
+/// enum below keeps them apart — and one record type is what stops the four
 /// from drifting apart field by field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lifecycle {
@@ -267,6 +267,9 @@ pub enum TodoEvent<P> {
     Completed(Lifecycle),
     Cancelled(Lifecycle),
     Reopened(Lifecycle),
+    /// A pass at a recurring todo: care recorded, state untouched. A todo that
+    /// is never done is never `Completed`, and `Recur` re-anchors to these.
+    Tended(Lifecycle),
     SpecRevised(SpecRevised),
     /// Boxed: a content record carries a todo's whole content and is an order
     /// of magnitude wider than a lifecycle event, and a log is mostly
@@ -278,7 +281,10 @@ impl<P: Payload> TodoEvent<P> {
     pub fn todo(&self) -> &TodoId {
         match self {
             TodoEvent::Created(e) => &e.todo,
-            TodoEvent::Completed(e) | TodoEvent::Cancelled(e) | TodoEvent::Reopened(e) => &e.todo,
+            TodoEvent::Completed(e)
+            | TodoEvent::Cancelled(e)
+            | TodoEvent::Reopened(e)
+            | TodoEvent::Tended(e) => &e.todo,
             TodoEvent::SpecRevised(e) => &e.todo,
             TodoEvent::Authored(e) => &e.todo,
         }
@@ -289,7 +295,10 @@ impl<P: Payload> TodoEvent<P> {
     pub fn at(&self) -> Datetime {
         match self {
             TodoEvent::Created(e) => e.at,
-            TodoEvent::Completed(e) | TodoEvent::Cancelled(e) | TodoEvent::Reopened(e) => e.at,
+            TodoEvent::Completed(e)
+            | TodoEvent::Cancelled(e)
+            | TodoEvent::Reopened(e)
+            | TodoEvent::Tended(e) => e.at,
             TodoEvent::SpecRevised(e) => e.at,
             TodoEvent::Authored(e) => e.at,
         }
@@ -298,7 +307,10 @@ impl<P: Payload> TodoEvent<P> {
     pub fn actor(&self) -> &Actor {
         match self {
             TodoEvent::Created(e) => &e.actor,
-            TodoEvent::Completed(e) | TodoEvent::Cancelled(e) | TodoEvent::Reopened(e) => &e.actor,
+            TodoEvent::Completed(e)
+            | TodoEvent::Cancelled(e)
+            | TodoEvent::Reopened(e)
+            | TodoEvent::Tended(e) => &e.actor,
             TodoEvent::SpecRevised(e) => &e.actor,
             TodoEvent::Authored(e) => &e.actor,
         }
@@ -312,6 +324,7 @@ impl<P: Payload> TodoEvent<P> {
             TodoEvent::Completed(_) => "Completed",
             TodoEvent::Cancelled(_) => "Cancelled",
             TodoEvent::Reopened(_) => "Reopened",
+            TodoEvent::Tended(_) => "Tended",
             TodoEvent::SpecRevised(_) => "SpecRevised",
             TodoEvent::Authored(_) => P::KIND,
         }
@@ -420,6 +433,15 @@ pub fn mk_reopened<P: Payload>(
     Ok(TodoEvent::Reopened(mk_lifecycle(todo, at, actor, note)?))
 }
 
+pub fn mk_tended<P: Payload>(
+    todo: &str,
+    at: Datetime,
+    actor: &str,
+    note: &str,
+) -> Result<TodoEvent<P>, ProdromeError> {
+    Ok(TodoEvent::Tended(mk_lifecycle(todo, at, actor, note)?))
+}
+
 pub fn mk_spec_revised<P: Payload>(
     todo: &str,
     at: Datetime,
@@ -491,7 +513,7 @@ pub fn mk_woven<P: Payload>(
 // --- the vocabulary ----------------------------------------------------------
 
 /// §4's constructors that are the DATABASE's, name and declared field order —
-/// the envelope kinds and the five kinds whose fields are its own semantics.
+/// the envelope kinds and the six kinds whose fields are its own semantics.
 /// The record kind is the payload's and is not here.
 pub const EVENT_SIGNATURES: &[(&str, &[&str])] = &[
     ("Sealed", &["prev", "event"]),
@@ -500,6 +522,7 @@ pub const EVENT_SIGNATURES: &[(&str, &[&str])] = &[
     ("Completed", &["todo", "at", "actor", "note"]),
     ("Cancelled", &["todo", "at", "actor", "note"]),
     ("Reopened", &["todo", "at", "actor", "note"]),
+    ("Tended", &["todo", "at", "actor", "note"]),
     ("SpecRevised", &["todo", "at", "actor", "spec", "note"]),
 ];
 
@@ -580,17 +603,18 @@ impl<P: Payload> TodoEvent<P> {
                     field("note", text(e.note.clone())),
                 ],
             ),
-            TodoEvent::Completed(e) | TodoEvent::Cancelled(e) | TodoEvent::Reopened(e) => {
-                Value::call(
-                    self.kind_name(),
-                    vec![
-                        field("todo", text(e.todo.0.clone())),
-                        field("at", Value::Datetime(e.at)),
-                        field("actor", text(e.actor.0.clone())),
-                        field("note", text(e.note.clone())),
-                    ],
-                )
-            }
+            TodoEvent::Completed(e)
+            | TodoEvent::Cancelled(e)
+            | TodoEvent::Reopened(e)
+            | TodoEvent::Tended(e) => Value::call(
+                self.kind_name(),
+                vec![
+                    field("todo", text(e.todo.0.clone())),
+                    field("at", Value::Datetime(e.at)),
+                    field("actor", text(e.actor.0.clone())),
+                    field("note", text(e.note.clone())),
+                ],
+            ),
             TodoEvent::SpecRevised(e) => Value::call(
                 "SpecRevised",
                 vec![
@@ -713,6 +737,7 @@ fn event_from_value<P: Payload>(value: &Value) -> Result<TodoEvent<P>, ProdromeE
         "Completed" => mk_completed(&todo()?, at()?, &actor()?, &string_or_empty(call, "note")?),
         "Cancelled" => mk_cancelled(&todo()?, at()?, &actor()?, &string_or_empty(call, "note")?),
         "Reopened" => mk_reopened(&todo()?, at()?, &actor()?, &string_or_empty(call, "note")?),
+        "Tended" => mk_tended(&todo()?, at()?, &actor()?, &string_or_empty(call, "note")?),
         "SpecRevised" => mk_spec_revised(
             &todo()?,
             at()?,

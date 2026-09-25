@@ -382,20 +382,24 @@ mod tests {
     }
 
     fn env_of(v: &Value) -> Env {
-        v.as_object()
-            .expect("env is an object")
-            .iter()
-            .map(|(name, binding)| {
-                let at =
-                    parse_iso(binding["at"].as_str().expect("an instant")).expect("an instant");
-                let outcome = match binding["kind"].as_str().expect("a kind") {
-                    "Completed" => Outcome::Completed(at),
-                    "Cancelled" => Outcome::Cancelled(at),
-                    other => panic!("unknown env kind {other:?}"),
-                };
-                (name.clone(), outcome)
-            })
-            .collect()
+        Env {
+            outcomes: v
+                .as_object()
+                .expect("env is an object")
+                .iter()
+                .map(|(name, binding)| {
+                    let at = parse_iso(binding["at"].as_str().expect("an instant"))
+                        .expect("an instant");
+                    let outcome = match binding["kind"].as_str().expect("a kind") {
+                        "Completed" => Outcome::Completed(at),
+                        "Cancelled" => Outcome::Cancelled(at),
+                        other => panic!("unknown env kind {other:?}"),
+                    };
+                    (name.clone(), outcome)
+                })
+                .collect(),
+            tended: Default::default(),
+        }
     }
 
     #[test]

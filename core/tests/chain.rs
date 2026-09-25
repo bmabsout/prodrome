@@ -70,10 +70,13 @@ fn after(event: &str, anchor: i64, term: Term, pending: Term, needs: Option<Dura
 }
 
 fn env(bindings: &[(&str, Outcome)]) -> Env {
-    bindings
-        .iter()
-        .map(|(name, outcome)| ((*name).to_owned(), *outcome))
-        .collect()
+    Env {
+        outcomes: bindings
+            .iter()
+            .map(|(name, outcome)| ((*name).to_owned(), *outcome))
+            .collect(),
+        ..Env::new()
+    }
 }
 
 /// Every node of a term, the root included.
@@ -108,10 +111,13 @@ fn poison(term: &Term) -> Env {
             events.insert(event.clone());
         }
     }
-    events
-        .into_iter()
-        .map(|event| (event, Outcome::Cancelled(moment(-10_000))))
-        .collect()
+    Env {
+        outcomes: events
+            .into_iter()
+            .map(|event| (event, Outcome::Cancelled(moment(-10_000))))
+            .collect(),
+        ..Env::new()
+    }
 }
 
 const PROBES: [i64; 14] = [-300, -1, 0, 1, 10, 11, 24, 31, 55, 61, 65, 100, 250, 600];

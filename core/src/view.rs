@@ -12,7 +12,7 @@
 //! | `outcome`   | `env_of(registers::fold(nodes, t, policy))`                 |
 //! | `claim`     | `fold::env_at(events, t, Everything)`, where it DISAGREES   |
 //! | `spec`      | `fold::flatten(events, t, policy)`                          |
-//! | `value`     | `fulfillment(link(spec, link_specs(all)), t, env(outcomes))`
+//! | `value`     | `fulfillment(link(spec, link_specs(all)), t, env(confirmed))`
 //! | `content`   | `registers::chosen_of(confirmed, Kind::Content)`            |
 //! | `conflicts` | `registers::conflicts_of(confirmed)`                        |
 //! | `stream`    | the nodes whose event names this todo, in causal order      |
@@ -278,7 +278,7 @@ pub fn entries<P: Payload>(
     policy: &impl Policy<P>,
 ) -> Result<Vec<Entry>, ProdromeError> {
     let confirmed = registers::fold(nodes, Some(t), policy);
-    let outcomes = registers::env_of(&confirmed);
+    let believed = registers::env_of(&confirmed);
     let content = registers::chosen_of(&confirmed, Kind::Content);
     let mut conflicts = registers::conflicts_of(&confirmed);
 
@@ -288,7 +288,7 @@ pub fn entries<P: Payload>(
     // ONE conversion of the environment for the whole list: §7's `Env` is
     // keyed by event NAME and the fold's by `TodoId`, and converting per todo
     // would rebuild it once per row.
-    let env = fold::evaluation_env(&outcomes);
+    let env = fold::evaluation_env(&believed);
     let linkable = fold::link_specs(&specs);
     let now = fpl::instant_of(t);
 
@@ -320,8 +320,8 @@ pub fn entries<P: Payload>(
 
     let mut out = Vec::with_capacity(streams.len());
     for (todo, stream) in streams {
-        let outcome = outcomes.get(&todo).copied();
-        let claimed = claims.get(&todo).copied();
+        let outcome = believed.outcomes.get(&todo).copied();
+        let claimed = claims.outcomes.get(&todo).copied();
         let disputed = kind_of(claimed) != kind_of(outcome);
         let written = content.get(&todo).cloned();
         let provisional_content = written

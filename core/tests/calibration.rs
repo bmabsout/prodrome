@@ -346,7 +346,8 @@ fn slippage_monotone() {
     let mut readings = Vec::new();
     for k in 1..14i64 {
         let mut env = Env::new();
-        env.insert("exercise".to_string(), Outcome::Completed(in_days(k)));
+        env.outcomes
+            .insert("exercise".to_string(), Outcome::Completed(in_days(k)));
         readings.push(fulfillment(&dep, in_days(28), &env));
     }
     for w in readings.windows(2) {
@@ -370,13 +371,17 @@ fn toward_failure_cancellation_is_moot_not_silent_urgency() {
     let reading_at = in_days(28);
 
     let mut cancelled_env = Env::new();
-    cancelled_env.insert("exercise".to_string(), Outcome::Cancelled(in_days(2)));
+    cancelled_env
+        .outcomes
+        .insert("exercise".to_string(), Outcome::Cancelled(in_days(2)));
     let cancelled = fulfillment(&dep, reading_at, &cancelled_env);
 
     let unbound = fulfillment(&dep, reading_at, &Env::new());
 
     let mut completed_env = Env::new();
-    completed_env.insert("exercise".to_string(), Outcome::Completed(in_days(1)));
+    completed_env
+        .outcomes
+        .insert("exercise".to_string(), Outcome::Completed(in_days(1)));
     let completed = fulfillment(&dep, reading_at, &completed_env);
     let completed_rounded = (completed * 1e6).round() / 1e6;
 

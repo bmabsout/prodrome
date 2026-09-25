@@ -110,9 +110,10 @@ impl<P: Payload> Policy<P> for Everything {
 /// THE REFERENCE POLICY: a set of actor names, and the rule the conformance
 /// vectors were taken under.
 ///
-/// A named actor's LIFECYCLE and `SpecRevised` events CLAIM — stored, shown,
-/// never folded — because such a writer reads attacker-controlled input and an
-/// injected completion or repricing is the threat the roster exists for. Its
+/// A named actor's LIFECYCLE, `Tended` and `SpecRevised` events CLAIM —
+/// stored, shown, never folded — because such a writer reads
+/// attacker-controlled input and an injected completion, tending or repricing
+/// is the threat the roster exists for. Its
 /// CONTENT records BIND: writing content is what the writer is for, and a fold
 /// that hid its writes would not be containment, it would be an outage that
 /// reports success. They are still not the host's own word, so

@@ -125,8 +125,8 @@ pub fn close(path: &str, mine: f64, theirs: f64) -> Result<(), String> {
 // files always stood to each other.
 
 use prodrome::event::{
-    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_sealed, mk_spec_revised, mk_woven,
-    seal_hash, Envelope, Hash, TodoEvent,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_sealed, mk_spec_revised, mk_tended,
+    mk_woven, seal_hash, Envelope, Hash, TodoEvent,
 };
 use prodrome::fpl::{self, mk_conj, mk_decay, mk_flat, mk_piecewise, mk_within, Instant, Term};
 use prodrome::literal::Datetime;
@@ -250,6 +250,7 @@ pub fn events() -> Vec<Event> {
             "",
         )),
         ok(mk_completed("todo-1", at(4, 9, 0), "bassel", "done")),
+        ok(mk_tended("todo-2", at(4, 12, 0), "bassel", "vinegared")),
         ok(mk_reopened("todo-1", at(5, 9, 0), "bassel", "")),
         ok(mk_cancelled("todo-2", at(6, 9, 999_999), "triage", "")),
     ]
@@ -380,7 +381,8 @@ impl Draft {
             )),
             4 => ok(mk_completed(self.todo, at, self.actor, note)),
             5 => ok(mk_cancelled(self.todo, at, self.actor, note)),
-            _ => ok(mk_reopened(self.todo, at, self.actor, note)),
+            6 => ok(mk_reopened(self.todo, at, self.actor, note)),
+            _ => ok(mk_tended(self.todo, at, self.actor, note)),
         }
     }
 }
@@ -436,7 +438,7 @@ pub fn a_draft() -> impl Strategy<Value = Draft> {
     (
         prop::sample::select(TODOS.to_vec()),
         prop::sample::select(ACTORS.to_vec()),
-        0u8..7,
+        0u8..8,
         // The generator carries a spec on most `Authored` records and not all.
         prop::option::weighted(0.85, a_random_spec()),
         prop::sample::select(vec![0usize, 0, 2, 3]),

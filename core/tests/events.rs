@@ -193,6 +193,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Source",
             "SpecRevised",
             "SubTodo",
+            "Tended",
             "Within",
             "Woven",
         ]

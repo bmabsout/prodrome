@@ -50,7 +50,8 @@ fn events_of(log: &Value) -> Vec<Event> {
 type Outcomes = BTreeMap<String, (String, String)>;
 
 fn outcomes(env: &Env) -> Outcomes {
-    env.iter()
+    env.outcomes
+        .iter()
         .map(|(todo, binding)| {
             (
                 todo.as_str().to_owned(),
@@ -120,7 +121,7 @@ fn every_log_folds_to_the_references_env_specs_content_flatten_and_history() {
             frozen_outcomes(log, "env"),
             "seed {seed}: env_at"
         );
-        resolved += env.len();
+        resolved += env.outcomes.len();
 
         let specs: BTreeMap<String, String> = specs_at(&events, t, &untrusted)
             .iter()
@@ -273,7 +274,7 @@ fn the_corpus_holds_both_outcomes() {
     for log in &logs() {
         let events = events_of(log);
         let env = env_at(&events, moment(field(log, "at")), &policy(log));
-        for binding in env.values() {
+        for binding in env.outcomes.values() {
             kinds.insert(match binding {
                 Binding::Completed(_) => "Completed",
                 Binding::Cancelled(_) => "Cancelled",

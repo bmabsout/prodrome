@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use crate::event::{Authored, Envelope, Hash, TodoEvent, TodoId};
 use crate::fold::{Binding, Env};
-use crate::fpl::{self, Term};
+use crate::fpl::{self, Instant, Term};
 use crate::literal::Datetime;
 use crate::payload::Payload;
 use crate::policy::Policy;
@@ -189,7 +189,8 @@ impl<P: Payload> Frontier<P> {
 /// An `Authored` record writes its todo's content, and its spec when it
 /// carries one; the lifecycle kinds write the state; `SpecRevised` writes the
 /// spec. `Created` writes nothing a register holds — it is the todo's birth,
-/// folded elsewhere.
+/// folded elsewhere — and nor does `Tended`, which joins a grow-only set that
+/// has no frontier because it has nothing to conflict over.
 pub fn writes_of<P: Payload>(event: &TodoEvent<P>) -> &'static [Kind] {
     match event {
         TodoEvent::Authored(authored) if authored.payload.spec().is_some() => {
@@ -200,18 +201,20 @@ pub fn writes_of<P: Payload>(event: &TodoEvent<P>) -> &'static [Kind] {
             &[Kind::State]
         }
         TodoEvent::SpecRevised(_) => &[Kind::Spec],
-        TodoEvent::Created(_) => &[],
+        TodoEvent::Created(_) | TodoEvent::Tended(_) => &[],
     }
 }
 
 /// The state the fold carries. Compared by value, so the monoid-action law is
 /// an equality. `position` and `ancestry` are the STRUCTURE — every object,
-/// event or not — and `frontiers` are the registers.
+/// event or not — `frontiers` are the registers, and `tended` is the one
+/// grow-only set: every binding tending, by todo, joined by union.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Folded<P> {
     position: BTreeMap<Hash, usize>,
     ancestry: BTreeMap<Hash, BitSet>,
     frontiers: BTreeMap<Key, Frontier<P>>,
+    tended: BTreeMap<TodoId, BTreeSet<Instant>>,
 }
 
 /// Hand-written rather than derived: the empty state exists for every payload,
@@ -223,6 +226,7 @@ impl<P> Default for Folded<P> {
             position: BTreeMap::new(),
             ancestry: BTreeMap::new(),
             frontiers: BTreeMap::new(),
+            tended: BTreeMap::new(),
         }
     }
 }
@@ -291,6 +295,7 @@ pub fn extend<P: Payload>(
     let mut position = state.position.clone();
     let mut ancestry = state.ancestry.clone();
     let mut frontiers = state.frontiers.clone();
+    let mut tended = state.tended.clone();
     for node in nodes {
         if position.contains_key(&node.name) {
             // Already folded: extending with a prefix is a no-op.
@@ -315,6 +320,12 @@ pub fn extend<P: Payload>(
         if policy.standing(event).claims() {
             continue;
         }
+        if let TodoEvent::Tended(e) = event {
+            tended
+                .entry(e.todo.clone())
+                .or_default()
+                .insert(fpl::instant_of(e.at));
+        }
         let write = Write {
             at: node.name.clone(),
             event: Arc::new(event.clone()),
@@ -336,6 +347,7 @@ pub fn extend<P: Payload>(
         position,
         ancestry,
         frontiers,
+        tended,
     }
 }
 
@@ -359,9 +371,10 @@ pub fn since<'a, P: Payload>(state: &Folded<P>, nodes: &'a [Node<P>]) -> Vec<&'a
 
 // --- Projections: what each consumer reads off the frontiers -----------------
 
-/// The lifecycle bindings — [`crate::fold::env_at`]'s answer, from the state
-/// registers. A chosen `Reopened` means the todo is open, which is an ABSENT
-/// key and not a third binding.
+/// The environment — [`crate::fold::env_at`]'s answer: the lifecycle
+/// bindings from the state registers, where a chosen `Reopened` means the todo
+/// is open, which is an ABSENT key and not a third binding; and the tendings,
+/// the set as folded.
 pub fn env_of<P: Payload>(state: &Folded<P>) -> Env {
     let mut env = Env::new();
     for (Key(kind, todo), frontier) in &state.frontiers {
@@ -370,14 +383,17 @@ pub fn env_of<P: Payload>(state: &Folded<P>) -> Env {
         }
         match state.chosen(frontier).event.as_ref() {
             TodoEvent::Completed(e) => {
-                env.insert(todo.clone(), Binding::Completed(fpl::instant_of(e.at)));
+                env.outcomes
+                    .insert(todo.clone(), Binding::Completed(fpl::instant_of(e.at)));
             }
             TodoEvent::Cancelled(e) => {
-                env.insert(todo.clone(), Binding::Cancelled(fpl::instant_of(e.at)));
+                env.outcomes
+                    .insert(todo.clone(), Binding::Cancelled(fpl::instant_of(e.at)));
             }
             _ => {}
         }
     }
+    env.tended = state.tended.clone();
     env
 }
 
