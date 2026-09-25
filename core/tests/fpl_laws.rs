@@ -8,10 +8,8 @@
 use std::collections::BTreeMap;
 
 use chrono::{Duration, NaiveDate};
-use prodrome::chain::compile;
-use prodrome::fpl::{
-    self, fulfillment, mk_piecewise, normalize, Env, Instant, Outcome, Term, TermF,
-};
+use prodrome::chain::{self, Compiled};
+use prodrome::fpl::{self, mk_piecewise, normalize, Closed, Env, Instant, Outcome, Term, TermF};
 use proptest::prelude::*;
 
 const EVENTS: [&str; 3] = ["alpha", "beta", "gamma"];
@@ -33,6 +31,18 @@ fn moment(hours: i64) -> Instant {
 
 fn ok(t: Result<Term, fpl::FplError>) -> Term {
     t.expect("the generator only builds terms the constructors admit")
+}
+
+fn closed(term: &Term) -> Closed {
+    Closed::of(term.clone()).expect("a_term() builds no Ref")
+}
+
+fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
+    fpl::fulfillment(&closed(term), now, env)
+}
+
+fn compile(term: &Term, env: &Env) -> Compiled {
+    chain::compile(&closed(term), env)
 }
 
 fn hours() -> impl Strategy<Value = i64> {
@@ -368,7 +378,7 @@ proptest! {
     ) {
         let compiled = compile(&term, &env);
         let mut all = vec![];
-        nodes(compiled.term(), &mut all);
+        nodes(compiled.term().term(), &mut all);
         for node in &all {
             prop_assert!(
                 !matches!(node.out(), TermF::After { .. }),
@@ -384,7 +394,7 @@ proptest! {
             let now = moment(h);
             prop_assert_eq!(
                 compiled.fulfillment(now),
-                fulfillment(compiled.term(), now, &poisoned),
+                fulfillment(compiled.term().term(), now, &poisoned),
                 "the compiled term consulted the environment",
             );
         }

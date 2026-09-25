@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant as Clock;
 
 use chrono::{Duration, NaiveDate};
-use prodrome::chain::{chain_order, compile, compile_chain, ChainError, Link};
+use prodrome::chain::{self, chain_order, compile_chain, ChainError, Compiled, Link};
 use prodrome::fpl::{
-    self, delta_from_hours, fulfillment, iso, print_term, Env, Instant, Note, Outcome, Scalar,
-    Term, TermF, WITHIN_SAMPLES,
+    self, delta_from_hours, iso, print_term, Closed, Env, Instant, Note, Outcome, Scalar, Term,
+    TermF, WITHIN_SAMPLES,
 };
 
 fn origin() -> Instant {
@@ -28,6 +28,19 @@ fn moment(hours: i64) -> Instant {
 
 fn ok(term: Result<Term, fpl::FplError>) -> Term {
     term.expect("the constructors admit these arguments")
+}
+
+/// Every term here is built without a `Ref`.
+fn closed(term: Term) -> Closed {
+    Closed::of(term).expect("no Ref")
+}
+
+fn compile(term: &Term, snapshot: &Env) -> Compiled {
+    chain::compile(&closed(term.clone()), snapshot)
+}
+
+fn fulfillment(term: &Term, now: Instant, snapshot: &Env) -> f64 {
+    fpl::fulfillment(&closed(term.clone()), now, snapshot)
 }
 
 fn flat(value: f64) -> Term {
@@ -109,10 +122,10 @@ const PROBES: [i64; 14] = [-300, -1, 0, 1, 10, 11, 24, 31, 55, 61, 65, 100, 250,
 fn agrees(term: &Term, snapshot: &Env) {
     let compiled = compile(term, snapshot);
     assert_eq!(
-        env_readers(compiled.term()),
+        env_readers(compiled.term().term()),
         0,
         "a compiled term still holds something that reads history: {}",
-        print_term(compiled.term())
+        print_term(compiled.term().term())
     );
     let poisoned = poison(term);
     for hours in PROBES {
@@ -126,7 +139,7 @@ fn agrees(term: &Term, snapshot: &Env) {
         );
         assert_eq!(
             value,
-            fulfillment(compiled.term(), now, &poisoned),
+            fulfillment(compiled.term().term(), now, &poisoned),
             "at {}: the compiled term consulted the environment",
             iso(now)
         );
@@ -137,7 +150,7 @@ fn agrees(term: &Term, snapshot: &Env) {
 fn an_unbound_link_is_its_pending_branch_and_says_so() {
     let term = after("beta", 0, sloping(), flat(0.35), None);
     let compiled = compile(&term, &Env::new());
-    assert_eq!(print_term(compiled.term()), "Flat(value=0.35)");
+    assert_eq!(print_term(compiled.term().term()), "Flat(value=0.35)");
     assert_eq!(
         compiled.links(),
         [Link::Pending {
@@ -156,7 +169,7 @@ fn a_completed_link_is_a_schedule_whose_piece_shifts_by_the_slippage() {
     let snapshot = env(&[("beta", Outcome::Completed(moment(24)))]);
     let compiled = compile(&term, &snapshot);
     assert_eq!(
-        print_term(compiled.term()),
+        print_term(compiled.term().term()),
         "Piecewise(head=Flat(value=0.35), pieces=(Piece(at=datetime(2026, 9, 2, 0, 0, 0), \
          term=Shift(delta=timedelta(days=-1), term=Decay(start=0.9, end=0.1, \
          end_date=datetime(2026, 9, 9, 8, 0, 0), lead_up=timedelta(days=4, seconds=14400), \
@@ -181,9 +194,9 @@ fn a_link_completed_on_its_anchor_writes_no_shift() {
     let snapshot = env(&[("beta", Outcome::Completed(moment(24)))]);
     let compiled = compile(&term, &snapshot);
     assert!(
-        !print_term(compiled.term()).contains("Shift"),
+        !print_term(compiled.term().term()).contains("Shift"),
         "Shift(0, x) is x and is not written: {}",
-        print_term(compiled.term())
+        print_term(compiled.term().term())
     );
     agrees(&term, &snapshot);
 }
@@ -196,7 +209,7 @@ fn a_cancelled_upstream_is_a_graded_offset_at_one_and_is_reported() {
     // The moot constant, WRITTEN AS THE OFFSET IT IS: x·(1−|1|) + max(0, 1) = 1
     // for every x, and the demand that was dropped is still in the tree.
     assert_eq!(
-        print_term(compiled.term()),
+        print_term(compiled.term().term()),
         "Piecewise(head=Flat(value=0.35), pieces=(Piece(at=datetime(2026, 9, 2, 0, 0, 0), \
          term=Offset(delta=1.0, term=Flat(value=0.2))),))"
     );
@@ -259,8 +272,8 @@ fn needs_is_the_compilers_field_and_never_a_value() {
         );
     }
     assert_eq!(
-        print_term(compile(&bare, &snapshot).term()),
-        print_term(compile(&declared, &snapshot).term())
+        print_term(compile(&bare, &snapshot).term().term()),
+        print_term(compile(&declared, &snapshot).term().term())
     );
 
     // What it DOES buy: the earliest moment the link's own demand could be
@@ -294,11 +307,11 @@ fn a_chain_of_three_links_composes_into_one_schedule() {
         ("gamma", Outcome::Completed(moment(30))),
     ]);
     let compiled = compile(&a_chain(), &snapshot);
-    assert_eq!(env_readers(compiled.term()), 0);
-    let TermF::Piecewise { pieces, .. } = compiled.term().out() else {
+    assert_eq!(env_readers(compiled.term().term()), 0);
+    let TermF::Piecewise { pieces, .. } = compiled.term().term().out() else {
         panic!(
             "the chain should be one schedule at the root, got {}",
-            compiled.term().out().kind()
+            compiled.term().term().out().kind()
         );
     };
     // ONE PIECE PER LINK, each at the instant the links ABOVE it see: gamma
@@ -336,10 +349,10 @@ fn a_chain_with_a_cancellation_in_the_middle_is_moot_from_there() {
 
 // --- The chain as a graph ----------------------------------------------------
 
-fn functions(pairs: Vec<(&str, Term)>) -> BTreeMap<String, Term> {
+fn functions(pairs: Vec<(&str, Term)>) -> BTreeMap<String, Closed> {
     pairs
         .into_iter()
-        .map(|(name, term)| (name.to_owned(), term))
+        .map(|(name, term)| (name.to_owned(), closed(term)))
         .collect()
 }
 
@@ -354,7 +367,11 @@ fn a_chain_compiles_upstreams_first() {
     let compiled = compile_chain(&chain, &Env::new()).expect("acyclic");
     assert_eq!(compiled.len(), 3);
     for (todo, one) in &compiled {
-        assert_eq!(env_readers(one.term()), 0, "{todo} still reads history");
+        assert_eq!(
+            env_readers(one.term().term()),
+            0,
+            "{todo} still reads history"
+        );
     }
 }
 
@@ -429,16 +446,17 @@ fn the_compiled_term_makes_no_lookup_and_the_walk_is_paid_once() {
     let compiling = started.elapsed();
 
     assert_eq!(
-        env_readers(compiled.term()),
+        env_readers(compiled.term().term()),
         0,
         "the compiled term still holds something that reads history"
     );
     agrees(&term, &snapshot);
 
     let rounds = 2_000;
+    let interpreting = closed(term.clone());
     let started = Clock::now();
     for i in 0..rounds {
-        std::hint::black_box(fulfillment(&term, moment(i % 400), &snapshot));
+        std::hint::black_box(fpl::fulfillment(&interpreting, moment(i % 400), &snapshot));
     }
     let interpreted = started.elapsed();
     let started = Clock::now();

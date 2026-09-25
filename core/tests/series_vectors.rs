@@ -8,7 +8,7 @@ mod common;
 use chrono::Duration;
 use common::vectors::{boolean, each, field, integer, moment, number, text_at, vectors};
 use prodrome::breaks::series_knots;
-use prodrome::fpl::{fulfillment, instant_of, parse_term, Env, Instant, Term};
+use prodrome::fpl::{fulfillment, instant_of, parse_term, Closed, Env, Instant};
 
 /// The series vectors are drawn against an empty history, as the reference's
 /// generator does: `history([])` binds nothing at any instant.
@@ -18,10 +18,11 @@ fn nothing(_: Instant) -> Env {
 
 /// One case's term, its window and its seed — the three every test here starts
 /// from.
-fn case_of(case: &prodrome::literal::Value) -> (i64, Term, Instant, Instant) {
+fn case_of(case: &prodrome::literal::Value) -> (i64, Closed, Instant, Instant) {
     let seed = integer(field(case, "seed"));
     let term = parse_term(text_at(case, "term"))
         .unwrap_or_else(|e| panic!("seed {seed}: cannot parse: {e}"));
+    let term = Closed::of(term).expect("the vectors hold no Ref");
     (
         seed,
         term,

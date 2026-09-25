@@ -23,8 +23,8 @@
 use prodrome::fpl::{
     delta_from_hours, explained, iso, mk_after, mk_conj, mk_curve, mk_decay, mk_flat, mk_gate,
     mk_importance, mk_offset, mk_offset_by, mk_piecewise, mk_ref, mk_shift, mk_within, parse_iso,
-    total_seconds, CurvePoint, Env, Explanation, FplError, Instant, Note, Scalar, Term, TermF,
-    PRIORITY_POWER,
+    total_seconds, Closed, CurvePoint, Env, Explanation, FplError, Instant, Note, Scalar, Term,
+    TermF, PRIORITY_POWER,
 };
 use serde_json::{Map, Value};
 
@@ -101,7 +101,7 @@ pub fn explanation_json(node: &Explanation) -> Value {
 }
 
 /// `explained`, printed — the name every consumer already reads.
-pub fn explain(term: &Term, now: Instant, env: &Env) -> Value {
+pub fn explain(term: &Closed, now: Instant, env: &Env) -> Value {
     explanation_json(&explained(term, now, env))
 }
 
@@ -422,7 +422,8 @@ mod tests {
 
             let at = parse_iso(case["explain_at"].as_str().expect("an instant")).expect("valid");
             let env = env_of(&case["env"]);
-            agrees("explain", &explain(&term, at, &env), &case["explain"])
+            let closed = Closed::of(term).expect("the frozen terms hold no ref");
+            agrees("explain", &explain(&closed, at, &env), &case["explain"])
                 .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         }
     }

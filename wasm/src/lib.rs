@@ -68,8 +68,8 @@ mod json;
 mod wire;
 
 use wire::{
-    json_content, json_entry, json_env, json_marker, json_record, json_terms, object, parse_env,
-    parse_instant, parse_moment, parse_objects, parse_term, parse_untrusted, strings, History,
+    json_content, json_entry, json_env, json_marker, json_record, json_terms, object, parse_closed,
+    parse_env, parse_instant, parse_moment, parse_objects, parse_untrusted, strings, History,
     ObjectIn, Refusal,
 };
 
@@ -753,7 +753,7 @@ fn parse_names(field: &str, json_text: &str) -> Result<Vec<Hash>, Refusal> {
 /// and a decimal string in between would be a rounding nobody asked for.
 #[wasm_bindgen]
 pub fn fulfillment(term: &str, now: &str, env: &str) -> Result<f64, JsError> {
-    let term = parse_term("term", term).map_err(refused)?;
+    let term = parse_closed("term", term).map_err(refused)?;
     let now = parse_instant("now", now).map_err(refused)?;
     let env = parse_env(env).map_err(refused)?;
     Ok(prodrome::fpl::fulfillment(&term, now, &env))
@@ -779,7 +779,7 @@ pub fn term_json(literal: &str) -> Result<String, JsError> {
 /// parent used it. A DECORATION, never a second reading.
 #[wasm_bindgen]
 pub fn explain(term: &str, now: &str, env: &str) -> Result<String, JsError> {
-    let term = parse_term("term", term).map_err(refused)?;
+    let term = parse_closed("term", term).map_err(refused)?;
     let now = parse_instant("now", now).map_err(refused)?;
     let env = parse_env(env).map_err(refused)?;
     printed(&crate::json::explain(&term, now, &env))
@@ -834,11 +834,11 @@ fn json_link(link: &Link) -> Value {
 /// boundary is told which is which.
 #[wasm_bindgen]
 pub fn compile(term: &str, env: &str) -> Result<String, JsError> {
-    let term = parse_term("term", term).map_err(refused)?;
+    let term = parse_closed("term", term).map_err(refused)?;
     let env = parse_env(env).map_err(refused)?;
     let compiled = prodrome::chain::compile(&term, &env);
     printed(&object(vec![
-        ("term", Value::String(print_term(compiled.term()))),
+        ("term", Value::String(print_term(compiled.term().term()))),
         (
             "links",
             Value::Array(compiled.links().iter().map(json_link).collect()),
@@ -855,7 +855,7 @@ pub fn compile(term: &str, env: &str) -> Result<String, JsError> {
 /// bound from then, exactly as `view.series_of` does it.
 #[wasm_bindgen]
 pub fn series_knots(term: &str, from: &str, to: &str, history: &str) -> Result<String, JsError> {
-    let term = parse_term("term", term).map_err(refused)?;
+    let term = parse_closed("term", term).map_err(refused)?;
     let from = parse_instant("from", from).map_err(refused)?;
     let to = parse_instant("to", to).map_err(refused)?;
     let past = History::parse(history).map_err(refused)?;

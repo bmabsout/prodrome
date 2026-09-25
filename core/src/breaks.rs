@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use chrono::Duration;
 
-use crate::fpl::{div_delta, fulfillment, normalize, Env, Instant, Term, TermF};
+use crate::fpl::{div_delta, fulfillment, Closed, Env, Instant, Term, TermF};
 
 /// For terms that are not piecewise-linear: every ~1.9 h over a week, every
 /// ~9 h over a month.
@@ -178,14 +178,14 @@ pub struct Series {
 /// dependency an `After` reads is unbound before it completed and bound from
 /// then — the same rule for the environment as for the term.
 pub fn series_knots(
-    term: &Term,
+    term: &Closed,
     from: Instant,
     to: Instant,
     env_at: impl Fn(Instant) -> Env,
 ) -> Series {
     // The schedule at the root, where the breakpoints can read it.
-    let spec = normalize(term);
-    let breaks = breakpoints(&spec);
+    let spec = term.normalize();
+    let breaks = breakpoints(spec.term());
     let mut instants: BTreeSet<Instant> = BTreeSet::from([from, to]);
     for b in breaks.slopes.iter().chain(&breaks.jumps) {
         if from < *b && *b < to {

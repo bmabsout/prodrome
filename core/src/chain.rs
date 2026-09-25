@@ -25,8 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::fpl::{
-    self, iso, piecewise, total_seconds, Delta, Env, Explanation, Instant, Note, Outcome, Scalar,
-    Term, TermF,
+    self, iso, piecewise, total_seconds, Closed, Delta, Env, Explanation, Instant, Note, Outcome,
+    Scalar, Term, TermF,
 };
 
 /// A refusal from [`compile_chain`] or [`chain_order`]. One inhabitant, and it
@@ -151,19 +151,19 @@ impl Link {
 /// otherwise recognise (§7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Compiled {
-    term: Term,
+    term: Closed,
     links: Vec<Link>,
 }
 
 impl Compiled {
     /// The compiled term. Storable and printable like any other (§7): it is
     /// one expression of §2's grammar, and it holds no `After`.
-    pub fn term(&self) -> &Term {
+    pub fn term(&self) -> &Closed {
         &self.term
     }
 
     /// The compiled term, by value.
-    pub fn into_term(self) -> Term {
+    pub fn into_term(self) -> Closed {
         self.term
     }
 
@@ -230,11 +230,11 @@ impl Compiled {
 /// The result is [`fpl::normalize`]d, so a chain of links is ONE schedule at
 /// the root over the merged partition of their instants rather than three
 /// freeze quantifiers the evaluator re-enters per sample.
-pub fn compile(term: &Term, env: &Env) -> Compiled {
+pub fn compile(term: &Closed, env: &Env) -> Compiled {
     let mut links = Vec::new();
-    let resolved = resolve(term, env, &mut links);
+    let resolved = resolve(term.term(), env, &mut links);
     Compiled {
-        term: fpl::normalize(&resolved),
+        term: Closed::of(fpl::normalize(&resolved)).expect("resolving introduces no Ref"),
         links,
     }
 }
@@ -320,12 +320,13 @@ fn mk_moot(term: Term) -> Term {
 
 /// §7.1 — compile a whole chain: one [`Compiled`] per todo, or the cycle.
 ///
-/// The map is todo to function — [`crate::fold::flatten`]'s answer, keyed by
-/// the names the links use — and the links draw a graph over its keys. That
+/// The map is todo to function — [`crate::fold::flatten`]'s answer, each
+/// [`fpl::link`]ed, keyed by the names the links use — and the links draw a
+/// graph over its keys. That
 /// graph is checked FIRST, whole, because the compiler is the first reader
 /// that holds it: a link is local, a loop is not.
 pub fn compile_chain(
-    functions: &BTreeMap<String, Term>,
+    functions: &BTreeMap<String, Closed>,
     env: &Env,
 ) -> Result<BTreeMap<String, Compiled>, ChainError> {
     let order = chain_order(functions)?;
@@ -344,7 +345,7 @@ pub fn compile_chain(
 ///
 /// The order a host reports in, and the order a host that caches compiled
 /// terms fills its cache in.
-pub fn chain_order(functions: &BTreeMap<String, Term>) -> Result<Vec<String>, ChainError> {
+pub fn chain_order(functions: &BTreeMap<String, Closed>) -> Result<Vec<String>, ChainError> {
     let edges = upstreams(functions);
     let mut order = Vec::with_capacity(functions.len());
     let mut settled: BTreeSet<String> = BTreeSet::new();
@@ -358,12 +359,12 @@ pub fn chain_order(functions: &BTreeMap<String, Term>) -> Result<Vec<String>, Ch
 /// Per todo, the upstreams its links name that are TODOS OF THIS CHAIN. A link
 /// onto something the map does not hold is not an edge: the snapshot answers
 /// it, and it constrains no order.
-fn upstreams(functions: &BTreeMap<String, Term>) -> BTreeMap<String, BTreeSet<String>> {
+fn upstreams(functions: &BTreeMap<String, Closed>) -> BTreeMap<String, BTreeSet<String>> {
     functions
         .iter()
         .map(|(todo, term)| {
             let mut events = BTreeSet::new();
-            events_of(term, &mut events);
+            events_of(term.term(), &mut events);
             events.retain(|event| functions.contains_key(event));
             (todo.clone(), events)
         })

@@ -20,8 +20,8 @@
 //!
 //! ```
 //! use prodrome::event::{mk_created, mk_spec_revised, TodoId};
-//! use prodrome::fold::{env_at, evaluation_env, flatten};
-//! use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, mk_decay};
+//! use prodrome::fold::{env_at, evaluation_env, flatten, link_specs};
+//! use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, link, mk_decay};
 //! use prodrome::literal::Datetime;
 //! use prodrome::policy::Untrusted;
 //! use prodrome::reference::Todo;
@@ -63,7 +63,10 @@
 //! let env = env_at(&events, now, policy);
 //! let functions = flatten(&events, now, policy)?;
 //! let todo = TodoId::new("todo-1")?;
-//! let value = fulfillment(&functions[&todo], instant_of(now), &evaluation_env(&env));
+//! // A spec may name other todos with `Ref`, so evaluation takes a CLOSED term:
+//! // `link` binds every reference to that todo's own function.
+//! let closed = link(&functions[&todo], &link_specs(&functions))?;
+//! let value = fulfillment(&closed, instant_of(now), &evaluation_env(&env));
 //! assert!((0.0..=1.0).contains(&value));
 //!
 //! // Or the whole composition at once: one row per todo the chain mentions,

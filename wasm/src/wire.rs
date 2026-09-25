@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
 use prodrome::fold::{Binding, Env};
-use prodrome::fpl::{self, Instant, Outcome, Term};
+use prodrome::fpl::{self, Closed, Instant, Outcome, Term};
 use prodrome::literal;
 use prodrome::payload::Payload;
 use prodrome::policy::Untrusted;
@@ -88,6 +88,12 @@ pub fn parse_term(field: &str, json_text: &str) -> Result<Term, Refusal> {
     let value: Value =
         serde_json::from_str(json_text).map_err(|e| format!("{field}: not JSON ({e})"))?;
     crate::json::from_json(&value).map_err(|e| format!("{field}: {e}"))
+}
+
+/// A term the evaluator can read: one with no `ref` in it (SPEC §7).
+pub fn parse_closed(field: &str, json_text: &str) -> Result<Closed, Refusal> {
+    Closed::of(parse_term(field, json_text)?)
+        .ok_or_else(|| format!("{field}: holds a ref; link it first"))
 }
 
 /// `{"<name>": {"kind": "Completed" | "Cancelled", "at": "<iso>"}}` — §7's
@@ -380,7 +386,7 @@ mod tests {
             confidence: Confidence::Provisional(Provisional::Content),
             priced: Some(Priced {
                 spec: mk_flat(0.25).expect("valid"),
-                value: 0.25,
+                value: Ok(0.25),
             }),
             content: Some(name('a')),
             conflicts: [(Kind::State, vec![name('b'), name('c')])]
