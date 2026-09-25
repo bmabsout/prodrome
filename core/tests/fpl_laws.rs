@@ -15,6 +15,9 @@ use prodrome::fpl::{
 use proptest::prelude::*;
 
 const EVENTS: [&str; 3] = ["alpha", "beta", "gamma"];
+/// The todos a `Ref` may name. Two of them are `EVENTS` too, so a linked
+/// term's `After` and its references can name the same todo.
+const TODOS: [&str; 4] = ["alpha", "beta", "delta", "epsilon"];
 
 fn origin() -> Instant {
     NaiveDate::from_ymd_opt(2026, 9, 1)
@@ -41,8 +44,24 @@ fn instants(n: usize) -> impl Strategy<Value = Vec<i64>> {
     prop::collection::btree_set(hours(), 1..=n).prop_map(|s| s.into_iter().collect())
 }
 
+/// A term with no `Ref`: what evaluation takes.
 fn a_term() -> impl Strategy<Value = Term> {
-    let leaf = prop_oneof![
+    grown(a_closed_leaf())
+}
+
+/// A term whose leaves may be `Ref`s onto `TODOS`: what `link` takes.
+fn an_open_term() -> impl Strategy<Value = Term> {
+    grown(prop_oneof![3 => a_closed_leaf(), 1 => a_ref()].boxed())
+}
+
+fn a_ref() -> BoxedStrategy<Term> {
+    prop::sample::select(TODOS.to_vec())
+        .prop_map(|todo| ok(fpl::mk_ref(todo.to_owned())))
+        .boxed()
+}
+
+fn a_closed_leaf() -> BoxedStrategy<Term> {
+    prop_oneof![
         (0.02f64..0.98).prop_map(|v| ok(fpl::mk_flat(v))),
         (
             0.3f64..0.95,
@@ -70,7 +89,12 @@ fn a_term() -> impl Strategy<Value = Term> {
                     .collect(),
             ))
         }),
-    ];
+    ]
+    .boxed()
+}
+
+/// Every constructor over `leaf`, four levels deep.
+fn grown(leaf: BoxedStrategy<Term>) -> impl Strategy<Value = Term> {
     leaf.prop_recursive(4, 48, 3, |inner| {
         prop_oneof![
             (
@@ -382,5 +406,33 @@ proptest! {
                 (fulfillment(&term, now, &Env::new()), compiled.fulfillment(now));
             prop_assert!((interpreted - value).abs() <= 1e-9, "at {now}: {interpreted} vs {value}");
         }
+    }
+}
+
+/// `Ref`'s id obeys `TodoId`'s rule, in the constructor and so in the parse.
+#[test]
+fn a_ref_names_a_todo_or_is_refused() {
+    let good = ok(fpl::mk_ref("todo-1".to_owned()));
+    assert_eq!(fpl::print_term(&good), "Ref(todo='todo-1')");
+    for bad in ["", "Todo", "a b", "x!"] {
+        assert!(
+            fpl::mk_ref(bad.to_owned()).is_err(),
+            "{bad:?} is not a todo id"
+        );
+        let print = format!("Ref(todo={bad:?})");
+        assert!(fpl::parse_term(&print).is_err(), "{print} parsed");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// §2: `parse ∘ print` is the identity on terms, `Ref` included.
+    #[test]
+    fn print_then_parse_is_the_identity(term in an_open_term()) {
+        let print = fpl::print_term(&term);
+        let back = fpl::parse_term(&print).expect("a canonical print parses");
+        prop_assert_eq!(fpl::print_term(&back), print);
+        prop_assert_eq!(back, term);
     }
 }

@@ -244,7 +244,7 @@ the events with `at <= t` in causal order.
 Flat(value) | Decay(start, end, end_date, lead_up, start_date?) | Curve(points)
 | Conj(terms, p) | Offset(delta, a) | Gate(gate, body) | Shift(delta, a)
 | Within(window, p, a) | Importance(w, a) | After(event, anchor, term, pending, needs?)
-| Piecewise(head, pieces) | OffsetBy(delta, term)
+| Piecewise(head, pieces) | OffsetBy(delta, term) | Ref(todo)
 ```
 
 Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
