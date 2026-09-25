@@ -19,12 +19,17 @@
 
 use chrono::{Duration, NaiveDate};
 use prodrome::fpl::{
-    self, fulfillment, mk_after, mk_conj, mk_decay, mk_flat, mk_gate, mk_within, Env, FplError,
-    Instant, Outcome, Term, PRIORITY_POWER,
+    self, mk_after, mk_conj, mk_decay, mk_flat, mk_gate, mk_within, Closed, Env, FplError, Instant,
+    Outcome, Term, PRIORITY_POWER,
 };
 
 fn ok(t: Result<Term, FplError>) -> Term {
     t.expect("the harness only builds terms the constructors admit")
+}
+
+/// §7's evaluator over the harness's terms, none of which holds a `Ref`.
+fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
+    fpl::fulfillment(&Closed::of(term.clone()).expect("no Ref"), now, env)
 }
 
 fn now() -> Instant {

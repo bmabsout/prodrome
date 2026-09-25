@@ -87,8 +87,12 @@ pub fn iso(at: Datetime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prodrome::fpl::{fulfillment, print_term};
+    use prodrome::fpl::{print_term, Closed, Env, Instant, Term};
     use std::collections::BTreeMap;
+
+    fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
+        prodrome::fpl::fulfillment(&Closed::of(term.clone()).expect("no Ref"), now, env)
+    }
 
     fn price() -> Price {
         Price {

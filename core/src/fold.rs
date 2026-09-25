@@ -72,6 +72,15 @@ pub fn evaluation_env(env: &Env) -> fpl::Env {
         .collect()
 }
 
+/// [`flatten`]'s functions as [`fpl::link`] reads them: a `Ref(x)` in one
+/// todo's function means todo `x`'s whole function, its lifecycle included.
+pub fn link_specs(functions: &BTreeMap<TodoId, Term>) -> BTreeMap<String, Term> {
+    functions
+        .iter()
+        .map(|(todo, term)| (todo.as_str().to_owned(), term.clone()))
+        .collect()
+}
+
 /// The events known by `t`, in CAUSAL order — THE ordering every fold below
 /// shares, named once. `events` is the chain (or a prefix of it, or a DAG's
 /// linearisation); this keeps that order and drops what is dated after `t`.
@@ -463,7 +472,8 @@ mod tests {
         ];
         let policy = roster();
         let flat = flatten(&log, at(9), &policy).expect("folds");
-        let term = &flat[&TodoId::new("alpha").expect("valid")];
+        let term =
+            &fpl::Closed::of(flat[&TodoId::new("alpha").expect("valid")].clone()).expect("no Ref");
         let env = evaluation_env(&env_at(&log, at(9), &policy));
         assert_eq!(fulfillment(term, fpl::instant_of(at(2)), &env), 0.2);
         assert_eq!(fulfillment(term, fpl::instant_of(at(4)), &env), 1.0);

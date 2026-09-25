@@ -12,7 +12,7 @@ mod common;
 
 use common::vectors::{each, field, integer, moment, number, text_at, vectors};
 use prodrome::fpl::{
-    explained, fulfillment, instant_of, normalize, parse_term, print_term, Env, Outcome,
+    explained, fulfillment, instant_of, normalize, parse_term, print_term, Closed, Env, Outcome,
 };
 use prodrome::literal::Value;
 
@@ -45,12 +45,13 @@ fn every_term_prints_evaluates_normalises_and_explains_as_the_reference() {
         // §2: the print is the identity — parse then print is byte-identical.
         assert_eq!(print_term(&term), text, "seed {seed}: print ∘ parse");
 
+        let closed = Closed::of(term.clone()).expect("the vectors hold no Ref");
         let env = env_of(each(case, "env"));
         for sample in each(case, "samples") {
             let now = instant_of(moment(field(sample, "now")));
             common::close(
                 "fulfillment",
-                fulfillment(&term, now, &env),
+                fulfillment(&closed, now, &env),
                 number(field(sample, "value")),
             )
             .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
@@ -67,7 +68,7 @@ fn every_term_prints_evaluates_normalises_and_explains_as_the_reference() {
         let at = instant_of(moment(field(case, "explain_at")));
         common::agrees(
             "explain",
-            &common::explanation_value(&explained(&term, at, &env)),
+            &common::explanation_value(&explained(&closed, at, &env)),
             field(case, "explain"),
         )
         .unwrap_or_else(|e| panic!("seed {seed}: {e}"));

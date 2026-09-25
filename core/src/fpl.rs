@@ -11,6 +11,10 @@
 //! that exists came through one of them (or through `parse_term`, which calls
 //! them).
 //!
+//! OPEN AND CLOSED. `Ref(todo)` names another todo's fulfillment, so a term
+//! holding one is open; [`link`] binds every reference and answers a
+//! [`Closed`] term, and only a closed term is evaluated, explained or sampled.
+//!
 //! NO JSON HERE. A term has ONE serialization and it is §2's literal print;
 //! the JSON shape a browser reads is `prodrome-wasm`'s `json` module, built on
 //! the types below, because JSON is JavaScript's literal grammar and this crate
@@ -110,7 +114,7 @@ pub enum TermF<A> {
         delta: A,
         term: A,
     },
-    /// The fulfillment of todo `todo`: a free variable, which `link` binds.
+    /// The fulfillment of todo `todo`: a free variable, which [`link`] binds.
     Ref {
         todo: String,
     },
@@ -226,6 +230,71 @@ impl<A> TermF<A> {
     }
 }
 
+impl<A, E> TermF<Result<A, E>> {
+    /// The functor traversed in `Result`: this layer with every child `Ok`, or
+    /// the first `Err` in declaration order.
+    pub fn transpose(self) -> Result<TermF<A>, E> {
+        Ok(match self {
+            TermF::Flat { value } => TermF::Flat { value },
+            TermF::Decay {
+                start,
+                end,
+                end_date,
+                lead_up,
+                start_date,
+            } => TermF::Decay {
+                start,
+                end,
+                end_date,
+                lead_up,
+                start_date,
+            },
+            TermF::Curve { points } => TermF::Curve { points },
+            TermF::Conj { terms, p } => TermF::Conj {
+                terms: terms.into_iter().collect::<Result<_, _>>()?,
+                p,
+            },
+            TermF::Offset { delta, term } => TermF::Offset { delta, term: term? },
+            TermF::Gate { gate, body } => TermF::Gate {
+                gate: gate?,
+                body: body?,
+            },
+            TermF::Shift { delta, term } => TermF::Shift { delta, term: term? },
+            TermF::Within { window, p, term } => TermF::Within {
+                window,
+                p,
+                term: term?,
+            },
+            TermF::Importance { w, term } => TermF::Importance { w, term: term? },
+            TermF::After {
+                event,
+                anchor,
+                term,
+                pending,
+                needs,
+            } => TermF::After {
+                event,
+                anchor,
+                term: term?,
+                pending: pending?,
+                needs,
+            },
+            TermF::Piecewise { head, pieces } => TermF::Piecewise {
+                head: head?,
+                pieces: pieces
+                    .into_iter()
+                    .map(|(at, t)| t.map(|t| (at, t)))
+                    .collect::<Result<_, _>>()?,
+            },
+            TermF::OffsetBy { delta, term } => TermF::OffsetBy {
+                delta: delta?,
+                term: term?,
+            },
+            TermF::Ref { todo } => TermF::Ref { todo },
+        })
+    }
+}
+
 /// The fixed point: `Term ≅ TermF Term`. A deep embedding — never a closure —
 /// so a term is storable, shippable and evaluated at query time.
 #[derive(Debug, Clone, PartialEq)]
@@ -245,6 +314,37 @@ impl Term {
     pub fn into_out(self) -> TermF<Term> {
         *self.0
     }
+}
+
+/// A term with no [`TermF::Ref`] anywhere in it: what evaluation takes (§7).
+///
+/// A newtype so that forgetting to [`link`] is a type error, for the reason
+/// `fold::evaluation_env` exists: a reference has no value until it is bound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Closed(Term);
+
+impl Closed {
+    /// `term`, where it holds no reference; `None` where it must be linked.
+    pub fn of(term: Term) -> Option<Closed> {
+        is_closed(&term).then_some(Closed(term))
+    }
+
+    pub fn term(&self) -> &Term {
+        &self.0
+    }
+
+    pub fn into_term(self) -> Term {
+        self.0
+    }
+
+    /// [`normalize`], which introduces no reference.
+    pub fn normalize(&self) -> Closed {
+        Closed(normalize(&self.0))
+    }
+}
+
+fn is_closed(term: &Term) -> bool {
+    !matches!(term.out(), TermF::Ref { .. }) && term.out().children().into_iter().all(is_closed)
 }
 
 /// What history says about a named event. The two ways an event can be over
@@ -426,9 +526,15 @@ pub fn bound(env: &Env, event: &str, now: Instant) -> Option<Outcome> {
     }
 }
 
-/// Evaluate a term at a moment against what history says. Total by structure;
-/// every branch returns a value in [0, 1].
-pub fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
+/// Evaluate a closed term at a moment against what history says. Total by
+/// structure; every branch returns a value in [0, 1].
+pub fn fulfillment(term: &Closed, now: Instant, env: &Env) -> f64 {
+    eval(term.term(), now, env)
+}
+
+/// The evaluator proper, over the subterms of a [`Closed`] — so a `Ref` is
+/// unreachable here by the type's invariant.
+fn eval(term: &Term, now: Instant, env: &Env) -> f64 {
     match term.out() {
         TermF::Flat { value } => *value,
         TermF::Decay {
@@ -440,22 +546,20 @@ pub fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
         } => eval_decay(*start, *end, *end_date, *lead_up, *start_date, now),
         TermF::Curve { points } => eval_curve(points, now),
         TermF::Conj { terms, p } => {
-            let vs: Vec<f64> = terms.iter().map(|t| fulfillment(t, now, env)).collect();
+            let vs: Vec<f64> = terms.iter().map(|t| eval(t, now, env)).collect();
             power_mean(&vs, *p)
         }
-        TermF::Offset { delta, term } => offset(fulfillment(term, now, env), *delta),
-        TermF::Gate { gate, body } => {
-            (1.0 - fulfillment(gate, now, env)).max(fulfillment(body, now, env))
-        }
-        TermF::Shift { delta, term } => fulfillment(term, after(now, us_of(*delta)), env),
+        TermF::Offset { delta, term } => offset(eval(term, now, env), *delta),
+        TermF::Gate { gate, body } => (1.0 - eval(gate, now, env)).max(eval(body, now, env)),
+        TermF::Shift { delta, term } => eval(term, after(now, us_of(*delta)), env),
         TermF::Within { window, p, term } => {
             let step = us_of(div_delta(*window, WITHIN_SAMPLES));
             let vs: Vec<f64> = (0..=WITHIN_SAMPLES)
-                .map(|i| fulfillment(term, after(now, step * i), env))
+                .map(|i| eval(term, after(now, step * i), env))
                 .collect();
             power_mean(&vs, *p)
         }
-        TermF::Importance { w, term } => fulfillment(term, now, env).powf(*w),
+        TermF::Importance { w, term } => eval(term, now, env).powf(*w),
         TermF::After {
             event,
             anchor,
@@ -463,20 +567,16 @@ pub fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
             pending,
             ..
         } => match bound(env, event, now) {
-            None => fulfillment(pending, now, env),
+            None => eval(pending, now, env),
             // The body slides by the slippage: authored against `anchor`,
             // re-anchored to the actual completion.
-            Some(Outcome::Completed(done)) => {
-                fulfillment(term, after(now, -us_of(done - *anchor)), env)
-            }
+            Some(Outcome::Completed(done)) => eval(term, after(now, -us_of(done - *anchor)), env),
             // Moot AS PRICING — reporting must surface it (§7, After).
             Some(Outcome::Cancelled(_)) => 1.0,
         },
-        TermF::Piecewise { head, pieces } => fulfillment(in_force(head, pieces, now).1, now, env),
-        TermF::OffsetBy { delta, term } => {
-            offset(fulfillment(term, now, env), fulfillment(delta, now, env))
-        }
-        TermF::Ref { todo } => panic!("Ref({todo:?}) is unlinked: link before evaluating"),
+        TermF::Piecewise { head, pieces } => eval(in_force(head, pieces, now).1, now, env),
+        TermF::OffsetBy { delta, term } => offset(eval(term, now, env), eval(delta, now, env)),
+        TermF::Ref { todo } => unreachable!("Ref({todo:?}) inside a Closed term"),
     }
 }
 
@@ -653,8 +753,12 @@ fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
 /// ⚠️ CHILDREN ARE ANNOTATED AT THE TIME THE PARENT ACTUALLY USED: Shift,
 /// Within and After re-anchor time for their subterm, and a child evaluated at
 /// `now` would report a number the parent never consumed.
-pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
-    let value = fulfillment(term, now, env);
+pub fn explained(term: &Closed, now: Instant, env: &Env) -> Explanation {
+    explain(term.term(), now, env)
+}
+
+fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
+    let value = eval(term, now, env);
     let mut notes = scalar_notes(term);
     let node: TermF<Explanation> = match term.out() {
         TermF::Flat { value } => TermF::Flat { value: *value },
@@ -675,7 +779,7 @@ pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
             points: points.clone(),
         },
         TermF::Conj { terms, p } => {
-            let kids: Vec<Explanation> = terms.iter().map(|t| explained(t, now, env)).collect();
+            let kids: Vec<Explanation> = terms.iter().map(|t| explain(t, now, env)).collect();
             notes.insert(
                 "certifies".into(),
                 Note::One(Scalar::Float(min_fulfillment(value, terms.len(), *p))),
@@ -694,28 +798,28 @@ pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
         }
         TermF::Offset { delta, term } => TermF::Offset {
             delta: *delta,
-            term: explained(term, now, env),
+            term: explain(term, now, env),
         },
         TermF::Importance { w, term } => TermF::Importance {
             w: *w,
-            term: explained(term, now, env),
+            term: explain(term, now, env),
         },
         TermF::Gate { gate, body } => TermF::Gate {
-            gate: explained(gate, now, env),
-            body: explained(body, now, env),
+            gate: explain(gate, now, env),
+            body: explain(body, now, env),
         },
         TermF::OffsetBy { delta, term } => TermF::OffsetBy {
-            delta: explained(delta, now, env),
-            term: explained(term, now, env),
+            delta: explain(delta, now, env),
+            term: explain(term, now, env),
         },
         TermF::Shift { delta, term } => TermF::Shift {
             delta: *delta,
-            term: explained(term, after(now, us_of(*delta)), env),
+            term: explain(term, after(now, us_of(*delta)), env),
         },
         TermF::Within { window, p, term } => {
             let step = us_of(div_delta(*window, WITHIN_SAMPLES));
             let times: Vec<Instant> = (0..=WITHIN_SAMPLES).map(|i| after(now, step * i)).collect();
-            let vs: Vec<f64> = times.iter().map(|t| fulfillment(term, *t, env)).collect();
+            let vs: Vec<f64> = times.iter().map(|t| eval(term, *t, env)).collect();
             let shares = member_shares(&vs, *p);
             // `max(range(n), key=…)` keeps the FIRST maximal index.
             let mut peak = 0usize;
@@ -729,7 +833,7 @@ pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
             TermF::Within {
                 window: *window,
                 p: *p,
-                term: explained(term, times[peak], env),
+                term: explain(term, times[peak], env),
             }
         }
         TermF::After {
@@ -749,8 +853,8 @@ pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
             TermF::After {
                 event: event.clone(),
                 anchor: *anchor,
-                term: explained(term, at, env),
-                pending: explained(pending, now, env),
+                term: explain(term, at, env),
+                pending: explain(pending, now, env),
                 needs: *needs,
             }
         }
@@ -762,7 +866,7 @@ pub fn explained(term: &Term, now: Instant, env: &Env) -> Explanation {
                 Note::One(Scalar::Text(since.map(iso).unwrap_or_default())),
             );
             TermF::Piecewise {
-                head: explained(in_f, now, env),
+                head: explain(in_f, now, env),
                 pieces: vec![],
             }
         }
@@ -1165,6 +1269,87 @@ fn pointwise(parts: Vec<Term>, rebuild: &dyn Fn(&[Term]) -> Term) -> Term {
     piecewise(head, pieces)
 }
 
+// --- Linking: every Ref bound to the todo it names --------------------------
+
+/// Why a term does not link. A value like every refusal here: a reference is
+/// stored data, and stored data can name a todo that is not there, or loop.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum LinkError {
+    /// A `Ref` names a todo `specs` does not hold.
+    #[error("Ref({0:?}) names no todo with a function")]
+    Unknown(String),
+    /// The references loop. The path names the cycle, its first todo repeated
+    /// at the end.
+    #[error("the references loop: {}", .0.join(" → "))]
+    Cycle(Vec<String>),
+}
+
+/// §7 — substitute every `Ref(x)` with `specs[x]`, recursively: bind for the
+/// free monad over `TermF`, with todo ids as its variables.
+///
+/// Total: a reference met again on the path that is expanding it is a cycle,
+/// refused, never unrolled. A closed term is its own link, untouched; a
+/// rebuilt `Piecewise` goes back through the normal form, since a substituted
+/// piece may itself be a schedule.
+pub fn link(term: &Term, specs: &BTreeMap<String, Term>) -> Result<Closed, LinkError> {
+    if let Some(closed) = Closed::of(term.clone()) {
+        return Ok(closed);
+    }
+    Linker {
+        specs,
+        path: Vec::new(),
+        settled: BTreeMap::new(),
+    }
+    .link(term)
+    .map(Closed)
+}
+
+/// `link`'s walk: the references being expanded, which are the cycle witness,
+/// and the todos already linked, so a shared reference is linked once.
+struct Linker<'a> {
+    specs: &'a BTreeMap<String, Term>,
+    path: Vec<String>,
+    settled: BTreeMap<String, Term>,
+}
+
+impl Linker<'_> {
+    fn link(&mut self, term: &Term) -> Result<Term, LinkError> {
+        if let TermF::Ref { todo } = term.out() {
+            return self.resolve(todo);
+        }
+        let layer = term
+            .out()
+            .clone()
+            .map(|child| self.link(&child))
+            .transpose()?;
+        Ok(match layer {
+            TermF::Piecewise { head, pieces } => piecewise(head, pieces),
+            layer => Term::new(layer),
+        })
+    }
+
+    fn resolve(&mut self, todo: &str) -> Result<Term, LinkError> {
+        if let Some(linked) = self.settled.get(todo) {
+            return Ok(linked.clone());
+        }
+        if let Some(from) = self.path.iter().position(|on| on == todo) {
+            let mut cycle = self.path[from..].to_vec();
+            cycle.push(todo.to_owned());
+            return Err(LinkError::Cycle(cycle));
+        }
+        let specs = self.specs;
+        let spec = specs
+            .get(todo)
+            .ok_or_else(|| LinkError::Unknown(todo.to_owned()))?;
+        self.path.push(todo.to_owned());
+        let linked = self.link(spec);
+        self.path.pop();
+        let linked = linked?;
+        self.settled.insert(todo.to_owned(), linked.clone());
+        Ok(linked)
+    }
+}
+
 // --- ISO instants: the one instant SPELLING every boundary shares ------------
 
 /// Python's `datetime.isoformat()`: microseconds only when non-zero.
@@ -1241,6 +1426,13 @@ pub const TERM_VOCABULARY: Table = Table(TERM_SIGNATURES);
 impl From<FplError> for ProdromeError {
     fn from(error: FplError) -> ProdromeError {
         ProdromeError::Invalid(error.0)
+    }
+}
+
+/// A store whose terms do not link is invalid content, like a term refused.
+impl From<LinkError> for ProdromeError {
+    fn from(error: LinkError) -> ProdromeError {
+        ProdromeError::Invalid(error.to_string())
     }
 }
 

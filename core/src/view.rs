@@ -12,7 +12,7 @@
 //! | `outcome`   | `env_of(registers::fold(nodes, t, policy))`                 |
 //! | `claim`     | `fold::env_at(events, t, Everything)`, where it DISAGREES   |
 //! | `spec`      | `fold::flatten(events, t, policy)`                          |
-//! | `value`     | `fpl::fulfillment(spec, t, evaluation_env(outcomes))`       |
+//! | `value`     | `fulfillment(link(spec, link_specs(all)), t, env(outcomes))`
 //! | `content`   | `registers::chosen_of(confirmed, Kind::Content)`            |
 //! | `conflicts` | `registers::conflicts_of(confirmed)`                        |
 //! | `stream`    | the nodes whose event names this todo, in causal order      |
@@ -61,7 +61,7 @@ use std::collections::BTreeMap;
 
 use crate::event::{Hash, TodoEvent, TodoId};
 use crate::fold::{self, Binding};
-use crate::fpl::{self, Term};
+use crate::fpl::{self, LinkError, Term};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
@@ -78,10 +78,12 @@ use crate::registers::{self, Kind, Node};
 pub struct Priced {
     /// The todo's fulfillment FUNCTION over all of time — its revisions and
     /// its lifecycle as pieces of one term. Not the authored spec of the
-    /// moment; `specs_at` is that.
+    /// moment; `specs_at` is that. Open: its `Ref`s are other todos'.
     pub spec: Term,
-    /// `spec` at the moment the entry was taken, in [0, 1].
-    pub value: f64,
+    /// `spec`, linked against every todo's function, at the moment the entry
+    /// was taken, in [0, 1] — or why it does not link. A function whose
+    /// reference is unknown or loops has no value, and says so.
+    pub value: Result<f64, LinkError>,
 }
 
 /// WHY a reader is being shown something the confirmed reading did not have.
@@ -174,7 +176,16 @@ impl Entry {
     }
 
     pub fn value(&self) -> Option<f64> {
-        self.priced.as_ref().map(|priced| priced.value)
+        self.priced
+            .as_ref()
+            .and_then(|priced| priced.value.as_ref().ok().copied())
+    }
+
+    /// Why the function has no value, where it has one and does not link.
+    pub fn unlinked(&self) -> Option<&LinkError> {
+        self.priced
+            .as_ref()
+            .and_then(|priced| priced.value.as_ref().err())
     }
 
     /// The lifecycle as the WIRE spells it: the outcome's constructor name
@@ -229,8 +240,10 @@ fn lowered(binding: Option<Binding>) -> &'static str {
 ///    `claim = env_at(events, t, Everything)[todo]` where the two outcomes
 ///    name different kinds;
 /// 3. `spec = flatten(events of nodes, t, policy)[todo]`, and `value` is
-///    `fulfillment(spec, t, evaluation_env(env_of(confirmed)))` — the
-///    CONFIRMED environment, because a claim does not price;
+///    `fulfillment(link(spec, link_specs(flatten(…))), t,
+///    evaluation_env(env_of(confirmed)))` — every `Ref` bound to that todo's
+///    own function, and the CONFIRMED environment, because a claim does not
+///    price; a `LinkError` in place of the number where the spec does not link;
 /// 4. `content = chosen_of(confirmed, Kind::Content)[todo]`,
 ///    `conflicts = conflicts_of(confirmed)[todo]`;
 /// 5. `confidence` is `Confidence::of(claim.is_some(),
@@ -265,6 +278,7 @@ pub fn entries<P: Payload>(
     // keyed by event NAME and the fold's by `TodoId`, and converting per todo
     // would rebuild it once per row.
     let env = fold::evaluation_env(&outcomes);
+    let linkable = fold::link_specs(&specs);
     let now = fpl::instant_of(t);
 
     // Which objects wrote about which todo, in the order the DAG handed them
@@ -305,7 +319,7 @@ pub fn entries<P: Payload>(
             .copied()
             .unwrap_or(false);
         let priced = specs.get(&todo).map(|spec| Priced {
-            value: fpl::fulfillment(spec, now, &env),
+            value: fpl::link(spec, &linkable).map(|closed| fpl::fulfillment(&closed, now, &env)),
             spec: spec.clone(),
         });
         out.push(Entry {
@@ -482,6 +496,52 @@ mod tests {
         assert_eq!(entry.claim, None, "the two folds agree");
         assert_eq!(entry.confidence, Confidence::Confirmed);
         assert_eq!(entry.value(), Some(1.0));
+    }
+
+    #[test]
+    fn a_reference_prices_by_the_todo_it_names_and_its_lifecycle() {
+        let group = fpl::mk_conj(
+            vec![
+                fpl::mk_ref("alpha".to_owned()).expect("valid"),
+                fpl::mk_ref("beta".to_owned()).expect("valid"),
+            ],
+            -1.0,
+        )
+        .expect("valid");
+        let nodes = chain(vec![
+            authored("alpha", 1, "bassel", Some(mk_flat(0.25).expect("valid"))),
+            authored("beta", 1, "bassel", Some(mk_flat(0.5).expect("valid"))),
+            authored("group", 1, "bassel", Some(group)),
+            mk_completed("beta", at(3), "bassel", "").expect("valid"),
+        ]);
+        let rows = entries(&nodes, at(2), &roster()).expect("folds");
+        // The harmonic mean of 0.25 and 0.5 while both are open ...
+        assert_eq!(rows[2].todo.as_str(), "group");
+        assert!((rows[2].value().expect("linked") - 1.0 / 3.0).abs() < 1e-12);
+        // ... and of 0.25 and 1.0 once beta is done.
+        let rows = entries(&nodes, at(9), &roster()).expect("folds");
+        assert!((rows[2].value().expect("linked") - 0.4).abs() < 1e-12);
+        assert_eq!(rows[2].unlinked(), None);
+    }
+
+    #[test]
+    fn a_reference_that_does_not_link_has_a_function_and_no_value() {
+        let nodes = chain(vec![authored(
+            "alpha",
+            1,
+            "bassel",
+            Some(fpl::mk_ref("ghost".to_owned()).expect("valid")),
+        )]);
+        let rows = entries(&nodes, at(9), &roster()).expect("folds");
+        assert_eq!(
+            rows[0].spec().map(fpl::print_term).as_deref(),
+            Some("Ref(todo='ghost')")
+        );
+        assert_eq!(rows[0].value(), None);
+        assert_eq!(
+            rows[0].unlinked(),
+            Some(&LinkError::Unknown("ghost".to_owned()))
+        );
     }
 
     #[test]

@@ -57,6 +57,12 @@ fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
 }
 
+/// The generated logs carry no `Ref`, so every function they flatten to is
+/// closed as it stands.
+fn closed(term: &Term) -> fpl::Closed {
+    fpl::Closed::of(term.clone()).expect("the generators write no Ref")
+}
+
 /// A draft the reference policy can only let CLAIM: a lifecycle write or a
 /// repricing, from the one actor on the roster. `Draft`'s rolls 3..7 are
 /// `SpecRevised`, `Completed`, `Cancelled` and `Reopened` — the kinds §5 makes
@@ -185,9 +191,9 @@ proptest! {
                     continue;
                 }
                 prop_assert_eq!(
-                    fpl::fulfillment(term, now, &prodrome::fold::evaluation_env(&past_before.at(t))),
+                    fpl::fulfillment(&closed(term), now, &prodrome::fold::evaluation_env(&past_before.at(t))),
                     fpl::fulfillment(
-                        &after[todo],
+                        &closed(&after[todo]),
                         now,
                         &prodrome::fold::evaluation_env(&past_after.at(t))
                     ),
@@ -466,8 +472,8 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
          term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0)), \
          pieces=(Piece(at=datetime(2026, 9, 1, 0, 0, 1), term=Flat(value=0.02)),))"
     );
-    assert_eq!(fpl::fulfillment(&before[&gamma], now, &env), 0.5);
-    assert_eq!(fpl::fulfillment(&after[&gamma], now, &env), 0.51);
+    assert_eq!(fpl::fulfillment(&closed(&before[&gamma]), now, &env), 0.5);
+    assert_eq!(fpl::fulfillment(&closed(&after[&gamma]), now, &env), 0.51);
 
     // And the other way: a spec with no content record, given a checklist for
     // the first time at tau.
@@ -509,8 +515,8 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
         "OffsetBy(delta=Flat(value=0.5), \
          term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0))"
     );
-    assert_eq!(fpl::fulfillment(&before[&beta], now, &env), 0.5);
-    assert_eq!(fpl::fulfillment(&after[&beta], now, &env), 0.75);
+    assert_eq!(fpl::fulfillment(&closed(&before[&beta]), now, &env), 0.5);
+    assert_eq!(fpl::fulfillment(&closed(&after[&beta]), now, &env), 0.75);
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -723,7 +729,10 @@ proptest! {
             prop_assert_eq!(row.spec().map(print_term), specs.get(todo).map(print_term), "spec");
             prop_assert_eq!(
                 row.value(),
-                specs.get(todo).map(|spec| fpl::fulfillment(spec, now, &env)),
+                specs.get(todo).and_then(|spec| {
+                    let linked = fpl::link(spec, &prodrome::fold::link_specs(&specs)).ok()?;
+                    Some(fpl::fulfillment(&linked, now, &env))
+                }),
                 "value"
             );
 
