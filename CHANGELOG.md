@@ -8,6 +8,59 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-25
+
+A MINOR version: a new constructor, and the evaluator's signatures move so
+that an unbound reference is a type error. No stored byte changes, and every
+existing vector answers what it answered.
+
+### Added
+
+- **`Ref(todo)`, a new FPL leaf (SPEC §7.2):** the fulfillment of another
+  todo, for subtodos and groups whose demand is composed from other todos'.
+  It prints as `Ref(todo='<id>')`; `mk_ref` and the parse refuse an id
+  `TodoId` would refuse. A term holding one is OPEN.
+- **`fpl::link(term, specs) -> Result<Closed, LinkError>`:** every `Ref(x)`
+  replaced by `specs[x]`, recursively — bind for the free monad over `TermF`.
+  A rebuilt `Piecewise` goes back through the normal form. Refusals are
+  values: `LinkError::Unknown(id)`, and `LinkError::Cycle(path)`, found on
+  the path being expanded, so `link` is total and never loops.
+- `fpl::Closed`, a term with no `Ref`: `Closed::of(term) -> Option<Closed>`,
+  `term()`, `into_term()`, `normalize()`. `TermF::transpose`, the traversal
+  in `Result` that `link` is written with. `From<LinkError> for
+  ProdromeError`.
+- `fold::link_specs(&flatten(…))`: a chain's functions as `link` reads them,
+  so `Ref(x)` means x's whole function, its lifecycle included.
+- `Entry::unlinked() -> Option<&LinkError>`.
+- **SPEC law 14** and its evidence: `core/tests/fpl_laws.rs` checks a closed
+  term links to itself, a reference reads what its spec reads, linking
+  commutes with substitution order, the linked term is in normal form, a
+  loop is refused with a real cycle, and `Ref` round-trips print and parse.
+  `conformance/link.py` is NEW and written BY HAND from those laws: exact
+  linked prints, readings to 1e-9, an unknown todo and a cycle refused. Its
+  names, `Links`, `LinkCase` and `Refused`, join the vector vocabulary.
+- `prodrome-wasm` exports `link(term, specs)`, answering the closed term in
+  the JSON shape (`{"kind": "ref", "todo": …}` is the new tag). `json_entry`
+  grows one key, `unlinked`.
+
+### Changed (breaking)
+
+- `fpl::fulfillment` and `fpl::explained` take `&Closed`, as do
+  `breaks::series_knots` and `chain::compile`; `chain::compile_chain` and
+  `chain::chain_order` take `&BTreeMap<String, Closed>`, and
+  `Compiled::term()`/`into_term()` answer a `Closed`. A caller holding a
+  `Term` with no reference wraps it with `Closed::of`; one holding a
+  function from `flatten` links it with `link(term, &link_specs(&functions))`.
+- `view::Priced::value` is `Result<f64, LinkError>`: the entry's value is its
+  function LINKED against every todo's function (§6.7). `Entry::value()`
+  still answers an `Option<f64>`, `None` where the function does not link.
+- The wasm exports that evaluate refuse a term that still holds a `ref`.
+
+### Unchanged
+
+- **The stored bytes**, and every existing conformance vector: `Ref` is a new
+  constructor, and a store with none reads exactly what it read before.
+
 ## [0.6.0] — 2026-09-10
 
 A VERSION because the core's public API grew: `prodrome::chain` is a module a
