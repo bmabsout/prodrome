@@ -1,8 +1,8 @@
-//! §7.1 — the chain compiler: `After` erased against a snapshot.
+//! §7.1 — the chain compiler: `After` and `Recur` erased against a snapshot.
 //!
-//! See ../../SPEC.md §7.1. `After` is the ONE term that reads history (§7):
-//! every other constructor is a function of `now` and its subterms, so a term
-//! with no `After` anywhere in it can be evaluated against no environment at
+//! See ../../SPEC.md §7.1. `After` and `Recur` are the terms that read history
+//! (§7): every other constructor is a function of `now` and its subterms, so a
+//! term with neither anywhere in it can be evaluated against no environment at
 //! all. This module is that erasure, and its whole justification is §9.13 —
 //! the compiled term, read against the EMPTY environment, answers what the
 //! interpreted one answered against the real one, at every instant.
@@ -139,12 +139,12 @@ impl Link {
     }
 }
 
-/// A term with every `After` resolved, beside the [`Link`]s it was resolved
-/// from.
+/// A term with every `After` and `Recur` resolved, beside the [`Link`]s the
+/// `After`s were resolved from.
 ///
 /// A NEWTYPE and not a bare `Term`, for one reason that is worth the type: its
 /// readers take NO ENVIRONMENT. That is the claim being made — a compiled term
-/// cannot consult one, because the only constructor that would is gone — and a
+/// cannot consult one, because the constructors that would are gone — and a
 /// bare `Term` would let a caller pass an environment that silently did
 /// nothing, which is exactly the confusion this is meant to end. The links
 /// ride along because a cancellation compiles to a value no reader could
@@ -239,8 +239,8 @@ pub fn compile(term: &Closed, env: &Env) -> Compiled {
     }
 }
 
-/// One term with its `After`s replaced by what the snapshot says, before the
-/// normal form flattens the result.
+/// One term with its `After`s and `Recur`s replaced by what the snapshot says,
+/// before the normal form flattens the result. A `Recur` is [`recurrence`].
 ///
 /// The three cases are §7's `After` semantics read as a SCHEDULE instead of as
 /// a lookup, which is sound because `bound` gates a binding on `o.at() <= now`
@@ -253,17 +253,23 @@ pub fn compile(term: &Closed, env: &Env) -> Compiled {
 ///   over the body, which is the moot constant with the mooted demand still
 ///   visible under it.
 fn resolve(term: &Term, env: &Env, links: &mut Vec<Link>) -> Term {
-    let TermF::After {
-        event,
-        anchor,
-        term: body,
-        pending,
-        needs,
-    } = term.out()
-    else {
+    let (event, anchor, body, pending, needs) = match term.out() {
+        TermF::After {
+            event,
+            anchor,
+            term,
+            pending,
+            needs,
+        } => (event, anchor, term, pending, needs),
+        TermF::Recur {
+            todo,
+            anchor,
+            term: body,
+            pending,
+        } => return recurrence(todo, *anchor, body, pending, env, links),
         // Every other constructor reads `now` and its subterms and nothing
         // else, so compiling it is compiling its children.
-        return Term::new(term.out().clone().map(|child| resolve(&child, env, links)));
+        _ => return Term::new(term.out().clone().map(|child| resolve(&child, env, links))),
     };
     let link = match env.outcomes.get(event) {
         None => Link::Pending {
@@ -289,19 +295,48 @@ fn resolve(term: &Term, env: &Env, links: &mut Vec<Link>) -> Term {
     match link {
         Link::Pending { .. } => pending,
         Link::Completed { at, slip, .. } => {
-            let body = resolve(body, env, links);
-            let from = if slip.is_zero() {
-                // `Shift(0, x)` is `x`: the identity, so it is not written.
-                body
-            } else {
-                mk_shift(-slip, body)
-            };
-            piecewise(pending, vec![(at, from)])
+            piecewise(pending, vec![(at, slid(slip, resolve(body, env, links)))])
         }
         Link::Moot { at, .. } => {
             let body = resolve(body, env, links);
             piecewise(pending, vec![(at, mk_moot(body))])
         }
+    }
+}
+
+/// A `Recur` as the schedule its tendings make: pending before the first, and
+/// from each tending `s` the body slid by `s − anchor` — `After`'s completed
+/// case once per pass, which is exact because `last_tended` picks the latest
+/// tending at or before `now` and a piece at `s` is in force from `s` until
+/// the next.
+fn recurrence(
+    todo: &str,
+    anchor: Instant,
+    body: &Term,
+    pending: &Term,
+    env: &Env,
+    links: &mut Vec<Link>,
+) -> Term {
+    let pending = resolve(pending, env, links);
+    let body = resolve(body, env, links);
+    piecewise(
+        pending,
+        env.tended
+            .get(todo)
+            .into_iter()
+            .flatten()
+            .map(|tended| (*tended, slid(*tended - anchor, body.clone())))
+            .collect(),
+    )
+}
+
+/// The body read `slip` later than authored. `Shift(0, x)` is `x`: the
+/// identity, so it is not written.
+fn slid(slip: Delta, body: Term) -> Term {
+    if slip.is_zero() {
+        body
+    } else {
+        mk_shift(-slip, body)
     }
 }
 

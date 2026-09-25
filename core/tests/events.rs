@@ -122,6 +122,7 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
         "Completed",
         "Cancelled",
         "Reopened",
+        "Tended",
         "SpecRevised",
         "Authored",
     ] {
@@ -184,8 +185,10 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Note",
             "Offset",
             "OffsetBy",
+            "Periodic",
             "Piece",
             "Piecewise",
+            "Recur",
             "Ref",
             "Reopened",
             "Sealed",

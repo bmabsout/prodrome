@@ -409,14 +409,33 @@ pub fn a_random_spec() -> impl Strategy<Value = Term> {
             )
             .expect("a well-formed decay")
         }),
-    ];
-    leaf.prop_recursive(2, 8, 2, |inner| {
+    ]
+    .boxed();
+    let plain = leaf.clone();
+    leaf.prop_recursive(2, 8, 2, move |inner| {
         prop_oneof![
             (
                 prop::collection::vec(inner.clone(), 1..3),
                 prop::sample::select(vec![-4.0, -1.0, 0.0])
             )
                 .prop_map(|(terms, p)| fpl::mk_conj(terms, p).expect("p is in range")),
+            // A recurrence on one of the generator's todos, so its tendings
+            // price what the folds hand the evaluator. Over plain leaves: a
+            // pass before the anchor reads the body LATER than now, and a body
+            // that read history there would see past the prefix law (§9.2).
+            (
+                prop::sample::select(TODOS.to_vec()),
+                0i64..WINDOW,
+                plain.clone(),
+                plain.clone()
+            )
+                .prop_map(|(todo, anchor, term, pending)| fpl::mk_recur(
+                    todo.to_owned(),
+                    origin() + Duration::seconds(anchor),
+                    term,
+                    pending
+                )
+                .expect("a todo id")),
             (
                 inner.clone(),
                 prop::collection::btree_set(0i64..WINDOW, 1..3),

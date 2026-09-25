@@ -22,9 +22,9 @@
 
 use prodrome::fpl::{
     delta_from_hours, explained, iso, mk_after, mk_conj, mk_curve, mk_decay, mk_flat, mk_gate,
-    mk_importance, mk_offset, mk_offset_by, mk_piecewise, mk_ref, mk_shift, mk_within, parse_iso,
-    total_seconds, Closed, CurvePoint, Env, Explanation, FplError, Instant, Note, Scalar, Term,
-    TermF, PRIORITY_POWER,
+    mk_importance, mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref, mk_shift,
+    mk_within, parse_iso, total_seconds, Closed, CurvePoint, Env, Explanation, FplError, Instant,
+    Note, Scalar, Term, TermF, PRIORITY_POWER,
 };
 use serde_json::{Map, Value};
 
@@ -77,7 +77,8 @@ pub fn explanation_json(node: &Explanation) -> Value {
         TermF::Offset { term, .. }
         | TermF::Importance { term, .. }
         | TermF::Shift { term, .. }
-        | TermF::Within { term, .. } => {
+        | TermF::Within { term, .. }
+        | TermF::Periodic { term, .. } => {
             out.insert("term".into(), explanation_json(term));
         }
         TermF::Gate { gate, body } => {
@@ -88,7 +89,7 @@ pub fn explanation_json(node: &Explanation) -> Value {
             out.insert("delta".into(), explanation_json(delta));
             out.insert("term".into(), explanation_json(term));
         }
-        TermF::After { term, pending, .. } => {
+        TermF::After { term, pending, .. } | TermF::Recur { term, pending, .. } => {
             out.insert("term".into(), explanation_json(term));
             out.insert("pending".into(), explanation_json(pending));
         }
@@ -197,6 +198,29 @@ pub fn to_json(term: &Term) -> Value {
             if let Some(n) = needs {
                 out.insert("needsHours".into(), Value::from(total_seconds(*n) / 3600.0));
             }
+        }
+        TermF::Recur {
+            todo,
+            anchor,
+            term,
+            pending,
+        } => {
+            out.insert("todo".into(), Value::String(todo.clone()));
+            out.insert("anchor".into(), Value::String(iso(*anchor)));
+            out.insert("term".into(), to_json(term));
+            out.insert("pending".into(), to_json(pending));
+        }
+        TermF::Periodic {
+            period,
+            anchor,
+            term,
+        } => {
+            out.insert(
+                "periodHours".into(),
+                Value::from(total_seconds(*period) / 3600.0),
+            );
+            out.insert("anchor".into(), Value::String(iso(*anchor)));
+            out.insert("term".into(), to_json(term));
         }
         TermF::OffsetBy { delta, term } => {
             out.insert("delta".into(), to_json(delta));
@@ -310,6 +334,17 @@ pub fn from_json(d: &Value) -> Result<Term, FplError> {
                 None => None,
             },
         ),
+        "recur" => mk_recur(
+            text(d, "todo")?,
+            parse_iso(&text(d, "anchor")?)?,
+            from_json(field(d, "term")?)?,
+            from_json(field(d, "pending")?)?,
+        ),
+        "periodic" => mk_periodic(
+            delta_from_hours(num(d, "periodHours")?),
+            parse_iso(&text(d, "anchor")?)?,
+            from_json(field(d, "term")?)?,
+        ),
         "offsetBy" => mk_offset_by(
             from_json(field(d, "delta")?)?,
             from_json(field(d, "term")?)?,
@@ -388,8 +423,8 @@ mod tests {
                 .expect("env is an object")
                 .iter()
                 .map(|(name, binding)| {
-                    let at = parse_iso(binding["at"].as_str().expect("an instant"))
-                        .expect("an instant");
+                    let at =
+                        parse_iso(binding["at"].as_str().expect("an instant")).expect("an instant");
                     let outcome = match binding["kind"].as_str().expect("a kind") {
                         "Completed" => Outcome::Completed(at),
                         "Cancelled" => Outcome::Cancelled(at),
