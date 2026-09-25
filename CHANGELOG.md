@@ -8,6 +8,70 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-25
+
+A MINOR version: recurrence, as one new event kind and two new terms. No
+stored byte changes and every existing vector answers what it answered; the
+environment's type grows a second half, and every caller follows it.
+
+### Added
+
+- **`Tended(todo, at, actor, note)`, a new event kind (SPEC §4):** a pass at
+  a todo that is never done. It changes no state, spec or content, and it puts
+  no piece in `flatten`. `event::mk_tended`; the reference policy lets a
+  roster actor's tending only claim, like a completion.
+- **The tendings (SPEC §6.1):** per todo, the instant of every binding
+  `Tended`, a grow-only set folded by union. `env_at`, `history` and the
+  registers carry it; a tending writes no register, so concurrent tendings
+  are their union and never a conflict. `fpl::last_tended(env, todo, now)` is
+  the latest tending at or before `now`.
+- **`Recur(todo, anchor, term, pending)` (SPEC §7.3):** `term`, authored
+  against `anchor`, re-anchored to the last tending of `todo` as `After` is to
+  a completion; `pending` before the first. `mk_recur` refuses a `todo`
+  `TodoId` would refuse. Its explanation notes `bound` (`pending` or
+  `tended`), and when tended, `tended` and `agoHours`.
+- **`Periodic(period, anchor, term)` (SPEC §7.3):** `term` read at `anchor +
+  ((now − anchor) mod period)`, the remainder Euclidean, so moments before
+  `anchor` repeat too. `mk_periodic` refuses a period that is not positive.
+  Its explanation notes `cycleStart`.
+- `fpl::phase(period, anchor, now)`, the instant a `Periodic` reads.
+- The chain compiler resolves a `Recur` into the schedule its tendings make:
+  pending before the first, and from each tending the body slid by its
+  slippage. §9.13 now quantifies over tendings too.
+- **SPEC laws 15 and 16** and their evidence: `core/tests/fold_laws.rs` draws
+  `Tended` among the generated kinds and checks a tending changes no state,
+  spec, content, function, register or entry, and that tendings merge by
+  union; `core/tests/fpl_laws.rs` checks `last_tended` reads as of now,
+  `Recur` re-anchors, waits and ignores later tendings, `Periodic` repeats,
+  and both round-trip and refuse what they must. `conformance/recur.py` is
+  NEW and written BY HAND: `Tended` prints folded under the reference policy,
+  a claimed pass among them, and readings to 1e-9. `Recurs` and `RecurCase`
+  join the vector vocabulary.
+- `prodrome-wasm`: `lifecycle` spells `Tended`; the JSON codec has `recur`
+  (`todo`, `anchor`, `term`, `pending`) and `periodic` (`periodHours`,
+  `anchor`, `term`).
+
+### Changed (breaking)
+
+- `fold::Env` and `fpl::Env` are structs, `outcomes` beside `tended`
+  (`TodoId`/`String` → `BTreeSet<Instant>`), where they were maps of
+  outcomes. A caller that read the map reads `env.outcomes`; `Env::new()` is
+  still the empty environment. `fold::History` holds the tendings too and
+  answers them from `tended()`.
+- `TodoEvent` has a `Tended` arm; an exhaustive match gains one.
+- The wasm environment crosses as `{"outcomes": {…}, "tended": {"<todo>":
+  ["<iso>", …]}}`, both in `fold`'s `env` and in what `fulfillment`,
+  `explain` and `compile` read; `fold`'s `history` is `{"bindings": {…},
+  "tended": {…}}`, which `series_knots` reads. A half left out is empty, so
+  `{}` is still the empty environment; any other key, the old bare map
+  included, is refused.
+
+### Unchanged
+
+- **The stored bytes**, and every existing conformance vector: `Tended`,
+  `Recur` and `Periodic` are new constructors, and a store without them reads
+  exactly what it read before. `flatten` gains no case.
+
 ## [0.7.0] — 2026-09-25
 
 A MINOR version: a new constructor, and the evaluator's signatures move so

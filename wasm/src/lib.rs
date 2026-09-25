@@ -69,8 +69,8 @@ mod json;
 mod wire;
 
 use wire::{
-    json_content, json_entry, json_env, json_marker, json_record, json_terms, object, parse_closed,
-    parse_env, parse_instant, parse_moment, parse_objects, parse_specs, parse_term,
+    json_content, json_entry, json_env, json_marker, json_record, json_tended, json_terms, object,
+    parse_closed, parse_env, parse_instant, parse_moment, parse_objects, parse_specs, parse_term,
     parse_untrusted, strings, History, ObjectIn, Refusal,
 };
 
@@ -451,15 +451,15 @@ impl Read {
 /// The answer is the five folds, each keyed by todo id and shaped the way
 /// `view.py` already puts it on the wire:
 ///
-/// - `env`      — §6.1, as `{kind, at}` — §7's environment shape, so it is
-///                also a legal argument to [`fulfillment`] and [`explain`]
+/// - `env`      — §6.1, as `{outcomes, tended}` — §7's environment shape, so
+///                it is also a legal argument to [`fulfillment`] and [`explain`]
 /// - `specs`    — §6.2, each a [`json::to_json`] term
 /// - `content`  — §6.3, each the reference's `json_authored` MINUS `rich`
 /// - `flatten`  — §6.4, each a [`json::to_json`] term: the todo's fulfillment
 ///                FUNCTION, which is what a `value` and a series are read off
-/// - `history`  — §6.5, and the argument [`series_knots`] wants, so that a
-///                knot in the past is evaluated against the environment as of
-///                that past instant
+/// - `history`  — §6.5, as `{bindings, tended}`, and the argument
+///                [`series_knots`] wants, so that a knot in the past is
+///                evaluated against the environment as of that past instant
 ///
 /// `stream` rides beside them — per todo, its events in causal order with the
 /// object carrying each — because an `Entry` on the wire has one, and a locally
@@ -480,7 +480,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     let flat = prodrome::fold::flatten(&events, moment, &policy).map_err(|e| refused(e.0))?;
     let past = prodrome::fold::history(&events, &policy);
 
-    let history = Value::Object(
+    let bindings = Value::Object(
         past.bindings()
             .iter()
             .map(|(todo, timeline)| {
@@ -504,6 +504,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
             })
             .collect(),
     );
+    let history = json!({ "bindings": bindings, "tended": json_tended(past.tended()) });
     let stream = Value::Object(
         read.streams()
             .iter()
@@ -626,8 +627,8 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
 
 // --- §3 and §4: SEALING, so a replica can append ------------------------------
 
-/// A lifecycle event, as its CANONICAL PRINT — §4's four same-shaped kinds
-/// (`Created`, `Completed`, `Cancelled`, `Reopened`), through the very `mk_*`
+/// A lifecycle event, as its CANONICAL PRINT — §4's five same-shaped kinds
+/// (`Created`, `Completed`, `Cancelled`, `Reopened`, `Tended`), through the very `mk_*`
 /// constructors that are their parse boundary.
 ///
 /// This exists because a replica has to be able to append WITH NO NETWORK, and
@@ -658,9 +659,10 @@ pub fn lifecycle(
         "Completed" => prodrome::event::mk_completed(todo, at, actor, note),
         "Cancelled" => prodrome::event::mk_cancelled(todo, at, actor, note),
         "Reopened" => prodrome::event::mk_reopened(todo, at, actor, note),
+        "Tended" => prodrome::event::mk_tended(todo, at, actor, note),
         other => {
             return Err(refused(format!(
-                "kind must be one of Created, Completed, Cancelled, Reopened, got {other:?}"
+                "kind must be one of Created, Completed, Cancelled, Reopened, Tended, got {other:?}"
             )));
         }
     }

@@ -139,15 +139,17 @@ or a `Woven(parents, event)` merge with several. Its name is the hash of its
 canonical print. `verify` reports anything that does not hash to its name,
 rest on a missing parent, or form a cycle.
 
-**Records and payloads.** Five event kinds are the database's — `Created`,
-`Completed`/`Cancelled`/`Reopened`, `SpecRevised` — and their fields are its
-semantics. The sixth is yours: a record is `KIND(todo, at, actor, <your
+**Records and payloads.** Six event kinds are the database's — `Created`,
+`Completed`/`Cancelled`/`Reopened`, `Tended` (a pass at a recurring todo,
+which leaves its state alone), `SpecRevised` — and their fields are its
+semantics. The seventh is yours: a record is `KIND(todo, at, actor, <your
 fields>)`, where your `Payload` supplies the name, the fields, their parse and
 print, and the only two things the folds read out of one (the spec it carries
 and how many checklist items it has). The stored bytes are frozen the moment
 you ship them, exactly as the database's own are.
 
-**Folds.** `env_at` gives each todo's outcome at an instant, `specs_at` its
+**Folds.** `env_at` gives each todo's outcome at an instant and every pass it
+was tended (a grow-only set, merged by union), `specs_at` its
 spec in force, `authored_at` its current record, and `flatten` its whole
 history as one function of time. `history` is the environment as a function
 of time.
@@ -166,17 +168,19 @@ own.
 
 **FPL.** Terms such as `Flat`, `Decay`, `Conj` (a power mean, so the weakest
 member dominates), `Within` (sampled over a window), `After` (anchored to
-another todo's completion), `Piecewise` and `Ref` (another todo's
+another todo's completion), `Recur` (anchored to a todo's last tending),
+`Periodic` (repeated on the calendar), `Piecewise` and `Ref` (another todo's
 fulfillment, for subtodos and groups). A term holding a `Ref` is open;
 `link` binds every reference to that todo's function and answers a `Closed`
 term, refusing an unknown todo or a loop as a value. `fulfillment` evaluates a
 closed term at an instant; `explain` returns the same computation with a value
 at every node; `series_knots` gives a term's curve over a window.
 
-**The chain compiler.** `After` is the one term that reads history, so
-`chain::compile(term, env)` resolves every one of them against a snapshot and
-hands back a term with the same reading and no lookup left in it — each link
-as one graded offset, a chain as one schedule. A cancelled upstream compiles to
+**The chain compiler.** `After` and `Recur` are the terms that read history,
+so `chain::compile(term, env)` resolves every one of them against a snapshot
+and hands back a term with the same reading and no lookup left in it — each
+link as one graded offset, a chain as one schedule, a recurrence as a piece
+per pass. A cancelled upstream compiles to
 the moot 1.0 and is REPORTED beside it, because nothing in the number says so.
 An optimisation with an equivalence law (SPEC §9.13), not a second semantics:
 the interpreted path is unchanged and compiling is opt-in.
@@ -251,6 +255,8 @@ flake check` and CI never run.
 from `link`'s laws — a few specs, the prints they link to, their values at a
 few instants and one loop refused — because a law's own consequences are the
 evidence there, and every number in it is arithmetic a reader can redo.
+`conformance/recur.py` (§7.3) is written the same way: a toothbrush tended
+twice and claimed once, a rent that repeats, and their readings.
 
 `wasm/conformance/` holds the JSON boundary's own evidence: the `to_json` and
 `explain` shapes for the same 150 terms, frozen when the codec moved there.
