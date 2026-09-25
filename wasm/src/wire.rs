@@ -402,6 +402,7 @@ mod tests {
             priced: Some(Priced {
                 spec: mk_flat(0.25).expect("valid"),
                 value: Ok(0.25),
+                linked: Ok(fpl::Closed::of(mk_flat(0.25).expect("valid")).expect("closed")),
             }),
             content: Some(name('a')),
             conflicts: [(Kind::State, vec![name('b'), name('c')])]
@@ -507,6 +508,7 @@ mod tests {
             priced: Some(Priced {
                 spec: fpl::mk_ref("ghost".to_owned()).expect("valid"),
                 value: Err(fpl::LinkError::Unknown("ghost".to_owned())),
+                linked: Err(fpl::LinkError::Unknown("ghost".to_owned())),
             }),
             content: None,
             conflicts: BTreeMap::new(),

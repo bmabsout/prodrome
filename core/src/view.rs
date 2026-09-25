@@ -84,6 +84,9 @@ pub struct Priced {
     /// was taken, in [0, 1] — or why it does not link. A function whose
     /// reference is unknown or loops has no value, and says so.
     pub value: Result<f64, LinkError>,
+    /// `spec`, linked: what a consumer explains, samples or compiles, so no
+    /// reader links a second time with a different set of specs.
+    pub linked: Result<fpl::Closed, LinkError>,
 }
 
 /// WHY a reader is being shown something the confirmed reading did not have.
@@ -179,6 +182,14 @@ impl Entry {
         self.priced
             .as_ref()
             .and_then(|priced| priced.value.as_ref().ok().copied())
+    }
+
+    /// The function, linked against every todo's, when it links: what to
+    /// explain, sample or compile.
+    pub fn linked(&self) -> Option<&fpl::Closed> {
+        self.priced
+            .as_ref()
+            .and_then(|priced| priced.linked.as_ref().ok())
     }
 
     /// Why the function has no value, where it has one and does not link.
@@ -318,9 +329,16 @@ pub fn entries<P: Payload>(
             .and_then(|name| unconfirmed_content.get(name))
             .copied()
             .unwrap_or(false);
-        let priced = specs.get(&todo).map(|spec| Priced {
-            value: fpl::link(spec, &linkable).map(|closed| fpl::fulfillment(&closed, now, &env)),
-            spec: spec.clone(),
+        let priced = specs.get(&todo).map(|spec| {
+            let linked = fpl::link(spec, &linkable);
+            Priced {
+                value: linked
+                    .as_ref()
+                    .map(|closed| fpl::fulfillment(closed, now, &env))
+                    .map_err(Clone::clone),
+                linked,
+                spec: spec.clone(),
+            }
         });
         out.push(Entry {
             claim: if disputed { claimed } else { None },
