@@ -4,12 +4,18 @@
 //!
 //! And §9.13 over the same generators: COMPILING preserves every reading too,
 //! with the compiled side read against the EMPTY environment (§7.1).
+//!
+//! And §7's `link`, as bind: a closed term is its own link, a reference reads
+//! what its spec reads, linking commutes with the order of substitution, and
+//! a cycle is refused with its path. Print and parse round-trip `Ref`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDate};
 use prodrome::chain::{self, Compiled};
-use prodrome::fpl::{self, mk_piecewise, normalize, Closed, Env, Instant, Outcome, Term, TermF};
+use prodrome::fpl::{
+    self, link, mk_piecewise, normalize, Closed, Env, Instant, LinkError, Outcome, Term, TermF,
+};
 use proptest::prelude::*;
 
 const EVENTS: [&str; 3] = ["alpha", "beta", "gamma"];
@@ -65,9 +71,51 @@ fn an_open_term() -> impl Strategy<Value = Term> {
 }
 
 fn a_ref() -> BoxedStrategy<Term> {
-    prop::sample::select(TODOS.to_vec())
+    refs_onto(TODOS.to_vec())
+}
+
+fn refs_onto(todos: Vec<&'static str>) -> BoxedStrategy<Term> {
+    prop::sample::select(todos)
         .prop_map(|todo| ok(fpl::mk_ref(todo.to_owned())))
         .boxed()
+}
+
+/// A small term with no `Within`, whose references name only `todos`.
+fn a_spec_onto(todos: Vec<&'static str>) -> BoxedStrategy<Term> {
+    let leaf = if todos.is_empty() {
+        a_closed_leaf()
+    } else {
+        prop_oneof![2 => a_closed_leaf(), 1 => refs_onto(todos)].boxed()
+    };
+    grown_to(leaf, 3, 12, false)
+}
+
+/// One spec per todo in `TODOS`, each referring only to the todos after it,
+/// so the references draw a DAG and every one links.
+fn acyclic_specs() -> impl Strategy<Value = BTreeMap<String, Term>> {
+    (0..TODOS.len())
+        .map(|i| a_spec_onto(TODOS[i + 1..].to_vec()))
+        .collect::<Vec<_>>()
+        .prop_map(|terms| {
+            TODOS
+                .iter()
+                .map(|todo| (*todo).to_owned())
+                .zip(terms)
+                .collect()
+        })
+}
+
+/// The todos a term's references name.
+fn refs_of(term: &Term) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut all = vec![];
+    nodes(term, &mut all);
+    for node in all {
+        if let TermF::Ref { todo } = node.out() {
+            out.insert(todo.clone());
+        }
+    }
+    out
 }
 
 fn a_closed_leaf() -> BoxedStrategy<Term> {
@@ -104,46 +152,73 @@ fn a_closed_leaf() -> BoxedStrategy<Term> {
 }
 
 /// Every constructor over `leaf`, four levels deep.
-fn grown(leaf: BoxedStrategy<Term>) -> impl Strategy<Value = Term> {
-    leaf.prop_recursive(4, 48, 3, |inner| {
-        prop_oneof![
+fn grown(leaf: BoxedStrategy<Term>) -> BoxedStrategy<Term> {
+    grown_to(leaf, 4, 48, true)
+}
+
+/// Every constructor over `leaf`, `Within` only where `windows`: a linked term
+/// nests its specs, and windows nested through several references multiply
+/// their 65 samples into a case that never finishes.
+fn grown_to(
+    leaf: BoxedStrategy<Term>,
+    depth: u32,
+    size: u32,
+    windows: bool,
+) -> BoxedStrategy<Term> {
+    leaf.prop_recursive(depth, size, 3, move |inner| {
+        let mut arms: Vec<BoxedStrategy<Term>> = vec![
             (
                 prop::collection::vec(inner.clone(), 1..3),
-                prop::sample::select(vec![-8.0, -4.0, -1.0, 0.0])
+                prop::sample::select(vec![-8.0, -4.0, -1.0, 0.0]),
             )
-                .prop_map(|(ts, p)| ok(fpl::mk_conj(ts, p))),
-            (-0.9f64..0.9, inner.clone()).prop_map(|(d, t)| ok(fpl::mk_offset(d, t))),
-            (inner.clone(), inner.clone()).prop_map(|(g, b)| ok(fpl::mk_gate(g, b))),
-            (inner.clone(), inner.clone()).prop_map(|(d, t)| ok(fpl::mk_offset_by(d, t))),
-            (hours(), inner.clone()).prop_map(|(h, t)| ok(fpl::mk_shift(Duration::hours(h), t))),
-            (
-                1i64..72,
-                prop::sample::select(vec![-4.0, -1.0, 0.0]),
-                inner.clone()
-            )
-                .prop_map(|(w, p, t)| ok(fpl::mk_within(Duration::hours(w), p, t))),
-            (0.3f64..2.5, inner.clone()).prop_map(|(w, t)| ok(fpl::mk_importance(w, t))),
+                .prop_map(|(ts, p)| ok(fpl::mk_conj(ts, p)))
+                .boxed(),
+            (-0.9f64..0.9, inner.clone())
+                .prop_map(|(d, t)| ok(fpl::mk_offset(d, t)))
+                .boxed(),
+            (inner.clone(), inner.clone())
+                .prop_map(|(g, b)| ok(fpl::mk_gate(g, b)))
+                .boxed(),
+            (inner.clone(), inner.clone())
+                .prop_map(|(d, t)| ok(fpl::mk_offset_by(d, t)))
+                .boxed(),
+            (hours(), inner.clone())
+                .prop_map(|(h, t)| ok(fpl::mk_shift(Duration::hours(h), t)))
+                .boxed(),
+            (0.3f64..2.5, inner.clone())
+                .prop_map(|(w, t)| ok(fpl::mk_importance(w, t)))
+                .boxed(),
             (
                 prop::sample::select(EVENTS.to_vec()),
                 hours(),
                 inner.clone(),
-                inner.clone()
+                inner.clone(),
             )
-                .prop_map(|(e, a, t, p)| ok(fpl::mk_after(
-                    e.to_string(),
-                    moment(a),
-                    t,
-                    p,
-                    None
-                ))),
-            (inner.clone(), instants(3), prop::collection::vec(inner, 3)).prop_map(
-                |(head, ats, ts)| ok(mk_piecewise(
-                    head,
-                    ats.iter().zip(ts).map(|(at, t)| (moment(*at), t)).collect()
-                ))
-            ),
-        ]
+                .prop_map(|(e, a, t, p)| ok(fpl::mk_after(e.to_string(), moment(a), t, p, None)))
+                .boxed(),
+            (
+                inner.clone(),
+                instants(3),
+                prop::collection::vec(inner.clone(), 3),
+            )
+                .prop_map(|(head, ats, ts)| {
+                    ok(mk_piecewise(
+                        head,
+                        ats.iter().zip(ts).map(|(at, t)| (moment(*at), t)).collect(),
+                    ))
+                })
+                .boxed(),
+        ];
+        if windows {
+            arms.push(
+                (1i64..72, prop::sample::select(vec![-4.0, -1.0, 0.0]), inner)
+                    .prop_map(|(w, p, t)| ok(fpl::mk_within(Duration::hours(w), p, t)))
+                    .boxed(),
+            );
+        }
+        prop::strategy::Union::new(arms)
     })
+    .boxed()
 }
 
 fn an_env() -> impl Strategy<Value = Env> {
@@ -444,5 +519,170 @@ proptest! {
         let back = fpl::parse_term(&print).expect("a canonical print parses");
         prop_assert_eq!(fpl::print_term(&back), print);
         prop_assert_eq!(back, term);
+    }
+}
+
+// --- §7 linking: the laws of bind ---------------------------------------------
+
+/// The linked reading of `term` at every probe, or why it does not link.
+fn readings(
+    term: &Term,
+    specs: &BTreeMap<String, Term>,
+    env: &Env,
+    probes: &[i64],
+) -> Result<Vec<f64>, LinkError> {
+    let linked = link(term, specs)?;
+    Ok(probes
+        .iter()
+        .map(|h| fpl::fulfillment(&linked, moment(*h), env))
+        .collect())
+}
+
+fn close_enough(left: &[f64], right: &[f64]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| (a - b).abs() <= 1e-12)
+}
+
+#[test]
+fn a_reference_to_a_todo_the_specs_do_not_hold_is_unknown() {
+    let specs: BTreeMap<String, Term> = [("alpha".to_owned(), ok(fpl::mk_flat(0.5)))].into();
+    let term = ok(fpl::mk_conj(
+        vec![
+            ok(fpl::mk_ref("alpha".to_owned())),
+            ok(fpl::mk_ref("zeta".to_owned())),
+        ],
+        -4.0,
+    ));
+    let refusal = link(&term, &specs).expect_err("zeta is not a todo here");
+    assert_eq!(refusal, LinkError::Unknown("zeta".to_owned()));
+    assert_eq!(
+        refusal.to_string(),
+        "Ref(\"zeta\") names no todo with a function"
+    );
+}
+
+#[test]
+fn a_todo_that_references_itself_is_a_cycle_of_one() {
+    let looped = ok(fpl::mk_offset(0.5, ok(fpl::mk_ref("alpha".to_owned()))));
+    let specs: BTreeMap<String, Term> = [("alpha".to_owned(), looped)].into();
+    let refusal = link(&ok(fpl::mk_ref("alpha".to_owned())), &specs).expect_err("a loop");
+    assert_eq!(
+        refusal,
+        LinkError::Cycle(vec!["alpha".to_owned(), "alpha".to_owned()])
+    );
+    assert_eq!(refusal.to_string(), "the references loop: alpha → alpha");
+}
+
+/// A reference whose spec is a schedule, in a piece of another schedule, is
+/// spliced like any nested schedule: the linked term is in normal form.
+#[test]
+fn a_linked_schedule_is_spliced_into_the_one_it_lands_in() {
+    let inner = mk_piecewise(
+        ok(fpl::mk_flat(0.1)),
+        vec![(moment(30), ok(fpl::mk_flat(0.3)))],
+    )
+    .expect("ordered");
+    let outer = mk_piecewise(
+        ok(fpl::mk_flat(0.9)),
+        vec![(moment(20), ok(fpl::mk_ref("alpha".to_owned())))],
+    )
+    .expect("ordered");
+    let specs: BTreeMap<String, Term> = [("alpha".to_owned(), inner)].into();
+    let linked = link(&outer, &specs).expect("links");
+    assert_eq!(
+        fpl::print_term(linked.term()),
+        "Piecewise(head=Flat(value=0.9), pieces=(Piece(at=datetime(2026, 9, 1, 20, 0, 0), \
+         term=Flat(value=0.1)), Piece(at=datetime(2026, 9, 2, 6, 0, 0), term=Flat(value=0.3))))"
+    );
+    assert_eq!(schedule_is_normal(linked.term()), Ok(()));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Unit: a closed term links to itself, whatever the specs say.
+    #[test]
+    fn a_closed_term_links_to_itself(term in a_term(), specs in acyclic_specs()) {
+        prop_assert_eq!(link(&term, &specs), Ok(closed(&term)));
+        prop_assert_eq!(link(&term, &BTreeMap::new()), Ok(closed(&term)));
+    }
+
+    /// Linking keeps `mk_piecewise`'s normal form: a spec that is a schedule,
+    /// landing in a piece, is spliced and not nested.
+    #[test]
+    fn a_linked_term_is_in_normal_form(
+        term in a_spec_onto(TODOS.to_vec()),
+        specs in acyclic_specs(),
+    ) {
+        let linked = link(&term, &specs).expect("acyclic");
+        let mut all = vec![];
+        nodes(linked.term(), &mut all);
+        for node in &all {
+            prop_assert!(schedule_is_normal(node).is_ok(), "{:?}", schedule_is_normal(node));
+        }
+    }
+
+    /// A reference reads what the spec it names reads, at every instant.
+    #[test]
+    fn a_reference_reads_what_its_spec_reads(
+        specs in acyclic_specs(),
+        todo in prop::sample::select(TODOS.to_vec()),
+        env in an_env(),
+        probes in prop::collection::vec(-500i64..500, 6),
+    ) {
+        let reference = ok(fpl::mk_ref(todo.to_owned()));
+        let by_name = readings(&reference, &specs, &env, &probes).expect("acyclic");
+        let by_spec = readings(&specs[todo], &specs, &env, &probes).expect("acyclic");
+        prop_assert!(close_enough(&by_name, &by_spec), "{by_name:?} vs {by_spec:?}");
+    }
+
+    /// Associativity of bind: linking a term against specs that still hold
+    /// references reads the same as linking the specs first and the term
+    /// against the closed ones.
+    #[test]
+    fn linking_commutes_with_substitution_order(
+        term in a_spec_onto(TODOS.to_vec()),
+        specs in acyclic_specs(),
+        env in an_env(),
+        probes in prop::collection::vec(-500i64..500, 6),
+    ) {
+        let inner_first: BTreeMap<String, Term> = specs
+            .iter()
+            .map(|(todo, spec)| {
+                (todo.clone(), link(spec, &specs).expect("acyclic").into_term())
+            })
+            .collect();
+        prop_assert!(inner_first.values().all(|spec| refs_of(spec).is_empty()));
+        let outer = readings(&term, &specs, &env, &probes).expect("acyclic");
+        let inner = readings(&term, &inner_first, &env, &probes).expect("closed specs");
+        prop_assert!(close_enough(&outer, &inner), "{outer:?} vs {inner:?}");
+    }
+
+    /// A loop is refused, never evaluated, and the refusal is a real cycle:
+    /// it closes on itself and every step is a reference its spec holds.
+    #[test]
+    fn a_cycle_is_refused_and_named(
+        specs in acyclic_specs(),
+        (from, to) in (0..TODOS.len()).prop_flat_map(|i| (Just(i), i..TODOS.len())),
+    ) {
+        // `to` is at or after `from`, so a reference back from `to` to `from`
+        // closes a loop through the edge added from `from` to `to`.
+        let (upstream, downstream) = (TODOS[from], TODOS[to]);
+        let mut looped = specs.clone();
+        let back = |spec: &Term, onto: &str| {
+            ok(fpl::mk_conj(vec![spec.clone(), ok(fpl::mk_ref(onto.to_owned()))], -4.0))
+        };
+        looped.insert(upstream.to_owned(), back(&specs[upstream], downstream));
+        looped.insert(downstream.to_owned(), back(&looped[downstream], upstream));
+        let refusal = link(&ok(fpl::mk_ref(upstream.to_owned())), &looped);
+        let Err(LinkError::Cycle(path)) = refusal else {
+            return Err(TestCaseError::fail(format!("no cycle refused: {refusal:?}")));
+        };
+        prop_assert!(path.len() >= 2 && path.first() == path.last(), "{path:?}");
+        for step in path.windows(2) {
+            prop_assert!(
+                refs_of(&looped[&step[0]]).contains(&step[1]),
+                "{} does not reference {}", step[0], step[1]
+            );
+        }
     }
 }
