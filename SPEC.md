@@ -60,11 +60,11 @@ fuzzed.
 **The vector vocabulary.** `conformance/*.py` — the evidence §9 is checked
 against — is one expression of THIS grammar, printed by this printer and read
 by this parser, against a SECOND whitelist that is disjoint from a store's:
-`Folds`, `Dags`, `Fpl`, `Series`, `View`; `FoldCase`, `DagCase`, `FplCase`,
-`SeriesCase`, `ViewCase`; `Bound`, `Spec`, `Content`, `Object`, `Parents`,
-`Conflict`, `RowConflict`, `Sample`, `Knot`, `Asked`, `Row`; and, for an
-explanation's decoration, `Node`, `NoteEntry`, `One`, `Many`, `Maps`,
-`Fields`, `Pair`. A STORE's parse admits none of these and a VECTOR's parse
+`Folds`, `Dags`, `Fpl`, `Series`, `View`, `Links`; `FoldCase`, `DagCase`,
+`FplCase`, `SeriesCase`, `ViewCase`, `LinkCase`; `Bound`, `Spec`, `Content`,
+`Object`, `Parents`, `Conflict`, `RowConflict`, `Refused`, `Sample`, `Knot`,
+`Asked`, `Row`; and, for an explanation's decoration, `Node`, `NoteEntry`,
+`One`, `Many`, `Maps`, `Fields`, `Pair`. A STORE's parse admits none of these and a VECTOR's parse
 admits none of §4's or §7's: two vocabularies, one grammar, one parser, and
 neither can widen the other.
 
@@ -218,7 +218,9 @@ the events with `at <= t` in causal order.
    env_at(events, t, everything-binds)[todo]` where it names a different
    outcome than
    `outcome`, absent where they agree; `spec = flatten(…)[todo]` and `value`
-   its fulfillment at `t` under `confirmed`'s environment, absent together;
+   the fulfillment at `t` of `link(spec, flatten(…))` (§7.2) under
+   `confirmed`'s environment, absent together — and where `spec` does not
+   link, `value` is the `LinkError` instead of a number;
    `content = chosen_of(confirmed, content)[todo]`, the name of the winning
    object and never the record — a consumer that wants the payload looks the
    object up, because what a record MEANS is the host's; `conflicts = conflicts_of(confirmed)[todo]`;
@@ -261,6 +263,8 @@ Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
   − anchor))`; `Cancelled`, 1.0. A binding counts only when `done <= now`.
 - `Piecewise`: the piece in force, the last with `at <= now`, else the head.
   `OffsetBy`: `offset(⟦term⟧, ⟦delta⟧)`.
+- `Ref(todo)`: no reading of its own. It is a variable, bound by `link`
+  (§7.2); the semantics above are defined on CLOSED terms only.
 - **Normal form** (`mk_piecewise`): no pieces means the head; nested pieces
   are spliced; no adjacent equal pieces; instants strictly increasing.
   `normalize` pushes `Conj`, `Offset`, `Gate`, `Importance` and `OffsetBy`
@@ -362,6 +366,38 @@ compiled term is a term (§7), so it can be cached, stored, shipped over a wire
 and evaluated somewhere that holds no history at all, and the chain it came
 from is one schedule a reader can see rather than a nest to re-enter.
 
+### 7.2 References and linking
+
+`Ref(todo)` is "the fulfillment of todo `todo`": a subtodo's parent, a group,
+any todo whose demand is composed from other todos'. `todo` obeys `TodoId`'s
+rule and the constructor refuses anything else. It is a LEAF of `TermF` and a
+VARIABLE: a term holding one is OPEN, and evaluation — `fulfillment`,
+`explain`, series knots, the compiler — is defined on CLOSED terms only, those
+with no `Ref` anywhere. `Closed` is that type, so evaluating an open term is
+a type error and not a wrong number.
+
+```
+link(term, specs : todo → Term) : Closed | LinkError
+```
+
+`link` substitutes every `Ref(x)` with `specs[x]`, linked in turn: bind for
+the free monad over `TermF`, with todo ids as its variables. A rebuilt
+`Piecewise` goes back through `mk_piecewise`, so a spec that is a schedule,
+landing in a piece, is spliced like any nested schedule. A closed term is its
+own link, untouched. `specs` is each todo's OWN function; for a store it is
+`flatten`'s (§6.4), so `Ref(x)` means x's whole function — its revisions and
+its lifecycle — and a completed child reads 1.0 from its completion.
+
+**Refusals are values.** `LinkError::Unknown(x)` where `specs` holds no `x`.
+`LinkError::Cycle(path)` where the references loop: the substitution keeps the
+path of references it is expanding, and meeting one already on it is the
+cycle, reported with that path, its first todo repeated at the end. So `link`
+is total and never loops. A cycle is refused where it is REACHED: specs that
+loop elsewhere do not stop a term that never names them from linking.
+
+No stored byte moves: `Ref` is a new constructor (§1), and a store without one
+reads exactly what it read before.
+
 ## 8. Types an implementation must have
 
 `Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Payload`, §4's record kind as a
@@ -371,7 +407,8 @@ since one store holds one record shape; `Standing = Binds | Claims` and
 `Policy`, §5's standing as a parameter — one function of an event, carried by
 value like the payload and for the same reason, since one store reads under one
 policy; `Envelope = Sealed | Woven`;
-`TodoEvent`; `Term` as `Fix TermF`;
+`TodoEvent`; `Term` as `Fix TermF`; `Closed` (§7.2), a term with no `Ref`,
+which is what every evaluator takes, and `LinkError = Unknown | Cycle`;
 `Explanation = Cofree TermF Annotation`; `Compiled` (§7.1), a term with every
 `After` resolved beside the `Link`s it resolved, whose readers take no
 environment because a compiled term cannot consult one, and `ChainError`, whose
@@ -444,6 +481,22 @@ optimisation rather than a second evaluator.
     `core/tests/fpl_laws.rs`'s own generators, the `a_term()` and `an_env()`
     §9.5 is checked over; and pinned by every §9.8 vector, which the compiler
     does not touch.
+
+Law 14 quantifies over the SPECS, and it is what makes §7.2's `link` a
+substitution and nothing more.
+
+14. **Linking is bind** (§7.2). A closed term links to itself against any
+    specs. `fulfillment(link(Ref(x), specs), now)` equals
+    `fulfillment(link(specs[x], specs), now)` at every instant. Linking
+    against specs that still hold references reads the same as linking the
+    specs first and the term against the closed ones. The linked term is in
+    `mk_piecewise`'s normal form. A loop is refused with a path that closes
+    on itself, every step of it a reference its spec holds, and is never
+    evaluated. `Ref` round-trips through print and parse like every other
+    constructor (law 1). On `core/tests/fpl_laws.rs`'s generators, over
+    acyclic specs; and against `conformance/link.py`, written BY HAND from
+    these laws — exact linked prints, readings to 1e-9, an unknown todo and a
+    cycle refused.
 
 ## 10. Non-goals
 
