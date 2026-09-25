@@ -208,8 +208,9 @@ $ nix build .#prodrome-wasm
 
 Produces `result/web/` for a bundler and `result/nodejs/` for a script. The
 exports (`verify_objects`, `fold`, `registers`, `entries`, `fulfillment`,
-`explain`, `compile`, `series_knots`, `term_json`, `lifecycle`, `seal` and
-`merge_object`) each parse their arguments, call the core, and return JSON.
+`explain`, `compile`, `link`, `series_knots`, `term_json`, `lifecycle`,
+`seal` and `merge_object`) each parse their arguments, call the core, and
+return JSON.
 The JSON shape of a term is this crate's — `wasm/src/json.rs`, since 0.4 —
 because JSON is JavaScript's literal grammar and the core has its own. A
 record crosses as its payload's own field names; the module is built with one
