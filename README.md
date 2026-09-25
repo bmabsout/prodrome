@@ -166,9 +166,12 @@ own.
 
 **FPL.** Terms such as `Flat`, `Decay`, `Conj` (a power mean, so the weakest
 member dominates), `Within` (sampled over a window), `After` (anchored to
-another todo's completion) and `Piecewise`. `fulfillment` evaluates a term at
-an instant; `explain` returns the same computation with a value at every node;
-`series_knots` gives a term's curve over a window.
+another todo's completion), `Piecewise` and `Ref` (another todo's
+fulfillment, for subtodos and groups). A term holding a `Ref` is open;
+`link` binds every reference to that todo's function and answers a `Closed`
+term, refusing an unknown todo or a loop as a value. `fulfillment` evaluates a
+closed term at an instant; `explain` returns the same computation with a value
+at every node; `series_knots` gives a term's curve over a window.
 
 **The chain compiler.** `After` is the one term that reads history, so
 `chain::compile(term, env)` resolves every one of them against a snapshot and
@@ -242,6 +245,11 @@ instead — this crate's own log generator (`core/tests/common/mod.rs`'s
 and regenerating it is a separate, manual step —
 `cargo run --example generate_view_vectors -p prodrome-core` — that `nix
 flake check` and CI never run.
+
+`conformance/link.py` (§7.2) is the other exception: it is written BY HAND
+from `link`'s laws — a few specs, the prints they link to, their values at a
+few instants and one loop refused — because a law's own consequences are the
+evidence there, and every number in it is arithmetic a reader can redo.
 
 `wasm/conformance/` holds the JSON boundary's own evidence: the `to_json` and
 `explain` shapes for the same 150 terms, frozen when the codec moved there.

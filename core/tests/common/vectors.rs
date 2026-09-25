@@ -35,12 +35,13 @@ use prodrome::literal::{parse_literal, Call, Datetime, Table, Value};
 /// crate, and `Signature::Fields` throughout, so a field order is checked
 /// rather than assumed.
 pub const VECTORS: Table = Table(&[
-    // --- the five roots -----------------------------------------------------
+    // --- the six roots ------------------------------------------------------
     ("Folds", &["logs"]),
     ("Dags", &["dags"]),
     ("Fpl", &["terms"]),
     ("Series", &["series"]),
     ("View", &["policy", "untrusted", "cases"]),
+    ("Links", &["specs", "env", "cases"]),
     // --- one case of each ---------------------------------------------------
     (
         "FoldCase",
@@ -86,6 +87,8 @@ pub const VECTORS: Table = Table(&[
         &["seed", "term", "from", "to", "exact", "knots"],
     ),
     ("ViewCase", &["seed", "events", "instants"]),
+    // A term, what it links to (None where refused), and its readings.
+    ("LinkCase", &["term", "linked", "samples", "refused"]),
     // --- what a case is made of ---------------------------------------------
     // One todo's outcome: §6.1's environment as a tuple instead of a map.
     ("Bound", &["todo", "kind", "at"]),
@@ -101,6 +104,9 @@ pub const VECTORS: Table = Table(&[
     ("Conflict", &["todo", "kind", "writes"]),
     // The same, inside a view row, which already knows its todo.
     ("RowConflict", &["kind", "writes"]),
+    // Why a term does not link: `unknown` with the todo, or `cycle` with the
+    // loop, its first todo repeated at the end.
+    ("Refused", &["kind", "todos"]),
     // One `fulfillment` sample: the moment and the number.
     ("Sample", &["now", "value"]),
     // One knot of a series (§7 breakpoints).
