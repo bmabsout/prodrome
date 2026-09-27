@@ -245,6 +245,26 @@
             doCheck = true;
             installPhase = "touch $out";
           };
+          # The Typst package compiles its examples with the typst the
+          # pinned nixpkgs ships — 0.15.1, the version typst-wasm pins — to
+          # PDF and to HTML, so a layout that breaks either target fails here.
+          prodrome-typst = pkgs.runCommand "prodrome-typst-check"
+            {
+              nativeBuildInputs = [ pkgs.typst ];
+              src = lib.fileset.toSource { root = ./typst; fileset = ./typst; };
+            } ''
+            mkdir -p pkgs/local/prodrome-typst
+            cp -r "$src" pkgs/local/prodrome-typst/0.1.0
+            chmod -R u+w pkgs
+            cd pkgs/local/prodrome-typst/0.1.0/examples
+            for doc in roadmap item; do
+              typst compile --package-path "$NIX_BUILD_TOP/pkgs" "$doc.typ" "$doc.pdf"
+              typst compile --package-path "$NIX_BUILD_TOP/pkgs" --features html --format html "$doc.typ" "$doc.html"
+            done
+            grep -q 'href="#/todo/ship-the-viewer"' roadmap.html
+            grep -q '<svg' item.html
+            touch $out
+          '';
           inherit prodrome-cli prodrome-wasm prodrome-typst-wasm;
         };
 
