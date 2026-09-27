@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use clap::Parser;
 use proptest::prelude::*;
 
+use prodrome::event::Actor;
 use prodrome::policy::Untrusted;
 use prodrome_cli::command::Cli;
 use prodrome_cli::github::{
@@ -307,6 +308,38 @@ fn a_proposal_is_a_claim_until_a_maintainer_accepts_it() {
 }
 
 #[test]
+fn a_proposal_is_never_dated_behind_what_it_is_written_on() {
+    let root = a_store();
+    github(&root, "issues-opened.json");
+    // A later delivery lands while the model is thinking ...
+    github(&root, "comment-unmirrored-issue.json");
+    // ... and the claim about the earlier issue is recorded after it.
+    said(
+        &root,
+        &[
+            "github",
+            &fixture("issues-opened.json"),
+            "--proposal",
+            &fixture("proposal.md"),
+        ],
+    );
+    let verdict = prodrome(&root, &["verify", "--untrusted", BOT]).expect("verify answers");
+    assert!(verdict.ok, "{}", verdict.text);
+    assert_eq!(
+        said(
+            &root,
+            &[
+                "github",
+                &fixture("issues-opened.json"),
+                "--proposal",
+                &fixture("proposal.md"),
+            ],
+        ),
+        "nothing to append: already applied"
+    );
+}
+
+#[test]
 fn accepting_with_no_proposal_is_a_refusal() {
     let root = a_store();
     github(&root, "issues-opened.json");
@@ -454,6 +487,9 @@ proptest! {
         replay(&store, &applied);
         prop_assert_eq!(&objects(&first), &once);
         prop_assert!(store.verify().is_empty(), "{:?}", store.verify());
+        // The claims keep §3's clock rule for a reader who names the bot.
+        let guarded = Store::new(&first, Untrusted::of(vec![Actor::new(BOT).expect("an actor")]));
+        prop_assert!(guarded.verify().is_empty(), "{:?}", guarded.verify());
 
         let fresh = a_store();
         let again = Store::new(&fresh, Untrusted::none());
