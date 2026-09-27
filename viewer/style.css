@@ -1,0 +1,95 @@
+/* The viewer's page. Typeset content arrives as plain HTML with a few
+   classes from prodrome-typst (roadmap, price, marks, explanation, ...). */
+
+@font-face { font-family: "Libertinus Serif"; src: url("fonts/LibertinusSerif-Regular.otf"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Libertinus Serif"; src: url("fonts/LibertinusSerif-Italic.otf"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Libertinus Serif"; src: url("fonts/LibertinusSerif-Bold.otf"); font-weight: 700; font-style: normal; font-display: swap; }
+
+:root {
+  --ink: #222;
+  --muted: #666;
+  --rule: #ddd;
+  --paper: #fdfcf9;
+  --problem: #e55900;
+  --watch: #a44554;
+  --fine: #379775;
+  --unpriced: #9b9b9b;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0 auto;
+  max-width: 52rem;
+  padding: 0 16px 3rem;
+  background: var(--paper);
+  color: var(--ink);
+  font: 18px/1.5 "Libertinus Serif", "Source Serif 4", Georgia, serif;
+}
+header { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: baseline; padding: 1rem 0 .5rem; border-bottom: 1px solid var(--rule); }
+header .home { font-weight: 700; color: var(--ink); text-decoration: none; }
+#status { color: var(--muted); font-size: .8rem; }
+footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .8rem; }
+a { color: #1d5d8c; }
+code, pre, textarea { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: .85em; }
+h1, h2, h3 { line-height: 1.2; }
+
+/* Typeset pages */
+.typst table { border-collapse: collapse; width: 100%; }
+.typst th, .typst td { text-align: left; vertical-align: middle; padding: .35rem .5rem; border-bottom: 1px solid var(--rule); }
+.typst th { font-weight: 400; color: var(--muted); font-size: .8rem; }
+.typst svg { vertical-align: middle; }
+.roadmap { overflow-x: auto; }
+.summary, .crumbs, .facts { color: var(--muted); }
+.facts { margin: .5rem 0 1rem; }
+.marks { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
+.price { font-weight: 700; }
+.price.problem { color: var(--problem); }
+.price.watch { color: var(--watch); }
+.price.fine { color: var(--fine); }
+.price.unpriced { color: var(--unpriced); }
+.explanation ul { margin: .2rem 0; }
+.typst pre { overflow-x: auto; white-space: pre-wrap; }
+.note { color: var(--muted); font-size: .85rem; }
+
+/* On a phone the bar column is the first to go; the ring stays. */
+@media (max-width: 36rem) {
+  .roadmap th:nth-child(4), .roadmap td:nth-child(4) { display: none; }
+  body { font-size: 17px; }
+}
+
+/* The editor demo: a transparent textarea over its highlighted twin. */
+.editor { margin-top: 2.5rem; border-top: 1px solid var(--rule); }
+.editor .field { position: relative; }
+.editor textarea, .editor .shade {
+  margin: 0; padding: .6rem; border: 1px solid var(--rule); border-radius: 4px;
+  width: 100%; min-height: 12rem; line-height: 1.45; font-size: 14px;
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
+}
+.editor .shade { position: absolute; inset: 0; overflow: hidden; pointer-events: none; background: #fff; color: var(--ink); }
+.editor textarea { position: relative; resize: vertical; background: transparent; color: transparent; caret-color: var(--ink); }
+.editor .completions { list-style: none; margin: .2rem 0; padding: .2rem; border: 1px solid var(--rule); background: #fff; max-height: 14rem; overflow-y: auto; font-size: 14px; }
+.editor .completions li { padding: .1rem .4rem; cursor: pointer; }
+.editor .completions li[aria-selected="true"] { background: #e8f0f7; }
+.editor .completions .detail { color: var(--muted); }
+.editor .hover { min-height: 1.4em; color: var(--muted); font-size: .8rem; white-space: pre-wrap; }
+.editor .problems { margin: .2rem 0; padding-left: 1.2rem; font-size: .8rem; white-space: pre-wrap; }
+.editor .problems .error { color: var(--problem); }
+.editor .problems .warning { color: var(--muted); }
+.editor .preview { border: 1px dashed var(--rule); padding: .5rem 1rem; }
+.editor .preview.stale { opacity: .5; }
+
+/* Typst's highlighting classes */
+.typ-comment { color: #8a8a8a; font-style: italic; }
+.typ-key, .typ-marker { color: #a44554; }
+.typ-str { color: #2f7a4f; }
+.typ-num { color: #b35c00; }
+.typ-func { color: #1d5d8c; }
+.typ-heading, .typ-strong { font-weight: 700; }
+.typ-emph { font-style: italic; }
+.typ-raw, .typ-escape { color: #6b4fa0; }
+.typ-label, .typ-ref, .typ-link { color: #1d5d8c; text-decoration: underline; }
+.typ-punct, .typ-op, .typ-math-delim, .typ-math-op { color: #555; }
+.typ-pol { color: #444; }
+.typ-error { color: var(--problem); text-decoration: wavy underline; }
