@@ -592,6 +592,13 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
 /// not the Prodrome deciding what a body is for. The shape is
 /// [`wire::json_record`] — `todo`, `at`, `actor` and the payload's own fields
 /// under the names it stores them by.
+///
+/// `created` is the other half of that lookup, for a todo with NO record: per
+/// todo, the instant of its first `Created` and the text of its last — what
+/// `prodrome list` shows as the body when there is no record to read one
+/// from, and when it asks whether a todo existed yet at `at`. Every `Created`
+/// in the chain counts, before `at` or after, exactly as the command line
+/// gathers them; the rows say what `at` believes.
 #[wasm_bindgen]
 pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
     let read = Read::of(objects).map_err(refused)?;
@@ -611,6 +618,20 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
             _ => None,
         })
         .collect();
+    let mut created: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for event in read.events() {
+        if let TodoEvent::Created(event) = event {
+            let at = iso(instant_of(event.at));
+            created
+                .entry(event.todo.as_str().to_owned())
+                .and_modify(|(_, text)| *text = event.text.clone())
+                .or_insert((at, event.text));
+        }
+    }
+    let created: serde_json::Map<String, Value> = created
+        .into_iter()
+        .map(|(todo, (at, text))| (todo, json!({ "at": at, "text": text })))
+        .collect();
     printed(&object(vec![
         ("at", Value::String(iso(instant_of(moment)))),
         (
@@ -618,6 +639,7 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
             Value::Array(rows.iter().map(json_entry).collect()),
         ),
         ("records", Value::Object(records)),
+        ("created", Value::Object(created)),
     ]))
 }
 
