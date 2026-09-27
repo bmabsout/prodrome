@@ -297,7 +297,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
             let problems = store.verify();
             if problems.is_empty() {
                 let objects = store.read_dag_named()?.len();
-                let heads = store.tips().len();
+                let heads = store.tips()?.len();
                 Ok(Outcome::said(format!(
                     "ok: {objects} objects, {heads} head{}",
                     if heads == 1 { "" } else { "s" }
@@ -311,7 +311,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
         }
 
         Command::Weave => {
-            let heads = store.tips();
+            let heads = store.tips()?;
             if heads.len() < 2 {
                 return Ok(Outcome::said(format!(
                     "{} head: nothing to weave",
@@ -329,10 +329,11 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
 
 /// `init`: an `objects/` directory, and nothing else.
 ///
-/// No HEAD and no `refs/`: HEAD appears with the first object, and `refs/`
-/// exists only while there is more than one head (§3). A store this creates is
-/// therefore indistinguishable from an empty one somebody made with `mkdir`,
-/// which is the point — the layout is the format, not this program's doing.
+/// The objects are the whole store: its tips are derived from them (§3), so
+/// there is no file naming a head, now or after the first append. A store this
+/// creates is therefore indistinguishable from an empty one somebody made with
+/// `mkdir`, which is the point — the layout is the format, not this program's
+/// doing.
 fn init(dir: &Path) -> Result<Outcome, Error> {
     if dir.join("objects").is_dir() {
         return Err(Error::usage(format!(
