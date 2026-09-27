@@ -8,6 +8,71 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+Headed for 0.9.0, a MINOR version under this file's rule: no stored object
+changes, every vector answers what it answered, and the API breaks where the
+heads used to be. A store's tips are DERIVED from its objects (SPEC §3), so a
+store is its `objects/` and nothing else, and a `git merge` of two clones of a
+store is the Prodrome's own union with nothing that can conflict.
+
+### Changed (breaking)
+
+- **Tips are derived (SPEC §3):** the objects no object names as a parent.
+  `store::tips_of` is the pure function; `EventStore::tips` applies it to the
+  store and is now fallible (`Result<BTreeSet<Hash>, _>`), since it reads
+  every object it has not verified.
+- **`HEAD` and `refs/` are gone, not cached.** Nothing needed them: every read
+  already loaded the objects, the objects imply exactly the heads the files
+  named (law 17, checked on every `conformance/dag.py` store laid out as the
+  0.8 writer left it), and a cache is a second record of the heads that can
+  disagree with the first — which in a git-tracked store is also the one file
+  two clones can conflict on, the thing this change exists to remove. Old
+  stores READ unchanged; the store never writes or deletes those files, and
+  `verify` reports each as a leftover, so dropping them (`git rm HEAD refs`)
+  is an explicit act. This repository's own `roadmap/HEAD` is removed; the
+  tip derived is the tip it named.
+- `EventStore::tip` is removed. "The" tip of a store with two is not a
+  question with an answer; callers ask `tips`.
+- `append(event, None)` seals on EVERY tip: none is genesis, one is a
+  `Sealed` byte for byte as before, several is a `Woven` carrying the event.
+  In 0.8 it sealed on `HEAD` alone and left the other head standing; now the
+  next write after a union settles it. `merge(None, _)` joins every tip, as
+  before.
+- `verify` no longer reports an unreachable object or a stale head (neither
+  can exist: every object is a tip or beneath one), nor anything about HEAD
+  and `refs/` agreeing; it reports a leftover `HEAD` or `refs/`. Every
+  missing parent is reported, not only the first a walk reached. An object
+  that nothing names — once an "orphan" — is a tip.
+- `adopt`/`adopt_objects` verify every object before writing any, and write
+  parents before children, because an object is in the store the moment its
+  file is: a refused adoption leaves nothing behind, and a crash mid-adoption
+  leaves a store closed under parents. There is no placement step left.
+- `prodrome-wasm`: `verify_objects(objects)` derives the tips from the
+  objects it was handed (the `tips` argument is gone) and answers them.
+
+### Added
+
+- `EventStore::objects`, every object by name, reverified — the one read the
+  others are taken from; `read_dag` is one pass over the files.
+- **A parent index** in each `EventStore` handle (shared by its clones): name
+  → parents for every object it has verified, so `tips` is a directory
+  listing plus the objects it has not seen. A memo of a pure function (a
+  name is the hash of its bytes), so it needs no invalidation, and a deleted
+  file is simply no longer listed. Measured in release, on a synthetic store
+  of 1000 objects (366 KB): 39 ms to derive by loading everything, 2.8 ms
+  warm through the index, against 2.6 µs to read 0.8's `HEAD`; 0.6 ms for all
+  40 `dag.py` stores. The one thing it gives up, stated and test-pinned: a
+  handle that verified an object before it was tampered with keeps its
+  parents for `tips`. Every read of the objects, and `verify`, rehash every
+  file.
+- **SPEC law 17** and its evidence: `core/tests/tips.rs` (a union's tips
+  compose, and two stores' files in one directory derive them; the listing
+  order does not matter; the tips cover the store and none rests on another,
+  on random DAGs, pure and on disk); `core/tests/fold_laws.rs` (two writers'
+  unioned directories read, fold and view as their `adopt`-merge, and the
+  next append weaves what a merge would); `core/tests/dag.rs` (derived tips
+  equal the old `HEAD`/`refs/` on every conformance store). The vectors are
+  unchanged.
+
 ## [0.8.0] — 2026-09-25
 
 A MINOR version: recurrence, as one new event kind and two new terms. No
