@@ -132,6 +132,70 @@
             };
           };
 
+        # TYPST FOR THE BROWSER (`nix build .#prodrome-typst-wasm`) — an
+        # OPTIONAL EXTRA, outside the core's workspace and its lock file.
+        #
+        # `typst-wasm/` is its own cargo workspace with its own `Cargo.lock`,
+        # so the typesetter's ~290 crates never enter the tree `prodrome-core`
+        # and `prodrome-cli` are built from, and `src` above never sees it.
+        # Built the way `prodrome-wasm` is — vendored, offline, the same
+        # pinned wasm-bindgen, `wasm-opt -Os` — with the `web/` glue only: its
+        # one consumer is the viewer. `SIZES` records the module raw and
+        # brotli-compressed, since the size is what a first visit pays.
+        typst-wasm-src = lib.fileset.toSource {
+          root = ./typst-wasm;
+          fileset = lib.fileset.unions [
+            ./typst-wasm/Cargo.toml
+            ./typst-wasm/Cargo.lock
+            ./typst-wasm/src
+          ];
+        };
+
+        prodrome-typst-wasm = pkgs.stdenv.mkDerivation {
+          pname = "prodrome-typst-wasm";
+          version = "0.1.0";
+          src = typst-wasm-src;
+
+          cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./typst-wasm/Cargo.lock; };
+
+          nativeBuildInputs = [
+            pkgs.rustPlatform.cargoSetupHook
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.lld
+            pkgs.wasm-bindgen-cli_0_2_127
+            pkgs.binaryen
+            pkgs.brotli
+          ];
+
+          buildPhase = ''
+            runHook preBuild
+            cargo build --offline --frozen \
+              --profile wasm-release --target wasm32-unknown-unknown
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            wasm=target/wasm32-unknown-unknown/wasm-release/prodrome_typst_wasm.wasm
+            features="--enable-bulk-memory --enable-bulk-memory-opt --enable-sign-ext"
+            features="$features --enable-nontrapping-float-to-int --enable-mutable-globals"
+            features="$features --enable-multivalue --enable-reference-types"
+            wasm-bindgen --target web --out-dir "$out/web" --out-name typst "$wasm"
+            # shellcheck disable=SC2086
+            wasm-opt -Os $features -o "$out/web/typst_bg.wasm" "$out/web/typst_bg.wasm"
+            raw=$(stat -c %s "$out/web/typst_bg.wasm")
+            brotli=$(brotli -c -q 11 "$out/web/typst_bg.wasm" | wc -c)
+            printf 'typst_bg.wasm\t%s bytes raw\t%s bytes brotli\n' "$raw" "$brotli" | tee "$out/SIZES"
+            runHook postInstall
+          '';
+
+          meta = {
+            description = "Typst 0.15.1 as WebAssembly: HTML export, highlighting and completion";
+            license = with lib.licenses; [ mit asl20 ];
+          };
+        };
+
         # THE BINARY (`nix build .#prodrome-cli`), which is also a check: this
         # builds `cli/` and runs its tests, so `nix flake check` covers the
         # verbs and CI has the executable it points at `roadmap/`.
@@ -149,7 +213,7 @@
       in
       {
         packages = {
-          inherit prodrome-cli prodrome-wasm;
+          inherit prodrome-cli prodrome-wasm prodrome-typst-wasm;
           default = prodrome-cli;
         };
 
@@ -170,7 +234,18 @@
               doCheck = false;
             };
           };
-          inherit prodrome-cli prodrome-wasm;
+          # typst-wasm's own tests (offsets, errors as values, packages,
+          # highlighting, completion), natively: a separate workspace, so a
+          # separate check.
+          prodrome-typst-wasm-tests = pkgs.rustPlatform.buildRustPackage {
+            pname = "prodrome-typst-wasm-tests";
+            version = "0.1.0";
+            src = typst-wasm-src;
+            cargoLock.lockFile = ./typst-wasm/Cargo.lock;
+            doCheck = true;
+            installPhase = "touch $out";
+          };
+          inherit prodrome-cli prodrome-wasm prodrome-typst-wasm;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's
