@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sha2::{Digest, Sha256};
 
@@ -50,15 +51,27 @@ use crate::policy::{Policy, Untrusted};
 pub fn tips_of<'a, P: 'a>(
     objects: impl IntoIterator<Item = (&'a Hash, &'a Envelope<P>)>,
 ) -> BTreeSet<Hash> {
-    let mut names: BTreeSet<&Hash> = BTreeSet::new();
-    let mut named: BTreeSet<Hash> = BTreeSet::new();
-    for (name, object) in objects {
-        names.insert(name);
-        named.extend(parents_of(object));
+    tips_among(objects.into_iter().map(|(name, object)| {
+        let parents: &[Hash] = match object {
+            Envelope::Sealed { prev, .. } => prev.as_slice(),
+            Envelope::Woven { parents, .. } => parents,
+        };
+        (name, parents)
+    }))
+}
+
+/// [`tips_of`] over the graph alone — each name with the parents it names —
+/// which is all the derivation reads, and all the store's index keeps.
+fn tips_among<'a>(graph: impl IntoIterator<Item = (&'a Hash, &'a [Hash])>) -> BTreeSet<Hash> {
+    let mut names: Vec<&Hash> = Vec::new();
+    let mut named: BTreeSet<&Hash> = BTreeSet::new();
+    for (name, parents) in graph {
+        names.push(name);
+        named.extend(parents);
     }
     names
         .into_iter()
-        .filter(|name| !named.contains(*name))
+        .filter(|name| !named.contains(name))
         .cloned()
         .collect()
 }
@@ -139,6 +152,21 @@ pub struct EventStore<P, Pol = Untrusted> {
     /// this payload's — so the payload is part of what a store IS, not an
     /// argument to each read.
     payload: PhantomData<P>,
+    /// THE PARENT INDEX: every object this handle (or a clone of it) has
+    /// verified, by name, with the parents it names. Deriving the tips reads
+    /// every object's parents, and loading a thousand objects to learn that is
+    /// tens of milliseconds where the old `HEAD` was one small read. The index
+    /// makes it a directory listing plus the objects not seen before.
+    ///
+    /// A MEMO OF A PURE FUNCTION, which is why it needs no invalidation: a name
+    /// is the hash of the bytes, so the parents a name has are fixed forever.
+    /// What the listing no longer holds is simply not asked about — a host
+    /// that deletes an object (a rejected proposal) needs nothing here.
+    ///
+    /// ⚠️ What it gives up, stated: an object tampered with on disk AFTER this
+    /// handle verified it is not noticed by [`EventStore::tips`]. Every read of
+    /// the objects themselves, and `verify`, still rehash every file.
+    parents: Arc<Mutex<BTreeMap<Hash, Vec<Hash>>>>,
 }
 
 impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
@@ -147,7 +175,21 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             root: root.into(),
             policy,
             payload: PhantomData,
+            parents: Arc::default(),
         }
+    }
+
+    /// The index, whoever held it last. A panic cannot leave it wrong — every
+    /// write to it is one insert of a verified object's parents — so a
+    /// poisoned lock is taken as it stands.
+    fn index(&self) -> MutexGuard<'_, BTreeMap<Hash, Vec<Hash>>> {
+        self.parents.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn remember(&self, digest: &Hash, object: &Envelope<P>) {
+        self.index()
+            .entry(digest.clone())
+            .or_insert_with(|| parents_of(object));
     }
 
     /// The policy this store reads under — what `verify` asks and what a
@@ -170,30 +212,58 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     }
 
     /// Every head: the objects no object in the store names as a parent —
-    /// [`tips_of`] over [`EventStore::objects`], and nothing on disk besides.
+    /// [`tips_of`] over the store's objects, and nothing on disk besides.
     ///
-    /// FALLIBLE, because it reads every object: a store holding a file that
-    /// does not verify has no honest answer to "what are its heads", since the
-    /// file it cannot read might name any of them. Empty for an empty store.
+    /// FALLIBLE, because it reads every object it has not already verified: a
+    /// store holding a file that does not verify has no honest answer to "what
+    /// are its heads", since the file it cannot read might name any of them.
+    /// Empty for an empty store. The parents come from the handle's index, so
+    /// a steady store costs a directory listing.
     pub fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
-        Ok(tips_of(&self.objects()?))
+        let names = self.names()?;
+        let unseen: Vec<&Hash> = {
+            let index = self.index();
+            names
+                .iter()
+                .filter(|name| !index.contains_key(*name))
+                .collect()
+        };
+        for name in unseen {
+            self.load(name)?;
+        }
+        let index = self.index();
+        Ok(tips_among(
+            names.iter().map(|name| (name, index[name].as_slice())),
+        ))
     }
 
-    /// The name of every object file, in name order. A `.py` file whose stem
-    /// is not an object name is refused: the store is a set of NAMED objects,
-    /// and a file that is not one is a store somebody else has written in.
+    /// The name of every object file, in no particular order — nothing that
+    /// reads it depends on one (SPEC §9.17). A `.py` file whose stem is not an
+    /// object name is refused: the store is a set of NAMED objects, and a file
+    /// that is not one is a store somebody else has written in. A store with
+    /// no `objects/` yet holds nothing.
     fn names(&self) -> Result<Vec<Hash>, ProdromeError> {
-        self.object_files()
-            .iter()
-            .map(|path| {
-                Hash::new(stem_of(path)).map_err(|_| {
-                    ProdromeError::Store(format!(
-                        "{} is not named by an object hash",
-                        path.display()
-                    ))
-                })
-            })
-            .collect()
+        let dir = self.objects_dir();
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(Self::io(&dir, error)),
+        };
+        let mut names: Vec<Hash> = Vec::new();
+        for entry in entries {
+            let file = entry.map_err(|e| Self::io(&dir, e))?.file_name();
+            let file = file.to_string_lossy();
+            let Some(stem) = file.strip_suffix(".py") else {
+                continue;
+            };
+            names.push(Hash::new(stem).map_err(|_| {
+                ProdromeError::Store(format!(
+                    "{} is not named by an object hash",
+                    dir.join(&*file).display()
+                ))
+            })?);
+        }
+        Ok(names)
     }
 
     /// EVERY OBJECT THE STORE HOLDS, by name, each REVERIFIED — the one read
@@ -464,6 +534,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             return Ok(digest);
         }
         self.place_bytes(&digest, text.as_bytes())?;
+        self.remember(&digest, object);
         Ok(digest)
     }
 
@@ -480,7 +551,9 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             )));
         }
         let raw = fs::read(&path).map_err(|e| Self::io(&path, e))?;
-        decode(digest, &raw)
+        let object = decode(digest, &raw)?;
+        self.remember(digest, &object);
+        Ok(object)
     }
 
     /// Everything `digest` transitively rests on — STRICTLY: an object is not
@@ -1181,8 +1254,12 @@ mod tests {
         assert!(store.load(&digest).is_err());
         // The reads REFUSE: a store holding a file that does not verify has no
         // honest tips, since that file could name any object as its parent.
-        assert!(store.tips().is_err());
+        let fresh = Store::new(store.root(), roster());
+        assert!(fresh.tips().is_err());
         assert!(store.read_dag_named().is_err());
+        // The limit the parent index states: a handle that verified the object
+        // BEFORE it was tampered with keeps the parents it verified.
+        assert!(store.tips().is_ok());
         // `verify` REPORTS, twice over, and both are true: the file no longer
         // hashes to its name, and the object resting on it rests on nothing.
         assert_eq!(
@@ -1300,6 +1377,32 @@ mod tests {
                 at(10).isoformat()
             )]
         );
+        let _ = fs::remove_dir_all(store.root());
+    }
+
+    /// THE INDEX NEEDS NO INVALIDATION. It remembers parents by name, which
+    /// never change; what the directory no longer lists is simply not asked
+    /// about, so a host that deletes an object — the one removal a host does,
+    /// a rejected proposal nothing rests on — sees its parent become a tip
+    /// again through the same handle.
+    #[test]
+    fn the_index_follows_the_listing() {
+        let store = Store::new(scratch("index"), roster());
+        let first = store
+            .append(
+                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let second = store
+            .append(
+                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        assert_eq!(tips(&store), [second.clone()].into_iter().collect());
+        fs::remove_file(store.object_path(&second)).expect("removes");
+        assert_eq!(tips(&store), [first].into_iter().collect());
         let _ = fs::remove_dir_all(store.root());
     }
 
