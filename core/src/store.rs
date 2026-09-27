@@ -1,10 +1,15 @@
-//! §3 — objects on disk, heads, the linearisation, `verify`, `adopt`/`merge`.
+//! §3 — objects on disk, the tips they imply, the linearisation, `verify`,
+//! `adopt`/`merge`.
 //!
 //! Objects live at `root/objects/<name>.py`, one canonical constructor
-//! expression per file, the filename being the sha256 of its own bytes.
-//! `root/HEAD` names ONE head and is written exactly as it always has been;
-//! `root/refs/` holds a file per head and EXISTS ONLY WHILE THERE IS MORE THAN
-//! ONE, so a one-writer store is on disk exactly as it was before the DAG.
+//! expression per file, the filename being the sha256 of its own bytes. THAT IS
+//! THE WHOLE STORE. Its tips are DERIVED — the objects no object names as a
+//! parent ([`tips_of`]) — so nothing on disk names a head, and two copies of a
+//! store that each only added files are merged by putting their files in one
+//! directory: a `git merge` of two clones IS the union, and nothing in it can
+//! conflict. A store written before 0.9 also holds `HEAD` (and `refs/` while it
+//! had several heads). Nothing reads or writes them any more — the objects
+//! imply what they named (SPEC §9.17) — and `verify` asks for them to go.
 //!
 //! Effect shell, not pure core: the filesystem lives here and `literal`/`event`
 //! stay pure. Two rules the reference states and this keeps:
@@ -12,9 +17,9 @@
 //! - a load REVERIFIES, hashing the STORED BYTES against the filename before
 //!   parsing — tamper-evidence on read — and never a reprint→rehash, which
 //!   would couple every old object's validity to the current printer;
-//! - a write is content-addressed and idempotent, and HEAD moves LAST through a
-//!   temp file and a rename, so a crash leaves an orphan object (harmless,
-//!   `verify` reports it) and never a HEAD naming nothing.
+//! - a write is content-addressed and idempotent, through a temp file and a
+//!   rename, so the object appearing under its name IS the append: there is no
+//!   second file to move after it, and no crash leaves a store half-written.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -28,6 +33,35 @@ use crate::event::{mk_sealed, mk_woven, parents_of, seal_hash, Envelope, Hash, T
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::{Policy, Untrusted};
+
+/// §3 — THE TIPS OF AN OBJECT SET: every object no object in it names as a
+/// parent, whether as a `Sealed`'s `prev` or among a `Woven`'s parents.
+///
+/// A function of the SET and nothing else. The pairs may arrive in any order —
+/// a directory listing has none worth trusting — and the answer is the same
+/// (SPEC §9.17). Over a set closed under parents with no cycle, every object is
+/// a tip or an ancestor of one, which is why a store needs no file naming its
+/// heads: the objects already say. And tips compose: the tips of a union are
+/// the tips of either side that the other side does not name as a parent.
+///
+/// A name the set does not hold may be named as a parent here; it is simply
+/// not a tip. Whether that parent is MISSING is `verify`'s question, and
+/// `linearise`'s refusal.
+pub fn tips_of<'a, P: 'a>(
+    objects: impl IntoIterator<Item = (&'a Hash, &'a Envelope<P>)>,
+) -> BTreeSet<Hash> {
+    let mut names: BTreeSet<&Hash> = BTreeSet::new();
+    let mut named: BTreeSet<Hash> = BTreeSet::new();
+    for (name, object) in objects {
+        names.insert(name);
+        named.extend(parents_of(object));
+    }
+    names
+        .into_iter()
+        .filter(|name| !named.contains(*name))
+        .cloned()
+        .collect()
+}
 
 /// A closed object set in a deterministic TOPOLOGICAL order.
 ///
@@ -131,55 +165,50 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         self.root.join("objects")
     }
 
-    fn head_file(&self) -> PathBuf {
-        self.root.join("HEAD")
-    }
-
-    fn refs_dir(&self) -> PathBuf {
-        self.root.join("refs")
-    }
-
     fn object_path(&self, digest: &Hash) -> PathBuf {
         self.objects_dir().join(format!("{}.py", digest.as_str()))
     }
 
-    /// The current chain tip, `None` when HEAD is missing or empty. ONE head,
-    /// the local one, written exactly as it always was: every reader that
-    /// predates the DAG asks this and is right for as long as there is one
-    /// writer.
-    pub fn tip(&self) -> Option<Hash> {
-        let raw = fs::read_to_string(self.head_file()).ok()?;
-        Hash::new(raw.trim()).ok()
-    }
-
-    /// Every head: the objects no object in the store names as a parent.
+    /// Every head: the objects no object in the store names as a parent —
+    /// [`tips_of`] over [`EventStore::objects`], and nothing on disk besides.
     ///
-    /// `refs/` names them and exists only while there is more than one, so
-    /// absent or empty, HEAD is the whole set. A name in there that is not an
-    /// object name is ignored here and reported by [`EventStore::verify`]:
-    /// `refs/` is input, and this is its parse boundary.
-    pub fn tips(&self) -> BTreeSet<Hash> {
-        let named = self.ref_names();
-        let heads: BTreeSet<Hash> = named
-            .iter()
-            .filter_map(|name| Hash::new(name.clone()).ok())
-            .collect();
-        if !heads.is_empty() {
-            return heads;
-        }
-        self.tip().into_iter().collect()
+    /// FALLIBLE, because it reads every object: a store holding a file that
+    /// does not verify has no honest answer to "what are its heads", since the
+    /// file it cannot read might name any of them. Empty for an empty store.
+    pub fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
+        Ok(tips_of(&self.objects()?))
     }
 
-    fn ref_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = match fs::read_dir(self.refs_dir()) {
-            Ok(entries) => entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        names.sort();
-        names
+    /// The name of every object file, in name order. A `.py` file whose stem
+    /// is not an object name is refused: the store is a set of NAMED objects,
+    /// and a file that is not one is a store somebody else has written in.
+    fn names(&self) -> Result<Vec<Hash>, ProdromeError> {
+        self.object_files()
+            .iter()
+            .map(|path| {
+                Hash::new(stem_of(path)).map_err(|_| {
+                    ProdromeError::Store(format!(
+                        "{} is not named by an object hash",
+                        path.display()
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    /// EVERY OBJECT THE STORE HOLDS, by name, each REVERIFIED — the one read
+    /// every other read of the whole store is taken from. Every parent a tip
+    /// rests on is in it (the store is closed under parents, and `linearise`
+    /// says so when it is not), so this IS the DAG, with no walk from a head
+    /// needed to find it.
+    pub fn objects(&self) -> Result<BTreeMap<Hash, Envelope<P>>, ProdromeError> {
+        self.names()?
+            .into_iter()
+            .map(|name| {
+                let object = self.load(&name)?;
+                Ok((name, object))
+            })
+            .collect()
     }
 
     fn lock_file(&self) -> PathBuf {
@@ -193,8 +222,9 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// store may be appended to by more than one program, and a second writer
     /// is not always this crate. Two writers that lock different files are two
     /// writers that do not lock — an append is read-the-heads,
-    /// write-the-object, move-HEAD, and two of those interleaved fork the
-    /// chain.
+    /// write-the-object, and two of those interleaved fork the chain — which
+    /// derived tips make harmless (the next write weaves both) but not
+    /// intended.
     ///
     /// `flock` is per open file description, so this is advisory BETWEEN
     /// PROCESSES and says nothing between the threads of one. An application
@@ -232,65 +262,41 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         }
     }
 
-    /// HEAD names `head`; `refs/` names every head, and is REMOVED while there
-    /// is only one. HEAD moves LAST, by the same temp-file rename as ever, so a
-    /// crash leaves an orphan object rather than a HEAD naming nothing.
-    fn set_heads(&self, heads: &BTreeSet<Hash>, head: &Hash) -> Result<(), ProdromeError> {
-        let refs = self.refs_dir();
-        if heads.len() > 1 {
-            fs::create_dir_all(&refs).map_err(|e| Self::io(&refs, e))?;
-            for name in self.ref_names() {
-                if !heads.iter().any(|head| head.as_str() == name) {
-                    let stale = refs.join(&name);
-                    fs::remove_file(&stale).map_err(|e| Self::io(&stale, e))?;
-                }
-            }
-            for head in heads {
-                let path = refs.join(head.as_str());
-                fs::write(&path, head.as_str()).map_err(|e| Self::io(&path, e))?;
-            }
-        } else if refs.is_dir() {
-            fs::remove_dir_all(&refs).map_err(|e| Self::io(&refs, e))?;
-        }
-        let temp = self.root.join("HEAD.tmp");
-        fs::write(&temp, head.as_str()).map_err(|e| Self::io(&temp, e))?;
-        fs::rename(&temp, self.head_file()).map_err(|e| Self::io(&temp, e))
-    }
-
-    /// Seal `event` onto the current tip and advance HEAD.
+    /// Seal `event` onto the store's tips.
     ///
     /// `parents` names what this event is written ON TOP OF, and `None` means
-    /// the current HEAD — the one-writer path, unchanged: one parent, a
-    /// `Sealed`, byte for byte the object this store has always written. Two or
-    /// more make a `Woven` (a write and a join as one act). Whatever heads it
-    /// names stop being heads.
+    /// every tip the store has. One tip is the one-writer path, unchanged: a
+    /// `Sealed`, byte for byte the object this store has always written. None
+    /// is genesis. Two or more — named, or a store that holds two histories,
+    /// as a union of two replicas does — make a `Woven`, a write and a join as
+    /// one act, so the next write after a union settles it without anybody
+    /// having to ask for a merge. Whatever tips it names stop being tips,
+    /// because the new object names them.
     pub fn append(
         &self,
         event: TodoEvent<P>,
         parents: Option<&[Hash]>,
     ) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
-        let heads = self.tips();
         let on: Vec<Hash> = match parents {
             Some(named) => {
                 self.require_present(named)?;
                 named.to_vec()
             }
-            None => self.tip().into_iter().collect(),
+            None => self.tips()?.into_iter().collect(),
         };
         let object = if on.len() > 1 {
-            mk_woven(on.clone(), Some(event))?
+            mk_woven(on, Some(event))?
         } else {
-            mk_sealed(on.first().cloned(), event)
+            mk_sealed(on.into_iter().next(), event)
         };
-        let digest = self.write(&object)?;
-        self.advance(&heads, &on, &digest)?;
-        Ok(digest)
+        self.write(&object)
     }
 
-    /// Join two or more heads into one `Woven`, which becomes the tip.
+    /// Join two or more tips into one `Woven`, which becomes a tip in their
+    /// place.
     ///
-    /// `parents` of `None` means every head there is, so a bare merge means
+    /// `parents` of `None` means every tip there is, so a bare merge means
     /// "settle this store back into one history". NO who/when/why, and that is
     /// the design rather than an omission: a merge asserts structure, not a
     /// fact about a todo. A caller that wants the act attributed passes an
@@ -301,41 +307,26 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         event: Option<TodoEvent<P>>,
     ) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
-        let heads = self.tips();
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
-            None => heads.iter().cloned().collect(),
+            None => self.tips()?.into_iter().collect(),
         };
         self.require_present(&on)?;
-        let digest = self.write(&mk_woven(on.clone(), event)?)?;
-        self.advance(&heads, &on, &digest)?;
-        Ok(digest)
+        self.write(&mk_woven(on, event)?)
     }
 
-    fn advance(
-        &self,
-        heads: &BTreeSet<Hash>,
-        joined: &[Hash],
-        digest: &Hash,
-    ) -> Result<(), ProdromeError> {
-        let mut left: BTreeSet<Hash> = heads.clone();
-        for parent in joined {
-            left.remove(parent);
-        }
-        left.insert(digest.clone());
-        self.set_heads(&left, digest)
-    }
-
-    /// Take another replica's objects in, and make `digest` a head here.
+    /// Take in everything another replica's `digest` rests on, verified.
     ///
-    /// THE ONLY WAY A SECOND HEAD APPEARS. Placement is git's, minus the
-    /// ceremony: a tip we already contain changes nothing; a tip that contains
-    /// every head we hold is a FAST-FORWARD; anything else becomes a second
-    /// head for `merge` to join.
+    /// THE ONLY WAY A SECOND TIP APPEARS, and there is no placement to do: the
+    /// tips are derived, so git's three cases fall out of the objects. A tip we
+    /// already contain changes nothing; a tip that contains every tip we hold
+    /// names them all beneath it, so they stop being tips (a FAST-FORWARD);
+    /// anything else is a second tip for `merge`, or the next `append`, to
+    /// join. Answers `digest`.
     pub fn adopt(&self, source: &EventStore<P, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         self.copy_in(source, digest)?;
-        self.place(digest)
+        Ok(digest.clone())
     }
 
     /// The same adoption from a replica that is NOT a directory: `objects` maps
@@ -361,29 +352,6 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         self.copy_in_from(digest, |name| {
             objects.get(name).map(|text| text.as_bytes().to_vec())
         })?;
-        self.place(digest)
-    }
-
-    /// Where an adopted tip lands — git's placement, minus the ceremony.
-    fn place(&self, digest: &Hash) -> Result<Hash, ProdromeError> {
-        let heads = self.tips();
-        for head in &heads {
-            if head == digest || self.ancestors(head)?.contains(digest) {
-                return Ok(digest.clone());
-            }
-        }
-        let behind = self.ancestors(digest)?;
-        let mut kept: BTreeSet<Hash> = heads
-            .iter()
-            .filter(|head| !behind.contains(*head))
-            .cloned()
-            .collect();
-        let head = match self.tip() {
-            Some(tip) if kept.contains(&tip) => tip,
-            _ => digest.clone(),
-        };
-        kept.insert(digest.clone());
-        self.set_heads(&kept, &head)?;
         Ok(digest.clone())
     }
 
@@ -414,15 +382,37 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// taking in what this store lacks and REVERIFYING each object on the way.
     /// `bytes_of` is where the replica's objects are read from — a directory,
     /// or a map that arrived over a wire.
+    ///
+    /// NOTHING IS WRITTEN UNTIL EVERYTHING HAS VERIFIED, and then PARENTS
+    /// FIRST. With derived tips an object is part of the store the moment its
+    /// file appears, so a child written before its parent — by a crash between
+    /// the two, or read by another process in between — would be a store
+    /// naming an object it does not hold. Written in this order, every prefix
+    /// of the adoption is a store closed under parents.
     fn copy_in_from(
         &self,
         digest: &Hash,
         bytes_of: impl Fn(&Hash) -> Option<Vec<u8>>,
     ) -> Result<(), ProdromeError> {
-        let objects = self.objects_dir();
-        fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
-        let mut pending = vec![digest.clone()];
-        while let Some(name) = pending.pop() {
+        /// A depth-first walk, emitting an object once its parents are.
+        enum Visit {
+            Enter(Hash),
+            Leave(Hash, Vec<u8>),
+        }
+        let mut entered: BTreeSet<Hash> = BTreeSet::new();
+        let mut taken: Vec<(Hash, Vec<u8>)> = Vec::new();
+        let mut pending = vec![Visit::Enter(digest.clone())];
+        while let Some(visit) = pending.pop() {
+            let name = match visit {
+                Visit::Leave(name, raw) => {
+                    taken.push((name, raw));
+                    continue;
+                }
+                Visit::Enter(name) => name,
+            };
+            if !entered.insert(name.clone()) {
+                continue;
+            }
             if self.object_path(&name).exists() {
                 self.load(&name)?;
                 continue;
@@ -434,11 +424,24 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
                 )));
             };
             let object = decode::<P>(&name, &raw)?;
-            let here = self.object_path(&name);
-            fs::write(&here, &raw).map_err(|e| Self::io(&here, e))?;
-            pending.extend(parents_of(&object));
+            pending.push(Visit::Leave(name, raw));
+            pending.extend(parents_of(&object).into_iter().map(Visit::Enter));
+        }
+        let objects = self.objects_dir();
+        fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
+        for (name, raw) in &taken {
+            self.place_bytes(name, raw)?;
         }
         Ok(())
+    }
+
+    /// Bytes onto disk under their name, through a temp file and a rename, so
+    /// a reader never sees a half-written object even though the name it
+    /// would read it under is the hash of the whole.
+    fn place_bytes(&self, digest: &Hash, bytes: &[u8]) -> Result<(), ProdromeError> {
+        let temp = self.objects_dir().join(format!("{}.tmp", digest.as_str()));
+        fs::write(&temp, bytes).map_err(|e| Self::io(&temp, e))?;
+        fs::rename(&temp, self.object_path(digest)).map_err(|e| Self::io(&temp, e))
     }
 
     /// One object onto disk, content-addressed and idempotent: identical bytes
@@ -460,11 +463,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             }
             return Ok(digest);
         }
-        // Temp file + rename, so a reader never sees a half-written object even
-        // though the name it would read it under is the hash of the whole.
-        let temp = objects.join(format!("{}.tmp", digest.as_str()));
-        fs::write(&temp, text.as_bytes()).map_err(|e| Self::io(&temp, e))?;
-        fs::rename(&temp, &path).map_err(|e| Self::io(&temp, e))?;
+        self.place_bytes(&digest, text.as_bytes())?;
         Ok(digest)
     }
 
@@ -529,21 +528,30 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         Ok(objects)
     }
 
-    /// Every object, from every head, in [`linearise`]'s topological order.
+    /// Every object, in [`linearise`]'s topological order.
     /// THE read: parents come before children, so the sequence is causal order.
     pub fn read_dag(&self) -> Result<Vec<Envelope<P>>, ProdromeError> {
-        let objects = self.objects_from(&self.tips())?;
-        let order = linearise(&objects)?;
-        Ok(order
+        Ok(self
+            .read_dag_named()?
             .into_iter()
-            .map(|digest| objects[&digest].clone())
+            .map(|(_, object)| object)
             .collect())
     }
 
     /// The same read, with each object's name — which every caller that needs
     /// to rehash, link or report an object wants and would otherwise recompute.
+    /// ONE PASS over the files: the tips are implied by the same objects, so
+    /// there is no walk from them to do.
     pub fn read_dag_named(&self) -> Result<Vec<(Hash, Envelope<P>)>, ProdromeError> {
-        self.read_dag_at(&self.tips())
+        let mut objects = self.objects()?;
+        let order = linearise(&objects)?;
+        Ok(order
+            .into_iter()
+            .map(|digest| {
+                let object = objects.remove(&digest).expect("the order names objects");
+                (digest, object)
+            })
+            .collect())
     }
 
     /// The DAG as it stood when `tips` were its heads: every object they rest
@@ -574,7 +582,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// itself. Readers that cannot be wrong about a DAG keep calling this and
     /// find out loudly.
     pub fn read_chain(&self) -> Result<Vec<Envelope<P>>, ProdromeError> {
-        let heads = self.tips();
+        let heads = self.tips()?;
         if heads.len() > 1 {
             return Err(ProdromeError::Store(format!(
                 "the store has {} heads — read_chain reads a chain, read_dag reads a DAG",
@@ -583,7 +591,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         }
         let mut chain: Vec<Envelope<P>> = Vec::new();
         let mut seen: BTreeSet<Hash> = BTreeSet::new();
-        let mut cursor = self.tip();
+        let mut cursor = heads.into_iter().next();
         while let Some(digest) = cursor {
             if !seen.insert(digest.clone()) {
                 return Err(ProdromeError::Store(format!(
@@ -627,25 +635,43 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// Every object rehashes to its filename and parses as an envelope (a
     /// `Woven` with fewer than two parents, or one named twice, is malformed
     /// and cannot parse — the constructor is the boundary); every parent named
-    /// exists; the walk from EVERY head reaches genesis without a cycle; no
-    /// unreachable object; the heads agree with HEAD and with each other; and
-    /// no event the policy does not CONFIRM is dated behind anything it rests
-    /// on.
+    /// exists; the objects go into one order without a cycle; no event the
+    /// policy does not CONFIRM is dated behind anything it rests on; and no
+    /// `HEAD` or `refs/` is left over from before the tips were derived.
+    ///
+    /// NO UNREACHABLE OBJECT AND NO STALE HEAD, and not because they are
+    /// forgiven: they cannot be stated any more. Every object is a tip or
+    /// beneath one, and a tip is by definition something nothing rests on.
     pub fn verify(&self) -> Vec<String> {
         let files = self.object_files();
-        let tips = self.tips();
-        let (reachable, graph) = self.graph_problems(&tips);
         let mut problems: Vec<String> = Vec::new();
         for path in &files {
             problems.extend(self.object_problems(path));
         }
-        problems.extend(self.head_problems(!files.is_empty(), &tips));
-        problems.extend(graph);
-        for path in &files {
-            let stem = stem_of(path);
-            if !reachable.iter().any(|digest| digest.as_str() == stem) {
-                problems.push(format!("unreachable object {stem} (no head reaches it)"));
-            }
+        problems.extend(self.leftovers());
+        problems.extend(self.graph_problems(&files));
+        problems
+    }
+
+    /// `HEAD` and `refs/`, which a store written before 0.9 carries and
+    /// nothing reads. Reported rather than removed: a file this crate did not
+    /// write this time is not this crate's to delete, and one left in place
+    /// would name a head that stopped being one at the next append — a file
+    /// every reader of the old layout still trusts, telling it something
+    /// false. The finding makes the migration somebody's explicit act.
+    fn leftovers(&self) -> Vec<String> {
+        let mut problems: Vec<String> = Vec::new();
+        if self.root.join("HEAD").exists() {
+            problems.push(
+                "HEAD is left from before tips were derived (SPEC §3): nothing reads it, delete it"
+                    .to_owned(),
+            );
+        }
+        if self.root.join("refs").exists() {
+            problems.push(
+                "refs/ is left from before tips were derived (SPEC §3): nothing reads it, delete it"
+                    .to_owned(),
+            );
         }
         problems
     }
@@ -687,104 +713,35 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         }
     }
 
-    /// HEAD, and the heads. HEAD names ONE of them — the local one — and
-    /// `refs/` names them all, which makes two things checkable that a chain
-    /// never had to state: that the file every old reader trusts is still a
-    /// head, and that `refs/` says nothing HEAD alone could have said.
-    fn head_problems(&self, objects_exist: bool, tips: &BTreeSet<Hash>) -> Vec<String> {
-        let mut problems: Vec<String> = Vec::new();
-        if objects_exist && tips.is_empty() {
-            problems.push("objects exist but HEAD is missing or empty".to_owned());
-        }
-        if !tips.is_empty() && !objects_exist {
-            problems.push("HEAD is set but no objects exist".to_owned());
-        }
-        if !self.refs_dir().is_dir() {
-            return problems;
-        }
-        let named = self.ref_names();
-        for name in &named {
-            if Hash::new(name.clone()).is_err() {
-                problems.push(format!("refs/{name} is not an object name"));
-            }
-        }
-        let heads: BTreeSet<Hash> = named
+    /// The graph the READABLE objects make: every parent one of them names
+    /// that the store cannot give back (absent, or failing its own check —
+    /// which `object_problems` has already said once about the file itself),
+    /// then, only if there is none, a cycle, and the dating rule.
+    fn graph_problems(&self, files: &[PathBuf]) -> Vec<String> {
+        let objects: BTreeMap<Hash, Envelope<P>> = files
             .iter()
-            .filter_map(|name| Hash::new(name.clone()).ok())
+            .filter_map(|path| {
+                let name = Hash::new(stem_of(path)).ok()?;
+                let object = self.load(&name).ok()?;
+                Some((name, object))
+            })
             .collect();
-        if heads.len() == 1 {
-            problems
-                .push("refs/ names one head — a single head is HEAD's alone to name".to_owned());
+        let named: BTreeSet<Hash> = objects.values().flat_map(parents_of).collect();
+        let breaks: Vec<String> = named
+            .iter()
+            .filter(|parent| !objects.contains_key(*parent))
+            .filter_map(|parent| {
+                let error = self.load(parent).err()?;
+                Some(format!("chain broke at {}: {error}", parent.as_str()))
+            })
+            .collect();
+        if !breaks.is_empty() {
+            return breaks;
         }
-        if !heads.is_empty() {
-            let tip = self.tip();
-            if !tip.as_ref().is_some_and(|tip| heads.contains(tip)) {
-                problems.push(format!(
-                    "HEAD names {}, which is not one of the heads in refs/",
-                    tip.as_ref().map_or("(nothing)", Hash::as_str)
-                ));
-            }
+        match linearise(&objects) {
+            Ok(order) => dating_problems(&order, &objects, &self.policy),
+            Err(error) => vec![error.to_string()],
         }
-        problems
-    }
-
-    /// Walk every head to genesis; the reachable set plus any break en route.
-    /// Reachability is over PARENTS, so it is the same walk for a chain and for
-    /// a DAG.
-    fn graph_problems(&self, tips: &BTreeSet<Hash>) -> (BTreeSet<Hash>, Vec<String>) {
-        let mut visited: BTreeSet<Hash> = BTreeSet::new();
-        let mut objects: BTreeMap<Hash, Envelope<P>> = BTreeMap::new();
-        let mut pending: Vec<Hash> = tips.iter().cloned().collect();
-        while let Some(name) = pending.pop() {
-            if !visited.insert(name.clone()) {
-                continue;
-            }
-            match self.load(&name) {
-                Ok(object) => {
-                    pending.extend(parents_of(&object));
-                    objects.insert(name, object);
-                }
-                Err(error) => {
-                    return (
-                        visited,
-                        vec![format!("chain broke at {}: {error}", name.as_str())],
-                    )
-                }
-            }
-        }
-        let order = match linearise(&objects) {
-            Ok(order) => order,
-            Err(error) => return (visited, vec![error.to_string()]),
-        };
-        let mut problems = self.stale_heads(tips);
-        problems.extend(dating_problems(&order, &objects, &self.policy));
-        (visited, problems)
-    }
-
-    /// A head another head rests on is not a head. It is what a `refs/` entry
-    /// decays into when a merge lands and the old name is left behind, and it
-    /// is invisible to every other check here: the objects are all present, all
-    /// reachable, all in order.
-    fn stale_heads(&self, tips: &BTreeSet<Hash>) -> Vec<String> {
-        let mut problems: Vec<String> = Vec::new();
-        for head in tips {
-            for other in tips {
-                if other == head {
-                    continue;
-                }
-                if self
-                    .ancestors(other)
-                    .is_ok_and(|behind| behind.contains(head))
-                {
-                    problems.push(format!(
-                        "refs/{} is not a head: {} rests on it",
-                        head.as_str(),
-                        other.as_str()
-                    ));
-                }
-            }
-        }
-        problems
     }
 }
 
@@ -875,7 +832,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_created, Actor};
+    use crate::event::{mk_completed, mk_created, mk_reopened, Actor};
     use crate::literal::Datetime;
     use crate::reference::Todo;
 
@@ -892,6 +849,10 @@ mod tests {
     /// reads under it, and only the dating test can tell.
     fn roster() -> Untrusted {
         Untrusted::of([Actor::new("triage").expect("valid")])
+    }
+
+    fn tips(store: &Store) -> BTreeSet<Hash> {
+        store.tips().expect("the tips derive")
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -919,9 +880,17 @@ mod tests {
                 None,
             )
             .expect("appends");
-        assert_eq!(store.tip(), Some(second.clone()));
-        assert_eq!(store.tips(), [second.clone()].into_iter().collect());
-        assert!(!store.refs_dir().exists(), "one head lives in HEAD alone");
+        assert_eq!(tips(&store), [second.clone()].into_iter().collect());
+        assert_eq!(
+            fs::read_dir(store.root())
+                .expect("the store is a directory")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name != ".lock")
+                .collect::<Vec<_>>(),
+            vec!["objects".to_owned()],
+            "the objects are the whole store: no file names a head"
+        );
         assert_eq!(store.verify(), Vec::<String>::new());
         let names: Vec<Hash> = store
             .read_dag_named()
@@ -952,7 +921,7 @@ mod tests {
         there
             .adopt(&here, &shared)
             .expect("fast-forwards into an empty store");
-        assert_eq!(there.tip(), Some(shared.clone()));
+        assert_eq!(tips(&there), [shared.clone()].into_iter().collect());
 
         let mine = here
             .append(
@@ -968,7 +937,7 @@ mod tests {
             .expect("appends");
         here.adopt(&there, &theirs).expect("adopts");
         assert_eq!(
-            here.tips(),
+            tips(&here),
             [mine.clone(), theirs.clone()].into_iter().collect()
         );
         assert!(here.concurrent(&mine, &theirs).expect("both present"));
@@ -976,11 +945,7 @@ mod tests {
         assert!(here.read_chain().is_err(), "two heads are not a chain");
 
         let merged = here.merge(None, None).expect("merges");
-        assert_eq!(here.tips(), [merged.clone()].into_iter().collect());
-        assert!(
-            !here.refs_dir().exists(),
-            "refs/ goes when one head is left"
-        );
+        assert_eq!(tips(&here), [merged.clone()].into_iter().collect());
         assert_eq!(here.verify(), Vec::<String>::new());
         // Sorted by `mk_woven`, so a merge is its parent SET and two replicas
         // joining the same two heads produce the same bytes.
@@ -991,6 +956,102 @@ mod tests {
         assert_eq!(here.events().expect("reads").len(), 3);
         let _ = fs::remove_dir_all(here.root());
         let _ = fs::remove_dir_all(there.root());
+    }
+
+    /// THE NEXT WRITE SETTLES A UNION. Two tips — here, two replicas' files
+    /// put in one directory, which is what a `git merge` of two clones does —
+    /// and an ordinary append with no parents named: it is written on top of
+    /// BOTH, as one `Woven` carrying the event, and the store is one history
+    /// again without anybody having asked for a merge.
+    #[test]
+    fn the_next_append_weaves_every_tip() {
+        let here = Store::new(scratch("weave-here"), roster());
+        let there = Store::new(scratch("weave-there"), roster());
+        let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
+        for store in [&here, &there] {
+            store.append(shared.clone(), None).expect("appends");
+        }
+        let mine = here
+            .append(
+                mk_completed("alpha", at(2), "bassel", "mine").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let theirs = there
+            .append(
+                mk_completed("alpha", at(2), "bassel", "theirs").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        for entry in fs::read_dir(there.objects_dir()).expect("lists") {
+            let path = entry.expect("an entry").path();
+            let file = path.file_name().expect("a file name");
+            fs::copy(&path, here.objects_dir().join(file)).expect("copies");
+        }
+        assert_eq!(
+            tips(&here),
+            [mine.clone(), theirs.clone()].into_iter().collect()
+        );
+        let woven = here
+            .append(
+                mk_reopened("alpha", at(3), "bassel", "both").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        assert_eq!(tips(&here), [woven.clone()].into_iter().collect());
+        let object = here.load(&woven).expect("loads");
+        assert!(matches!(object, Envelope::Woven { event: Some(_), .. }));
+        let mut joined = vec![mine, theirs];
+        joined.sort();
+        assert_eq!(parents_of(&object), joined);
+        assert_eq!(here.verify(), Vec::<String>::new());
+        let _ = fs::remove_dir_all(here.root());
+        let _ = fs::remove_dir_all(there.root());
+    }
+
+    /// NO STORED BYTE MOVES, AND THE OLD FILES ARE SAID TO GO. A store laid out
+    /// the way 0.8 wrote it — HEAD naming the tip, `refs/` naming both heads
+    /// while there were two — derives exactly the heads those files named, and
+    /// `verify` names each file as a leftover rather than deleting it.
+    #[test]
+    fn an_old_store_derives_what_its_head_named_and_is_told_to_drop_it() {
+        let store = Store::new(scratch("legacy"), roster());
+        let first = store
+            .append(
+                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let second = store
+            .append(
+                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let aside = store
+            .append(
+                mk_created("beta", at(2), "bassel", "", "").expect("valid"),
+                Some(std::slice::from_ref(&first)),
+            )
+            .expect("appends");
+        fs::write(store.root().join("HEAD"), second.as_str()).expect("writes HEAD");
+        let refs = store.root().join("refs");
+        fs::create_dir_all(&refs).expect("creates refs/");
+        for head in [&second, &aside] {
+            fs::write(refs.join(head.as_str()), head.as_str()).expect("writes a ref");
+        }
+        assert_eq!(tips(&store), [second, aside].into_iter().collect());
+        assert_eq!(
+            store.verify(),
+            vec![
+                "HEAD is left from before tips were derived (SPEC §3): nothing reads it, delete it",
+                "refs/ is left from before tips were derived (SPEC §3): nothing reads it, delete it",
+            ]
+        );
+        fs::remove_file(store.root().join("HEAD")).expect("removes HEAD");
+        fs::remove_dir_all(&refs).expect("removes refs/");
+        assert_eq!(store.verify(), Vec::<String>::new());
+        let _ = fs::remove_dir_all(store.root());
     }
 
     /// THE VECTOR FOR `adopt_objects`: a replica whose objects arrive as BYTES
@@ -1040,7 +1101,7 @@ mod tests {
             .adopt_objects(&over_the_wire, &theirs)
             .expect("adopts bytes");
 
-        assert_eq!(by_bytes.tips(), by_dir.tips());
+        assert_eq!(tips(&by_bytes), tips(&by_dir));
         assert_eq!(
             by_bytes.read_dag_named().expect("reads"),
             by_dir.read_dag_named().expect("reads")
@@ -1063,6 +1124,11 @@ mod tests {
             .collect();
         let missing = Store::new(scratch("bytes-orphan"), roster());
         assert!(missing.adopt_objects(&orphan, &theirs).is_err());
+        // And a refused adoption WROTE NOTHING: with derived tips an object is
+        // in the store the moment its file is, so the tip whose parent never
+        // arrived must not have landed on its own.
+        assert_eq!(tips(&liar), BTreeSet::new());
+        assert_eq!(tips(&missing), BTreeSet::new());
 
         for store in [&by_dir, &by_bytes, &there, &liar, &missing] {
             let _ = fs::remove_dir_all(store.root());
@@ -1087,10 +1153,9 @@ mod tests {
             )
             .expect("appends");
         here.adopt(&there, &second).expect("fast-forwards");
-        assert_eq!(here.tips(), [second.clone()].into_iter().collect());
-        assert!(!here.refs_dir().exists(), "a fast-forward stays a chain");
+        assert_eq!(tips(&here), [second.clone()].into_iter().collect());
         here.adopt(&there, &first).expect("a contained tip");
-        assert_eq!(here.tips(), [second].into_iter().collect());
+        assert_eq!(tips(&here), [second].into_iter().collect());
         let _ = fs::remove_dir_all(here.root());
         let _ = fs::remove_dir_all(there.root());
     }
@@ -1104,12 +1169,22 @@ mod tests {
                 None,
             )
             .expect("appends");
+        store
+            .append(
+                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
         let path = store.object_path(&digest);
         let text = fs::read_to_string(&path).expect("reads");
         fs::write(&path, text.replace("alpha", "omega")).expect("writes");
         assert!(store.load(&digest).is_err());
-        // Twice over, and both are true: the file no longer hashes to its name,
-        // and the walk from HEAD cannot get past it.
+        // The reads REFUSE: a store holding a file that does not verify has no
+        // honest tips, since that file could name any object as its parent.
+        assert!(store.tips().is_err());
+        assert!(store.read_dag_named().is_err());
+        // `verify` REPORTS, twice over, and both are true: the file no longer
+        // hashes to its name, and the object resting on it rests on nothing.
         assert_eq!(
             store.verify(),
             vec![
@@ -1228,30 +1303,27 @@ mod tests {
         let _ = fs::remove_dir_all(store.root());
     }
 
+    /// THERE ARE NO ORPHANS. An object nothing names is not unreachable, it is
+    /// a TIP: here a second genesis, what adopting an unrelated replica makes.
+    /// It is folded like any other, and the next append joins it.
     #[test]
-    fn an_orphan_is_unreachable_and_verify_says_so() {
+    fn an_object_nothing_names_is_a_tip() {
         let store = Store::new(scratch("orphan"), roster());
-        store
+        let first = store
             .append(
                 mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
                 None,
             )
             .expect("appends");
-        // An object written with no head naming it — what a crash mid-append
-        // leaves behind.
-        let orphan = store
+        let other = store
             .write(&mk_sealed(
                 None,
                 mk_created("beta", at(1), "bassel", "", "").expect("valid"),
             ))
             .expect("writes");
-        assert_eq!(
-            store.verify(),
-            vec![format!(
-                "unreachable object {} (no head reaches it)",
-                orphan.as_str()
-            )]
-        );
+        assert_eq!(tips(&store), [first, other].into_iter().collect());
+        assert_eq!(store.verify(), Vec::<String>::new());
+        assert_eq!(store.events().expect("reads").len(), 2);
         let _ = fs::remove_dir_all(store.root());
     }
 

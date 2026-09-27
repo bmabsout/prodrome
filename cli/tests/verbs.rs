@@ -289,11 +289,19 @@ fn weave_settles_two_heads_and_is_a_no_op_on_one() {
             Some(&[elder]),
         )
         .expect("appends onto an elder object");
-    assert_eq!(store.tips().len(), 2, "the store has forked");
+    assert_eq!(
+        store.tips().expect("the tips derive").len(),
+        2,
+        "the store has forked"
+    );
 
     let merge = said(&root, &["weave"]);
     assert_eq!(merge.len(), 64, "a weave answers with the object it wrote");
-    assert_eq!(store.tips().len(), 1, "and the store is one history again");
+    assert_eq!(
+        store.tips().expect("the tips derive").len(),
+        1,
+        "and the store is one history again"
+    );
     assert!(store.verify().is_empty(), "{:?}", store.verify());
 
     let text = said(&root, &["list", "--at", "2026-09-10T12:00:00"]);

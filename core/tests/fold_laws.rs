@@ -600,7 +600,7 @@ fn diverged(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, St
         here.append(event.clone(), None).expect("appends");
     }
     let there = Store::new(root.join("there"), roster());
-    if let Some(tip) = here.tip() {
+    for tip in here.tips().expect("the tips derive") {
         there.adopt(&here, &tip).expect("adopts");
     }
     for event in mine {
@@ -609,7 +609,7 @@ fn diverged(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, St
     for event in theirs {
         there.append(event.clone(), None).expect("appends");
     }
-    if let Some(tip) = there.tip() {
+    for tip in there.tips().expect("the tips derive") {
         here.adopt(&there, &tip).expect("adopts");
     }
     (guard, here)
@@ -696,7 +696,7 @@ proptest! {
             .collect();
         prop_assert_eq!(conflicted(&fold(&nodes_from(&store), None, &policy)), expected.clone());
 
-        if store.tips().len() > 1 {
+        if store.tips().expect("the tips derive").len() > 1 {
             store.merge(None, None).expect("merges");
             prop_assert_eq!(
                 conflicted(&fold(&nodes_from(&store), None, &policy)),
@@ -869,7 +869,7 @@ proptest! {
         let state = fold(&nodes_from(&store), None, &policy);
         prop_assert_eq!(&env_of(&state).tended, &union);
         prop_assert!(conflicted(&state).is_empty(), "a tending wrote a register");
-        if store.tips().len() > 1 {
+        if store.tips().expect("the tips derive").len() > 1 {
             store.merge(None, None).expect("merges");
             prop_assert_eq!(&env_of(&fold(&nodes_from(&store), None, &policy)).tended, &union);
         }

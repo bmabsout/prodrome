@@ -4,9 +4,11 @@
 //! Each vector is a store the reference built by appending, adopting another
 //! replica's objects, and sometimes merging — so the DAGs have two heads,
 //! merges, and triage-actor events dated behind what they rest on. Each is
-//! rebuilt here by writing the object files and the heads, which is the honest
-//! way to test a READER: nothing about the order or the findings may depend on
-//! this side having been the writer.
+//! rebuilt here by writing the object files alone, which is the honest way to
+//! test a READER: nothing about the order, the tips or the findings may depend
+//! on this side having been the writer. The vectors' `tips` were the heads the
+//! writer's `HEAD` and `refs/` named; that the objects alone derive them is
+//! SPEC §9.17, and the second test lays those files out too and says so.
 
 mod common;
 
@@ -34,9 +36,6 @@ fn roster() -> Untrusted {
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-/// Write a vector's objects and heads out as a store on disk. `refs/` exists
-/// only while there is more than one head, and HEAD names one of them — the
-/// shape `EventStore::set_heads` would have produced.
 /// One vector's objects, by name — the map the JSON keyed and the literal
 /// holds as a tuple of `Object(name=, literal=)`.
 fn objects_of(dag: &Value) -> BTreeMap<String, String> {
@@ -51,6 +50,8 @@ fn objects_of(dag: &Value) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Write a vector's objects out as a store on disk — the object files and
+/// NOTHING ELSE, because that is all a store is (§3): its tips are derived.
 fn materialise(dag: &Value) -> Store {
     let root = std::env::temp_dir().join(format!(
         "prodrome-dag-{}-{}",
@@ -59,11 +60,20 @@ fn materialise(dag: &Value) -> Store {
     ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("objects")).expect("creates the store");
-    let objects = objects_of(dag);
-    let tips = strings(dag, "tips");
-    for (name, text) in &objects {
+    for (name, text) in &objects_of(dag) {
         fs::write(root.join("objects").join(format!("{name}.py")), text).expect("writes an object");
     }
+    Store::new(root, roster())
+}
+
+/// The same store as the 0.8 writer left it: the objects, plus `HEAD` naming
+/// one head and `refs/` naming every head while there were several — the
+/// shape its `set_heads` produced, and the shape every store written before
+/// the tips were derived is in.
+fn materialise_as_written_before(dag: &Value) -> Store {
+    let store = materialise(dag);
+    let root = store.root();
+    let tips = strings(dag, "tips");
     if tips.len() > 1 {
         fs::create_dir_all(root.join("refs")).expect("creates refs/");
         for tip in &tips {
@@ -71,7 +81,70 @@ fn materialise(dag: &Value) -> Store {
         }
     }
     fs::write(root.join("HEAD"), &tips[0]).expect("writes HEAD");
-    Store::new(root, roster())
+    store
+}
+
+/// What the 0.8 reader took for the heads: `refs/` when it named any, HEAD
+/// otherwise. Kept here, in the test, as the one statement of the old reading
+/// the law below compares against — the crate no longer has it.
+fn heads_as_read_before(root: &std::path::Path) -> Vec<String> {
+    let mut named: Vec<String> = fs::read_dir(root.join("refs"))
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    named.sort();
+    if named.is_empty() {
+        let head = fs::read_to_string(root.join("HEAD")).expect("HEAD reads");
+        named.push(head.trim().to_owned());
+    }
+    named
+}
+
+/// SPEC §9.17 — NO STORED BYTE MOVES. For every conformance store, laid out
+/// the way the 0.8 writer left it, the tips derived from the objects are
+/// EXACTLY the heads its `HEAD` and `refs/` named; and `verify` finds what
+/// the vector found, plus the two files as leftovers and nothing else.
+#[test]
+fn every_dag_vector_derives_the_heads_its_old_files_named() {
+    let data = vectors("dag.py");
+    let mut forked = 0;
+    for dag in each(&data, "dags") {
+        let seed = integer(field(dag, "seed"));
+        let store = materialise_as_written_before(dag);
+        let derived: Vec<String> = store
+            .tips()
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"))
+            .iter()
+            .map(|tip| tip.as_str().to_owned())
+            .collect();
+        let named = heads_as_read_before(store.root());
+        assert_eq!(
+            derived, named,
+            "seed {seed}: derived tips against HEAD/refs"
+        );
+        if named.len() > 1 {
+            forked += 1;
+        }
+        let mut expected = strings(dag, "verify");
+        let mut leftovers = vec![
+            "HEAD is left from before tips were derived (SPEC §3): nothing reads it, delete it"
+                .to_owned(),
+        ];
+        if named.len() > 1 {
+            leftovers.push(
+                "refs/ is left from before tips were derived (SPEC §3): nothing reads it, delete it"
+                    .to_owned(),
+            );
+        }
+        expected.splice(0..0, leftovers);
+        assert_eq!(store.verify(), expected, "seed {seed}: verify");
+        let _ = fs::remove_dir_all(store.root());
+    }
+    assert!(forked > 0, "some vectors' old files named two heads");
 }
 
 #[test]
@@ -99,6 +172,7 @@ fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
 
         let tips: Vec<String> = store
             .tips()
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"))
             .iter()
             .map(|tip| tip.as_str().to_owned())
             .collect();
