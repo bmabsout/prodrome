@@ -84,8 +84,17 @@ since this grammar has tuples and no mapping.
 - An object's **name** is `sha256(utf8(print(envelope)))` in lowercase hex.
   The file `objects/<name>.py` holds exactly that print, and a loader
   re-hashes the bytes before parsing them.
-- **Heads.** `HEAD` holds one tip; `refs/` holds one file per head while there
-  are several. `tips()` is `{HEAD}` unless `refs/` is non-empty.
+- **Tips are derived.** `tips()` is the set of objects no object names as a
+  parent (as a `Sealed`'s `prev` or among a `Woven`'s parents): a function of
+  the object set alone, in any order it is listed. A store on disk is its
+  `objects/` and nothing else, so two copies that each only added objects are
+  merged by uniting the files — a `git merge` of two clones is this union and
+  cannot conflict. A store written before 0.9 also holds `HEAD` (one tip) and
+  `refs/` (one file per head while there were several); nothing reads them,
+  the objects derive exactly what they named (§9.17), and `verify` reports
+  them as leftovers to delete.
+- **Appending** seals on every tip: none is genesis, one is a `Sealed`, more
+  is a `Woven` carrying the event, so the next write after a union joins it.
 - **Linearisation** is Kahn's algorithm over parents with a min-heap on the
   name: deterministic, and arbitrary between incomparable objects, which is
   what registers make visible (§6.6). A missing parent or a cycle is a
@@ -93,17 +102,20 @@ since this grammar has tuples and no mapping.
 - `ancestors(x)` is the transitive parent closure; `concurrent(a, b)` holds
   when neither is an ancestor of the other.
 - **`verify`** reports an object not hashing to its name, a missing parent, a
-  cycle, an unreachable object, a HEAD inconsistent with the objects, a
-  malformed `Woven`, a stale head, and an event the policy does not `confirm`
-  (§5) dated before any of its ancestors — a writer whose stamp the host
-  forces cannot legitimately be dated behind what it was written on top of,
-  where a backfill can.
-- **`adopt(source, tip)`** copies verified objects in. A tip already contained
-  changes nothing; a tip containing every head fast-forwards; otherwise it
-  becomes a second head. The source may be another store or a map of prints
-  that arrived over a wire (`adopt_objects`); only where the bytes are read
-  from differs. **`merge(parents)`** writes a `Woven` and makes it the single
-  tip.
+  cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, and an event the
+  policy does not `confirm` (§5) dated before any of its ancestors — a writer
+  whose stamp the host forces cannot legitimately be dated behind what it was
+  written on top of, where a backfill can. There is no unreachable object and
+  no stale head to report: every object is a tip or beneath one, and no tip
+  rests on another.
+- **`adopt(source, tip)`** copies in everything `tip` rests on that the store
+  lacks, verifying all of it before writing any, and writing parents before
+  children, since an object belongs to the store as soon as its file exists.
+  Placement falls out of the derivation: a tip already contained changes
+  nothing; a tip containing every tip fast-forwards; otherwise it is a second
+  tip. The source may be another store or a map of prints that arrived over a
+  wire (`adopt_objects`); only where the bytes are read from differs.
+  **`merge(parents)`** writes a `Woven` over them, every tip by default.
 
 ## 4. Events
 
@@ -606,6 +618,25 @@ Laws 15 and 16 are §7.3's: care is a set, and recurrence reads it as of now.
     generators; and against `conformance/recur.py`, written BY HAND from
     these laws — `Tended` prints folded under the reference policy, a claimed
     pass among them, and exact term prints with readings to 1e-9.
+
+Law 17 is §3's: the tips are the objects, so a union of stores is a union of
+files.
+
+17. **The tips are derived.** (a) The tips of a union of two stores are the
+    tips of either side that the union does not name as a parent, and equal
+    the tips of the union's object set; two stores' files copied into one
+    directory derive exactly them. (b) Two writers who each append to a copy
+    of one store, and whose object directories are then united (a `git
+    merge`), read, fold and view exactly as the Prodrome's own replica merge
+    of the two stores (`adopt` of the other's tips), and the next `append`
+    writes the same `Woven` a `merge` carrying that event would. (c)
+    Derivation does not depend on the order objects are listed or files were
+    written. And NO STORED BYTE MOVES: for every `conformance/dag.py` store,
+    laid out with the `HEAD` and `refs/` its writer left, the derived tips are
+    exactly the heads those files named. On `core/tests/tips.rs`'s random
+    DAGs, pure and on disk, which also check that the tips cover the store and
+    none rests on another; `core/tests/fold_laws.rs`'s two-writer property;
+    and `core/tests/dag.rs`.
 
 ## 10. Non-goals
 

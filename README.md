@@ -195,14 +195,20 @@ The precise semantics are in [`SPEC.md`](SPEC.md).
 ```
 <root>/
   objects/<sha256>.py     one object, its canonical print
-  HEAD                    the single tip
-  refs/<sha256>           one file per head, only while there is more than one
   .lock                   held during an append
 ```
 
 Objects are append-only and never rewritten. A print is a Python-literal
 expression from a closed grammar (SPEC §2); the parser admits that grammar and
 nothing else, and nothing is evaluated.
+
+Nothing names the heads. A store's tips are DERIVED: the objects no object
+names as a parent. So a store under git merges by union: two clones that each
+appended only added files, and `git merge` of the two is the Prodrome's own
+merge, with nothing that can conflict. The next append on the merged store is
+written on top of both tips at once. (A store from before 0.9 has a `HEAD`,
+and `refs/` if it had several heads; `prodrome verify` asks for them to be
+deleted, and the tips it derives are the ones they named.)
 
 ## WebAssembly
 
