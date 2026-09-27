@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod command;
+pub mod github;
 pub mod price;
 pub mod render;
 
@@ -52,7 +53,7 @@ pub enum Error {
 }
 
 impl Error {
-    fn usage(message: impl Into<String>) -> Error {
+    pub(crate) fn usage(message: impl Into<String>) -> Error {
         Error::Usage(message.into())
     }
 }
@@ -323,6 +324,10 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
             // be the author of.
             let digest = store.merge(None, None)?;
             Ok(Outcome::said(digest.as_str()))
+        }
+
+        Command::Github { payload, proposal } => {
+            github::apply(&store, payload, proposal.as_deref())
         }
     }
 }
