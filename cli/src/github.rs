@@ -510,7 +510,7 @@ fn meant(
     }
 
     if let Some(reply) = proposal {
-        return proposed(issue, reply, known).map(|mut more| {
+        return proposed(issue, reply, known, &events).map(|mut more| {
             events.append(&mut more);
             Ok(events)
         });
@@ -625,8 +625,22 @@ fn require_target(price: &Price, todo: &str, known: &Known<'_>) -> Result<(), Er
 }
 
 /// The pricing step's reply, as the claim it records: its `/price` line, as
-/// [`BOT`], dated at the issue's last update, with its rationale as the note.
-fn proposed(issue: &Issue, reply: &str, known: &Known<'_>) -> Result<Vec<TodoEvent<Todo>>, Error> {
+/// [`BOT`], with its rationale as the note.
+///
+/// DATED NO EARLIER THAN WHAT IT IS WRITTEN ON. A reader who names the bot
+/// untrusted holds its events to §3's clock rule — never dated behind an
+/// ancestor — and the model takes minutes, in which other deliveries land. So
+/// the claim is dated at the latest instant among the issue's last update,
+/// every event the store holds, and the events this delivery writes before
+/// it. That reads the store, so a replay is recognised by what it claims
+/// instead of by its bytes: a claim of the same price and note for this item,
+/// dated at or after this delivery's instant, is this one already applied.
+fn proposed(
+    issue: &Issue,
+    reply: &str,
+    known: &Known<'_>,
+    before: &[TodoEvent<Todo>],
+) -> Result<Vec<TodoEvent<Todo>>, Error> {
     let line =
         price_line(reply).ok_or_else(|| Error::usage("proposal: the reply has no /price line"))?;
     let price = parse_price(line)?;
@@ -638,13 +652,26 @@ fn proposed(issue: &Issue, reply: &str, known: &Known<'_>) -> Result<Vec<TodoEve
     let todo = issue.todo();
     require_target(&price, &todo, known)?;
     let spec = term_of(&price)?.expect("only Accept names no term");
-    Ok(vec![mk_spec_revised(
-        &todo,
-        issue.updated_at,
-        BOT,
-        spec,
-        &rationale_of(reply),
-    )?])
+    let note = rationale_of(reply);
+
+    let applied = known.events.iter().any(|event| {
+        matches!(event, TodoEvent::SpecRevised(e)
+            if e.todo.as_str() == todo
+                && e.actor.as_str() == BOT
+                && e.at >= issue.updated_at
+                && e.spec == spec
+                && e.note == note)
+    });
+    if applied {
+        return Ok(Vec::new());
+    }
+    let at = known
+        .events
+        .iter()
+        .chain(before)
+        .map(TodoEvent::at)
+        .fold(issue.updated_at, std::cmp::max);
+    Ok(vec![mk_spec_revised(&todo, at, BOT, spec, &note)?])
 }
 
 /// The text after the reply's `Rationale:` label (bold or not), cut to
