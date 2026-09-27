@@ -1,0 +1,1 @@
+Sealed(prev='c4898cb731ccd02205f91b8242655963c5a48b1875e18dde8242b51093274635', event=Created(todo='a-policy-beyond-a-roster', at=datetime(2026, 9, 10, 0, 31, 34, 139089), actor='bassel', text='ship a Policy example that is not a set of actor names', note=''))

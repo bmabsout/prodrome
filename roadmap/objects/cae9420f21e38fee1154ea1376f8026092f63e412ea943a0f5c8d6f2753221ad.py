@@ -1,0 +1,1 @@
+Sealed(prev='028d68845a9d66cce741cc74adbe451bfab7eadf0f963165957f7cde27aa0350', event=Created(todo='a-book-style-guide', at=datetime(2026, 9, 10, 0, 31, 34, 153595), actor='bassel', text='a book-style guide beside SPEC.md and the README', note=''))

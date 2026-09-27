@@ -1,0 +1,1 @@
+Sealed(prev='8a813a7ca6ee4b61dfeb3cc8238e024e7ba6e3c1a39b57222a62ef6279dd3c52', event=SpecRevised(todo='chain-compiler', at=datetime(2026, 9, 10, 21, 57, 25, 866488), actor='bassel', spec=Flat(value=0.4), note=''))

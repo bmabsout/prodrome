@@ -1,0 +1,1 @@
+Sealed(prev='24025c435b5e1531969cd79487fee4e35eb512e0a23ad24693dbe53546af8983', event=SpecRevised(todo='property-test-the-cli-verbs', at=datetime(2026, 9, 10, 0, 31, 34, 132801), actor='bassel', spec=Flat(value=0.75), note=''))

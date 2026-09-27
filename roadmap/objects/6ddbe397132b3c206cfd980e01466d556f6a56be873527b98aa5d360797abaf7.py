@@ -1,0 +1,1 @@
+Sealed(prev='afa8595544a51994b824662d7f5f0669851a1d5187f13e689f7e7f254aafcd65', event=Created(todo='one-annotated-fold', at=datetime(2026, 9, 10, 5, 48, 9, 909361), actor='bassel', text='A single annotated fold replacing fulfillment and explain as two walks, taken only when the cost is measured', note=''))

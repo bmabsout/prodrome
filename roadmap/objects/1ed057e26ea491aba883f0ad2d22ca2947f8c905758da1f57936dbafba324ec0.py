@@ -1,0 +1,1 @@
+Sealed(prev='2913e5070183b7b3c3e6fdc637ce12605d02d0d5975ed58bb7d0168bda07010a', event=SpecRevised(todo='the-vectors-are-literals', at=datetime(2026, 9, 9, 10, 9, 3), actor='bassel', spec=Flat(value=0.45), note=''))

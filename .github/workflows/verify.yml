@@ -1,0 +1,28 @@
+# THE ROADMAP IS DATA, AND THIS IS THE CHECK ON IT. The binary is built from
+# the code on `main` and pointed at this branch's store: `verify` says every
+# object rehashes to its name and rests on a parent that exists, and `list`
+# says the whole store still folds. A pull request that appends an item
+# proves both here.
+name: verify
+
+on:
+  push:
+    branches: [roadmap-data]
+  pull_request:
+    branches: [roadmap-data]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix build github:${{ github.repository }}/main#prodrome-cli -o result-cli --print-build-logs
+      - run: ./result-cli/bin/prodrome verify --store roadmap
+      - run: ./result-cli/bin/prodrome list --store roadmap

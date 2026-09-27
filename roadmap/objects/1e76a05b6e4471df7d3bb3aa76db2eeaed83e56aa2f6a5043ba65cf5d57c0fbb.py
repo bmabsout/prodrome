@@ -1,0 +1,1 @@
+Sealed(prev='ec44856ba97b037ee3a1722bc2ea02703955ae3ba4de28b3795f279f3209e4cb', event=SpecRevised(todo='a-cli-and-a-roadmap-store', at=datetime(2026, 9, 10, 0, 31, 34, 121673), actor='bassel', spec=Flat(value=0.55), note=''))
