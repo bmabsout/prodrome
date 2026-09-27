@@ -36,3 +36,11 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 # — the same one the core uses, so a message crossing the boundary reads the
 # same on both sides.
 thiserror = "2"
+# `prodrome github` reads a webhook payload, which is JSON. Already in the
+# workspace's lock through `wasm/`, so the CLI adds a crate and no new tree.
+serde_json = "1"
+
+[dev-dependencies]
+# The mirror's laws — a replay appends nothing, close then reopen is open —
+# are properties over generated deliveries, like the core's.
+proptest = "1"

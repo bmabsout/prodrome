@@ -425,6 +425,8 @@ dependencies = [
  "chrono",
  "clap",
  "prodrome-core",
+ "proptest",
+ "serde_json",
  "thiserror",
 ]
 
