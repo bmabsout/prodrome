@@ -8,7 +8,9 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
-Headed for 0.9.0, a MINOR version under this file's rule: no stored object
+## [0.9.0] - 2026-09-27
+
+A MINOR version under this file's rule: no stored object
 changes, every vector answers what it answered, and the API breaks where the
 heads used to be. A store's tips are DERIVED from its objects (SPEC §3), so a
 store is its `objects/` and nothing else, and a `git merge` of two clones of a
