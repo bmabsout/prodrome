@@ -8,6 +8,35 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+The Prodrome in the browser: a read-only viewer of this crate's roadmap,
+folded and typeset on the reader's machine, published to GitHub Pages. Typst
+enters the repository only as optional extras beside the core; `core/` and
+`cli/` do not depend on it, and no stored byte changes.
+
+### Added
+
+- **`typst-wasm/`**, Typst 0.15.1 compiled to WebAssembly
+  (`nix build .#prodrome-typst-wasm`), in a cargo workspace of its own so the
+  core's lock file never sees it. Exports `compile_html(source, files)` (the
+  HTML document or diagnostics with spans, as a value, never a throw),
+  `highlight`, `complete`, `hover` and `add_font`; every offset is UTF-16.
+  The module is 22.0 MB, 6.3 MB with brotli.
+- **`typst/`**, the `prodrome-typst` package: the roadmap list ordered by
+  fulfillment, an item's page, the ring (the next 72 hours) and the bar (30
+  days, the past faded, a tick at now), coloured Problem below 0.5, Watch
+  below 0.7, else Fine. It reads the core's JSON and computes nothing about
+  fulfillment. `checks.prodrome-typst` compiles its examples to PDF and HTML.
+- **`viewer/`**, the static web app (`nix build .#prodrome-viewer`), with
+  routes `#/` and `#/todo/<id>`, a Typst editor demo on the item page, and a
+  service worker that caches the shell per build and the objects forever.
+  `viewer/assemble.sh` puts any store's objects beside it.
+- **`.github/workflows/pages.yml`** deploys it on pushes to `main`, by hand,
+  and after `roadmap-data`'s `verify` succeeds on a push (`workflow_run`: a
+  push trigger for that orphan branch would never fire from `main`).
+- `prodrome-wasm`: `entries` also answers `created`, each todo's first
+  `Created` instant and last `Created` text, the body `prodrome list` shows
+  for a todo with no record. Additive; the rows are unchanged.
+
 ## [0.9.0] - 2026-09-27
 
 A MINOR version under this file's rule: no stored object
