@@ -196,6 +196,33 @@
           };
         };
 
+        # THE VIEWER (`nix build .#prodrome-viewer`): the static app — no
+        # data in it — that folds a store with prodrome-wasm and typesets it
+        # with prodrome-typst-wasm and the `typst/` package. An EXAMPLE host.
+        # TypeScript typechecked by nixpkgs' `tsc` and bundled by its
+        # `esbuild`, so nothing comes from npm; `viewer/build.sh` is the whole
+        # recipe, and `viewer/assemble.sh` puts a store's objects beside it.
+        prodrome-viewer = pkgs.stdenv.mkDerivation {
+          pname = "prodrome-viewer";
+          version = "0.1.0";
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [ ./viewer ./typst ];
+          };
+          nativeBuildInputs = [ pkgs.esbuild pkgs.typescript ];
+          buildPhase = ''
+            runHook preBuild
+            sh viewer/build.sh "$out" ${prodrome-wasm}/web ${prodrome-typst-wasm}/web \
+              ${pkgs.libertinus}/share/fonts ${pkgs.source-serif}/share/fonts
+            runHook postBuild
+          '';
+          dontInstall = true;
+          meta = {
+            description = "A read-only Prodrome viewer: folded and typeset in the browser";
+            license = with lib.licenses; [ mit asl20 ];
+          };
+        };
+
         # THE BINARY (`nix build .#prodrome-cli`), which is also a check: this
         # builds `cli/` and runs its tests, so `nix flake check` covers the
         # verbs and CI has the executable it points at `roadmap/`.
@@ -213,7 +240,7 @@
       in
       {
         packages = {
-          inherit prodrome-cli prodrome-wasm prodrome-typst-wasm;
+          inherit prodrome-cli prodrome-wasm prodrome-typst-wasm prodrome-viewer;
           default = prodrome-cli;
         };
 
@@ -265,7 +292,7 @@
             grep -q '<svg' item.html
             touch $out
           '';
-          inherit prodrome-cli prodrome-wasm prodrome-typst-wasm;
+          inherit prodrome-cli prodrome-wasm prodrome-typst-wasm prodrome-viewer;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's

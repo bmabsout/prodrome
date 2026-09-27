@@ -195,7 +195,7 @@
 
   _div("roadmap", table(
     columns: 4,
-    table.header([Next 72 h], [Price], [Item], [30 days]),
+    table.header([72 h], [Price], [Item], [30 days]),
     ..open
       .map(e => (
         _ring-of(data, e.todo),
