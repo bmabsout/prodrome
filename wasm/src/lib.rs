@@ -19,7 +19,7 @@
 //!
 //! | function         | asks                                                    |
 //! | ---------------- | ------------------------------------------------------- |
-//! | `verify_objects` | §3: do these bytes hash to these names, and do they form one DAG under these heads |
+//! | `verify_objects` | §3: do these bytes hash to these names, form one DAG, and end at which tips |
 //! | `lifecycle`      | §4: spell one lifecycle event, through its own `mk_*`    |
 //! | `seal`           | §3: seal an event onto these heads — the name and the bytes |
 //! | `merge_object`   | §3: join these heads — structure, so no event and no actor |
@@ -32,11 +32,11 @@
 //! | `link`           | §7.2: every ref in a term bound to the todo it names     |
 //! | `term_json`      | §2 → §7: a stored term's print, as the JSON shape above  |
 //!
-//! `store` is not reachable from here except for [`prodrome::store::linearise`],
-//! which is pure: the rest of that module is file-backed and a browser has no
-//! `events/` directory. The objects arrive over `/api/chain` instead, and
-//! [`verify_objects`] is `EventStore::verify`'s findings asked of a set in
-//! memory.
+//! `store` is not reachable from here except for [`prodrome::store::linearise`] and
+//! [`prodrome::store::tips_of`], which are pure: the rest of that module is
+//! file-backed and a browser has no `events/` directory. The objects arrive over
+//! `/api/chain` instead, and [`verify_objects`] is `EventStore::verify`'s
+//! findings asked of a set in memory.
 //!
 //! NO CLOCK, anywhere below. §1 forbids one in the core, and a browser's clock
 //! is the least trustworthy in the system; every moment is an argument — the
@@ -60,7 +60,7 @@ use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, total_seconds, Delta, Instant};
 use prodrome::literal::Datetime;
 use prodrome::registers;
-use prodrome::store::linearise;
+use prodrome::store::{linearise, tips_of};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
@@ -191,36 +191,33 @@ impl Row {
 /// §3's `verify`, for the set of objects a browser was handed.
 ///
 /// `objects` is `[{hash, text}]` — every object's claimed name beside the exact
-/// canonical print that name is a hash of. `tips` is every head the walk starts
-/// from (a DAG has heads, plural; a chain has one).
+/// canonical print that name is a hash of. The TIPS ARE DERIVED from them
+/// (`prodrome::store::tips_of` over the objects that verified), exactly as a
+/// store derives its own, and the answer's `tips` is that set: nobody has to
+/// tell a replica where its heads are.
 ///
 /// What is checked is `EventStore::verify`'s list, less the findings that are
 /// about a DIRECTORY and cannot be asked of a set in memory (a file that will
-/// not read, HEAD/`refs/` disagreement, a stale head):
+/// not read, a `HEAD` or `refs/` left from before tips were derived):
 ///
 /// 1. every object rehashes to the name it claims;
 /// 2. every object PARSES as an envelope — which the SubtleCrypto path never
 ///    could, so a malformed `Woven` or an unknown constructor is now caught in
 ///    the tab;
-/// 3. the walk from every head, over the parents the objects THEMSELVES name,
+/// 3. the walk from every tip, over the parents the objects THEMSELVES name,
 ///    reaches genesis without a gap;
 /// 4. no cycle, and the objects go into one causal order (`linearise`);
-/// 5. nothing sent is left off that walk.
+/// 5. nothing sent is left off that walk — which, with derived tips, only an
+///    object that failed 1 or 2 (and so names no parents anybody can read)
+///    or one caught in a cycle can be.
 ///
 /// Each finding's wording is the store's where the store has one and
 /// a page's own where the page already had one, so the sentence a
 /// reader gets does not depend on which checker produced it — only the line
 /// that says which one ran does.
-///
-/// TAKES THE TIPS, which the brief's signature did not: reachability, depth
-/// and orphanhood are all relative to the heads, and a verification split down
-/// the middle — the hashes here, the walk in TypeScript — would be exactly the
-/// second implementation this crate exists to remove.
 #[wasm_bindgen]
-pub fn verify_objects(objects: &str, tips: &str) -> Result<String, JsError> {
+pub fn verify_objects(objects: &str) -> Result<String, JsError> {
     let sent = parse_objects(objects).map_err(refused)?;
-    let tips: Vec<String> =
-        serde_json::from_str(tips).map_err(|e| refused(format!("tips: expected a list ({e})")))?;
 
     let mut problems: Vec<String> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
@@ -259,11 +256,12 @@ pub fn verify_objects(objects: &str, tips: &str) -> Result<String, JsError> {
         rows.push(row);
     }
 
-    if tips.is_empty() {
-        problems.push("the server named no tip".to_owned());
-    }
-    // Breadth first from every head at once, so `depth` is the distance from
-    // the nearest head and the order stays heads-first the way the page reads
+    let tips: Vec<String> = tips_of(&parsed)
+        .into_iter()
+        .map(|tip| tip.as_str().to_owned())
+        .collect();
+    // Breadth first from every tip at once, so `depth` is the distance from
+    // the nearest tip and the order stays tips-first the way the page reads
     // it.
     let mut order: Vec<usize> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -276,11 +274,9 @@ pub fn verify_objects(objects: &str, tips: &str) -> Result<String, JsError> {
             continue;
         }
         let Some(at) = index.get(&name).copied() else {
-            problems.push(if depth == 0 {
-                format!("the tip {name} was not sent with the chain")
-            } else {
-                format!("object {name} is named as a parent but was not sent")
-            });
+            problems.push(format!(
+                "object {name} is named as a parent but was not sent"
+            ));
             continue;
         };
         seen.insert(name);
@@ -300,7 +296,7 @@ pub fn verify_objects(objects: &str, tips: &str) -> Result<String, JsError> {
         .filter(|at| rows[**at].parents.is_empty() && rows[**at].problem.is_empty())
         .map(|at| rows[*at].hash.clone())
         .collect();
-    if genesis.is_empty() && problems.is_empty() {
+    if genesis.is_empty() && problems.is_empty() && !rows.is_empty() {
         problems.push(
             "the walk ended without reaching a genesis object (an object with no parents)"
                 .to_owned(),
