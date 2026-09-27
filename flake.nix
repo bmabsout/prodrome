@@ -27,10 +27,10 @@
         # handed `./.`, so a README edit does not change a derivation's hash.
         # `conformance/` is in it because the tests read those vectors: a check
         # that cannot reach its evidence is a check that passes for the wrong
-        # reason. `roadmap/` is NOT in it, for the mirror-image reason: it is
-        # DATA the binary reads and not source the binary is built from, so a
-        # todo appended to it must rebuild nothing, and CI runs `prodrome
-        # verify --store roadmap` against the checkout rather than a copy.
+        # reason. The roadmap is not in it: it lives on the `roadmap-data`
+        # branch, DATA the binary reads and not source the binary is built
+        # from, so a todo appended to it rebuilds nothing, and CI runs
+        # `prodrome verify` against that branch's checkout.
         src = lib.fileset.toSource {
           root = ./.;
           fileset = lib.fileset.unions [
