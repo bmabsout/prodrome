@@ -268,6 +268,19 @@ fn item(completion: Completion) -> Item {
     }
 }
 
+/// typst-ide offers everything that fits the context and leaves matching
+/// what was typed to the editor. Here: labels starting with it first, then
+/// labels containing it, case-insensitively, each in typst-ide's order.
+fn narrowed(completions: Vec<Completion>, typed: &str) -> Vec<Completion> {
+    let typed = typed.to_lowercase();
+    let (mut starts, mut rest): (Vec<_>, Vec<_>) = completions
+        .into_iter()
+        .filter(|c| c.label.to_lowercase().contains(&typed))
+        .partition(|c| c.label.to_lowercase().starts_with(&typed));
+    starts.append(&mut rest);
+    starts
+}
+
 /// What could go at `cursor` (UTF-16) in `source`: `{from, items}`, or `null`
 /// when nothing completes there. `explicit` is a request the reader made
 /// (Ctrl+Space) rather than one typing implied, and widens what is offered.
@@ -287,10 +300,13 @@ pub fn complete(source: &str, cursor: usize, explicit: Option<bool>) -> String {
         explicit.unwrap_or(false),
     );
     match found {
-        Some((from, completions)) => json(&Completions {
-            from: offsets.utf16(from),
-            items: completions.into_iter().map(item).collect(),
-        }),
+        Some((from, completions)) => {
+            let typed = main.text().get(from..at).unwrap_or("");
+            json(&Completions {
+                from: offsets.utf16(from),
+                items: narrowed(completions, typed).into_iter().map(item).collect(),
+            })
+        }
         None => "null".to_owned(),
     }
 }
@@ -390,7 +406,8 @@ mod tests {
             .iter()
             .filter_map(|item| item["label"].as_str())
             .collect();
-        assert!(labels.contains(&"heading"), "{labels:?}");
+        assert_eq!(labels.first(), Some(&"heading"), "{labels:?}");
+        assert!(labels.iter().all(|l| l.to_lowercase().contains("hea")), "{labels:?}");
     }
 
     #[test]
