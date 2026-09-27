@@ -1,0 +1,126 @@
+# THE ISSUE MIRROR. Every issue on this repository is an item on the roadmap:
+# `gh-<number>` in the store on the `roadmap-data` branch. This workflow turns
+# one GitHub event into the events it means with `prodrome github` — opened,
+# retitled, closed, reopened, and a maintainer's `/price` comment — and pushes
+# them to that branch. docs/github-agent.md explains the flow and its trust
+# boundaries.
+#
+# WHAT RUNS HERE IS THIS REPOSITORY'S OWN CODE. `issues` and `issue_comment`
+# workflows run from the default branch, and the only code checked out is
+# `main`; nothing from a pull request is ever checked out or built, and there
+# is no `pull_request_target` trigger. The text of an issue or a comment only
+# ever reaches the CLI as the event payload file, never a shell command line.
+name: mirror
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write # push to roadmap-data
+  issues: write # the one welcome comment, and answers to a malformed /price
+
+jobs:
+  mirror:
+    # Cheap filters before a build: comments on pull requests are not
+    # mirrored, an edit matters only when it changed the title, and a comment
+    # matters only when it is a maintainer's `/price`. The CLI applies the
+    # same rules again and is the authority; these only save a runner.
+    if: >-
+      !github.event.issue.pull_request && (
+        (github.event_name == 'issues' &&
+          (github.event.action != 'edited' || github.event.changes.title)) ||
+        (github.event_name == 'issue_comment' &&
+          startsWith(github.event.comment.body, '/price') &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+                   github.event.comment.author_association))
+      )
+    runs-on: ubuntu-latest
+    env:
+      ISSUE: ${{ github.event.issue.number }}
+      ACTION: ${{ github.event_name }}/${{ github.event.action }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: code
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: roadmap-data
+          path: data
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix build ./code#prodrome-cli -o result-cli --print-build-logs
+
+      - name: Apply the event
+        id: apply
+        run: |
+          set +e
+          ./result-cli/bin/prodrome github "$GITHUB_EVENT_PATH" --store data/roadmap \
+            > applied.txt 2> refused.txt
+          status=$?
+          set -e
+          cat applied.txt
+          if [ "$status" -eq 2 ] && [ "$GITHUB_EVENT_NAME" = issue_comment ]; then
+            # A maintainer's /price that did not parse or named nothing: say
+            # why on the issue, and fail nothing. (An outsider's /price never
+            # gets here: the CLI ignores it before reading its grammar.)
+            echo "refused=true" >> "$GITHUB_OUTPUT"
+            cat refused.txt >&2
+            exit 0
+          fi
+          cat refused.txt >&2
+          exit "$status"
+
+      - name: Answer a refused /price
+        if: steps.apply.outputs.refused == 'true'
+        run: |
+          {
+            echo "That \`/price\` was not recorded:"
+            echo
+            echo '```'
+            sed 's/^prodrome: //' refused.txt
+            echo '```'
+            echo
+            echo "The grammar: \`/price 40\`, \`/price 30 --deadline 2026-10-15\`," \
+                 "\`/price ref gh-7\`, or \`/price accept\` to take the pricing bot's proposal."
+          } > answer.md
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file answer.md
+
+      - name: Verify the store
+        run: ./result-cli/bin/prodrome verify --store data/roadmap
+
+      - name: Push to roadmap-data
+        working-directory: data
+        run: |
+          ../code/.github/scripts/roadmap-push.sh "mirror: #$ISSUE $ACTION"
+
+      # ONCE PER ISSUE. The comment carries a marker, and it is posted only
+      # when no comment on the issue carries it yet, so a re-run of this job
+      # or a replayed delivery says nothing twice.
+      - name: Welcome the issue
+        if: github.event_name == 'issues' && github.event.action == 'opened'
+        run: |
+          marker='<!-- prodrome:mirror -->'
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" \
+               --jq '.[].body' | grep -qF "$marker"; then
+            echo "already welcomed"
+            exit 0
+          fi
+          {
+            echo "$marker"
+            echo "This issue is on the roadmap as" \
+                 "[\`gh-$ISSUE\`](https://bmabsout.github.io/prodrome/#/todo/gh-$ISSUE)."
+            echo
+            echo "Its price is a fulfillment from 0% to 100%, where low is urgent: it" \
+                 "starts at a neutral 80%, a pricing bot may suggest another, and a" \
+                 "maintainer sets it with \`/price\`. The scale is in" \
+                 "[PRICING.md](https://github.com/$GITHUB_REPOSITORY/blob/roadmap-data/PRICING.md)."
+          } > welcome.md
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file welcome.md
