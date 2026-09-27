@@ -1,5 +1,5 @@
-//! SPEC §9.2–9.4, §9.6 and §9.9, as properties over random logs and random
-//! two-replica DAGs.
+//! SPEC §9.2–9.4, §9.6, §9.9 and §9.17 b, as properties over random logs and
+//! random two-replica DAGs.
 //!
 //! The vectors say this side agrees with the reference on the cases the
 //! reference happened to generate. These say the AGREEMENT IS STRUCTURAL:
@@ -872,6 +872,98 @@ proptest! {
         if store.tips().expect("the tips derive").len() > 1 {
             store.merge(None, None).expect("merges");
             prop_assert_eq!(&env_of(&fold(&nodes_from(&store), None, &policy)).tended, &union);
+        }
+    }
+}
+
+/// Every object file of `from`, copied into `to/objects/` — what `git merge`
+/// of two clones does to a store's directory, since every name is new or the
+/// same bytes.
+fn copy_files(from: &Store, to: &std::path::Path) {
+    let objects = to.join("objects");
+    fs::create_dir_all(&objects).expect("creates objects/");
+    for entry in fs::read_dir(from.root().join("objects")).expect("lists objects/") {
+        let path = entry.expect("an entry").path();
+        fs::copy(&path, objects.join(path.file_name().expect("a name"))).expect("copies");
+    }
+}
+
+/// Two CLONES of one store: a shared history, copied as files, then each
+/// writer appending to its own copy with nothing named as a parent — exactly
+/// what two people with a git checkout of the same store each do.
+fn clones(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, Store, Store) {
+    let root = std::env::temp_dir().join(format!(
+        "prodrome-clones-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let guard = Replicas(root.clone());
+    let here = Store::new(root.join("here"), roster());
+    for event in shared {
+        here.append(event.clone(), None).expect("appends");
+    }
+    let there = Store::new(root.join("there"), roster());
+    copy_files(&here, there.root());
+    for event in mine {
+        here.append(event.clone(), None).expect("appends");
+    }
+    for event in theirs {
+        there.append(event.clone(), None).expect("appends");
+    }
+    (guard, here, there)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// §9.17 b — A GIT MERGE IS THE PRODROME'S MERGE. Two writers append to
+    /// clones of one store; their object directories, unioned as files, read
+    /// EXACTLY as the Prodrome's own replica merge of the two stores does
+    /// (`adopt` of every tip the other side has): the same tips, the same
+    /// linearisation, the same registers and the same entries at every moment
+    /// asked. Settling it is the same object on both routes — whether by a bare
+    /// `merge` or by the next `append`, which weaves every tip.
+    #[test]
+    fn a_union_of_two_clones_folds_as_the_prodrome_merge(
+        shared in a_schedule(1..8),
+        mine in a_schedule(0..6),
+        theirs in a_schedule(0..6),
+        when in 0i64..WINDOW,
+    ) {
+        let policy = roster();
+        let mine: Vec<Event> = mine.iter().map(|(d, at)| d.at_with_note(moment(*at), "mine")).collect();
+        let theirs: Vec<Event> =
+            theirs.iter().map(|(d, at)| d.at_with_note(moment(*at), "theirs")).collect();
+        let (guard, here, there) = clones(&realise(&shared, 0), &mine, &theirs);
+
+        let unioned = Store::new(guard.0.join("unioned"), roster());
+        copy_files(&here, unioned.root());
+        copy_files(&there, unioned.root());
+        let adopted = Store::new(guard.0.join("adopted"), roster());
+        copy_files(&here, adopted.root());
+        for tip in there.tips().expect("the tips derive") {
+            adopted.adopt(&there, &tip).expect("adopts");
+        }
+
+        prop_assert_eq!(unioned.tips().expect("derives"), adopted.tips().expect("derives"));
+        let (by_files, by_adoption) = (nodes_from(&unioned), nodes_from(&adopted));
+        prop_assert_eq!(&by_files, &by_adoption);
+        prop_assert_eq!(fold(&by_files, None, &policy), fold(&by_adoption, None, &policy));
+        let t = moment(when);
+        prop_assert_eq!(
+            view::entries(&by_files, t, &policy).expect("folds"),
+            view::entries(&by_adoption, t, &policy).expect("folds")
+        );
+        prop_assert_eq!(unioned.verify(), adopted.verify());
+
+        if unioned.tips().expect("derives").len() > 1 {
+            let settle = mk_completed("alpha", far(), "bassel", "settled").expect("valid");
+            let woven = unioned.append(settle.clone(), None).expect("weaves");
+            prop_assert_eq!(unioned.tips().expect("derives"), [woven.clone()].into_iter().collect());
+            let named: Vec<prodrome::event::Hash> =
+                adopted.tips().expect("derives").into_iter().collect();
+            prop_assert_eq!(adopted.merge(Some(&named), Some(settle)).expect("merges"), woven);
         }
     }
 }
