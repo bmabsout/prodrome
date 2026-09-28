@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 
 use common::vectors::{call, each, field, maybe_text, moment, strings, text_at, vectors};
 use prodrome::fpl::{
-    fulfillment, instant_of, link, parse_term, print_term, Env, LinkError, Outcome, Term,
+    fulfillment, instant_of, link, parse_term, print_term, Env, LinkError, Outcome,
 };
+use prodrome::term::Term;
 
 /// A print, parsed, and checked to print back byte for byte (§9.1).
 fn term_of(print: &str) -> Term {

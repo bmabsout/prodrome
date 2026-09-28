@@ -35,11 +35,11 @@ use common::terms::{a_term, an_env, an_exact_term, hours, moment};
 use prodrome::breaks::series_knots;
 use prodrome::event::{canonical, Actor};
 use prodrome::fpl::{
-    datetime_of, explained, fulfillment, holds_absent, normalize, print_term, Closed, Env, Outcome,
-    Term,
+    datetime_of, explained, fulfillment, holds_absent, print_term, Closed, Env, Outcome,
 };
 use prodrome::literal::{print_literal, Value};
 use prodrome::policy::Untrusted;
+use prodrome::term::{normalize, Term};
 use prodrome::view;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};

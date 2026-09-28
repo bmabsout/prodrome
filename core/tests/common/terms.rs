@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 
 use chrono::{Duration, NaiveDate};
-use prodrome::fpl::{self, mk_piecewise, Env, Instant, Outcome, Term};
+use prodrome::fpl::{self, mk_piecewise, Env, Instant, Outcome};
+use prodrome::term::{CurvePoint, Term};
 use proptest::prelude::*;
 
 pub const EVENTS: [&str; 3] = ["alpha", "beta", "gamma"];
@@ -112,7 +113,7 @@ pub fn a_valued_leaf() -> BoxedStrategy<Term> {
             ok(fpl::mk_curve(
                 ats.iter()
                     .zip(&vs)
-                    .map(|(at, v)| fpl::CurvePoint {
+                    .map(|(at, v)| CurvePoint {
                         at: moment(*at),
                         value: *v,
                         label: String::new(),
