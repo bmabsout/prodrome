@@ -8,6 +8,35 @@ constructor's fields never change, in any release.
 
 ## [Unreleased]
 
+### Added
+
+- **`prodrome-github PAYLOAD.json`**, in its own crate `github/`, apart from
+  the core and its CLI: one GitHub webhook delivery, `issues` or
+  `issue_comment`, applied to a store. An opened issue becomes item
+  `gh-<number>` (a `Created` and a record with the title as its body, the
+  issue's URL as its `source.message_id`, category `issue` and a flat 80%); a
+  retitle is a content revision with no spec; closed is `Completed` and
+  reopened is `Reopened`. A `/price` comment by an OWNER, MEMBER or
+  COLLABORATOR is a `SpecRevised` written as the commenter: `/price 40`,
+  `/price 30 --deadline 2026-10-15 [--end N] [--lead-up DAYS]`, `/price ref
+  gh-7`, or `/price accept`, which re-issues `pricing-bot`'s latest proposal.
+  Anyone else's `/price` is ignored before it is parsed. `--proposal FILE`
+  records a pricing reply's `/price` line as a claim by `pricing-bot`, dated no
+  earlier than the store's latest event, so it keeps §3's clock rule for a
+  reader who names the bot untrusted. Deterministic and offline: every
+  instant comes off the payload, and a delivery already applied appends
+  nothing. Pinned by fixture payloads and two properties — replaying what was
+  applied changes nothing, and close then reopen folds to open.
+- **`.github/workflows/mirror.yml`** runs that verb on every issue event and
+  `/price` comment and pushes the result to `roadmap-data`, welcoming each new
+  issue once with its item link.
+- **`.github/workflows/price.yml`**: Claude, with no tools and one turn,
+  proposes a price for each new or edited issue; a job without the model
+  records it as a `pricing-bot` claim and posts it.
+- `docs/github-agent.md`: the flow and its trust boundaries.
+- `Price::DEFAULT_START`, `DEFAULT_END` and `DEFAULT_LEAD_UP_DAYS` in
+  `prodrome-cli`, so `--deadline` and `/price … --deadline` write one decay.
+
 ## [0.9.0] - 2026-09-27
 
 A MINOR version under this file's rule: no stored object
