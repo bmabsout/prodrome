@@ -112,12 +112,23 @@ since this grammar has tuples and no mapping.
   cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, every entry of
   `objects/` that is not named `<name>.py` for a well-formed name (a temp an
   interrupted write left, or a stray) as garbage, each by name — the reads
-  pass over such an entry, and only `verify` speaks of it — and an event the
+  pass over such an entry, and only `verify` speaks of it — a receipt for
+  each file in `quarantine/`, which stands in for the missing parent that
+  object would otherwise be reported as, and an event the
   policy does not `confirm` (§5) dated before any of its ancestors — a writer
   whose stamp the host forces cannot legitimately be dated behind what it was
   written on top of, where a backfill can. There is no unreachable object and
   no stale head to report: every object is a tip or beneath one, and no tip
   rests on another.
+- **`quarantine(name)`** moves `objects/<name>.py` to `quarantine/<name>.py`
+  when its bytes do not hash to `name`, and refuses a file that does (that
+  file is the object, even one this reader cannot parse). A read refuses a
+  file failing its hash rather than guess what it held — `tips()` among them,
+  and so every append — and its refusal names the object and this operation
+  (`prodrome quarantine <name>`). Set aside, the store is what it holds
+  without it: `tips()` answers (the object's parents may be tips again, and
+  the next append weaves them in), and `verify` reports the receipt until
+  the object is restored from a replica and the quarantined file deleted.
 - **`adopt(source, tip)`** copies in everything `tip` rests on that the store
   lacks, verifying all of it before writing any, and writing parents before
   children, since an object belongs to the store as soon as its file exists.

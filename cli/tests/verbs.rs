@@ -298,6 +298,42 @@ fn verify_fails_a_tampered_object() {
     assert!(outcome.text.contains("does not hash"), "{}", outcome.text);
 }
 
+/// A damaged tip stops every write until `quarantine` sets it aside; then the
+/// store writes again, and `verify` fails on the receipt alone.
+#[test]
+fn quarantine_sets_a_damaged_object_aside_and_the_store_writes_again() {
+    let root = seeded();
+    let store = Store::new(&root, Untrusted::none());
+    let tip = store
+        .tips()
+        .expect("the tips derive")
+        .into_iter()
+        .next()
+        .expect("a tip");
+    let victim = root.join("objects").join(format!("{}.py", tip.as_str()));
+    std::fs::write(&victim, "Sealed(prev=None, event=None)").expect("damages");
+
+    let done = ["done", "publish", "--actor", "bassel"];
+    let refusal = prodrome(&root, &done).expect_err("no honest tips");
+    assert!(
+        refusal
+            .to_string()
+            .contains(&format!("prodrome quarantine {}", tip.as_str())),
+        "{refusal}"
+    );
+    let healthy = prodrome(&root, &["quarantine", &"0".repeat(64)]);
+    assert!(healthy.is_err(), "no such object to set aside");
+
+    let said_aside = said(&root, &["quarantine", tip.as_str()]);
+    assert!(said_aside.contains("quarantine"), "{said_aside}");
+    assert!(!victim.exists());
+    let outcome = prodrome(&root, &["verify"]).expect("verify answers");
+    assert!(!outcome.ok);
+    assert_eq!(outcome.text.lines().count(), 1, "{}", outcome.text);
+    assert!(outcome.text.starts_with("quarantine/"), "{}", outcome.text);
+    assert_eq!(said(&root, &done).len(), 64, "the store writes again");
+}
+
 #[test]
 fn weave_settles_two_heads_and_is_a_no_op_on_one() {
     let root = seeded();

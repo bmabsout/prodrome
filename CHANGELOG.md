@@ -148,6 +148,16 @@ verifies exactly as it did.
   is now a finding, by name; the reads pass over such entries rather than
   refusing a `.py` whose stem is not a name. Law: `verify_names_every_stray`
   in `core/src/store.rs`.
+- **One damaged object no longer stops every write (SPEC §3).** `tips()`
+  refused a store holding a file that fails its hash, and `append` asks
+  `tips()`, so one such file stopped the store with no way out. It still
+  refuses rather than guess, and now names the object and the fix:
+  `EventStore::quarantine(name)`, and `prodrome quarantine <name>`, move a
+  file failing its hash from `objects/` to `quarantine/` (a file that hashes
+  to its name is refused), after which the store answers and `verify`
+  reports a receipt for the quarantined file until the object is restored.
+  Test: `after_quarantine_the_store_answers_and_verify_holds_the_receipt` in
+  `core/src/store.rs`, and `prodrome-cli`'s verbs.
 - `breaks::series_knots` puts a knot a second before a jump that falls
   exactly on the window's end, as it does for every other jump, instead of
   drawing a ramp across it. No frozen series moves.
