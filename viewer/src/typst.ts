@@ -66,8 +66,8 @@ export function scratchDocument(): string {
     ``,
     `Worth #price(e.value) now, which is *#state-of(e.value)*.`,
     ``,
-    `#let marks = data.marks.at(e.todo, default: none)`,
-    `#if marks != none { ring(marks.ring, size: 3em) }`,
+    `#let m = data.marks.at(e.todo, default: none)`,
+    `#if m != none { trace(m.values, at: data.at, back: m.back, ahead: m.ahead) }`,
     ``,
   ].join("\n");
 }
