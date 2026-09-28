@@ -205,8 +205,8 @@ constructor, no shipped field moved.
 - **19. A name is its event and its view.** The object `append(event)` writes
   is a function of `event` and of the frontiers of the registers `event`
   writes, read structurally, and of nothing else the store holds. Adding to a
-  store objects that write other registers changes no name `append` would
-  write. Two stores that agree on those frontiers write byte-identical
+  store objects that write other registers (and do not carry `event`, law
+  20) changes no name `append` would write. Two stores that agree on those frontiers write byte-identical
   objects.
 - **20. Append is idempotent.** Appending an event whose print the store
   already holds writes nothing and answers the first object in the
