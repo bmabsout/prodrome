@@ -77,9 +77,9 @@ since this grammar has tuples and no mapping.
 
 ## 3. Objects and the DAG
 
-> **Draft A** (below §10, NOT in force) proposes naming a change by its genesis, its event
-> and the register frontiers it supersedes rather than by the tips it was
-> written on. Nothing in this section changes until it lands.
+> **Draft A** (below §10, NOT in force) proposes naming a change by its
+> genesis, its event and the register frontiers it supersedes rather than by
+> the tips it was written on. Nothing in this section changes until it lands.
 
 - An **envelope** is `Sealed(prev, event)`, one parent with `prev == ""` at
   genesis, or `Woven(parents, event)`, two or more parents, sorted and
