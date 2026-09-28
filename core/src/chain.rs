@@ -26,8 +26,10 @@ use thiserror::Error;
 
 use crate::fpl::{
     self, iso, piecewise, total_seconds, Closed, Delta, Env, Explanation, Instant, Note, Outcome,
-    Scalar, Term, TermF,
+    Scalar,
 };
+use crate::term::{normalize, Term, TermF};
+use crate::topo::Topo;
 
 /// A refusal from [`compile_chain`] or [`chain_order`]. One inhabitant, and it
 /// is a VALUE: a chain that depends on itself is a modelling error the host
@@ -222,36 +224,19 @@ impl Compiled {
     }
 }
 
-/// §7.1 — compile a term against the environment as of one instant.
-///
-/// Total: a term is a finite tree, so there is nothing here to refuse. The
-/// refusal lives on [`compile_chain`], which is handed a graph.
-///
-/// The result is [`fpl::normalize`]d, so a chain of links is ONE schedule at
-/// the root over the merged partition of their instants rather than three
-/// freeze quantifiers the evaluator re-enters per sample.
+/// §7.1: `term` against the environment as of one instant, normalized so a
+/// chain of links is one schedule at the root.
 pub fn compile(term: &Closed, env: &Env) -> Compiled {
     let mut links = Vec::new();
     let resolved = resolve(term.term(), env, &mut links);
     Compiled {
-        term: Closed::of(fpl::normalize(&resolved)).expect("resolving introduces no Ref"),
+        term: Closed::of(normalize(&resolved)).expect("resolving introduces no Ref"),
         links,
     }
 }
 
-/// One term with its `After`s and `Recur`s replaced by what the snapshot says,
-/// before the normal form flattens the result. A `Recur` is [`recurrence`].
-///
-/// The three cases are §7's `After` semantics read as a SCHEDULE instead of as
-/// a lookup, which is sound because `bound` gates a binding on `o.at() <= now`
-/// and a `Piecewise` piece at τ is in force for exactly `now >= τ`:
-///
-/// - absent: the pending branch at every instant;
-/// - `Completed(τ)`: pending before τ, and from τ the body slid by the
-///   slippage — and sliding `now` by a constant IS a `Shift`;
-/// - `Cancelled(τ)`: pending before τ, and from τ a graded offset at δ = 1
-///   over the body, which is the moot constant with the mooted demand still
-///   visible under it.
+/// Every `After` and `Recur` read as the schedule the snapshot makes of it,
+/// which is sound because a binding and a piece both take hold at `now >= τ`.
 fn resolve(term: &Term, env: &Env, links: &mut Vec<Link>) -> Term {
     let (event, anchor, body, pending, needs) = match term.out() {
         TermF::After {
@@ -267,9 +252,7 @@ fn resolve(term: &Term, env: &Env, links: &mut Vec<Link>) -> Term {
             term: body,
             pending,
         } => return recurrence(todo, *anchor, body, pending, env, links),
-        // Every other constructor reads `now` and its subterms and nothing
-        // else, so compiling it is compiling its children.
-        _ => return Term::new(term.out().clone().map(|child| resolve(&child, env, links))),
+        _ => return Term::new(term.out().map(|child| resolve(child, env, links))),
     };
     let link = match env.outcomes.get(event) {
         None => Link::Pending {
@@ -384,32 +367,23 @@ pub fn compile_chain(
         .collect())
 }
 
-/// The chain in DEPENDENCY ORDER: every todo after the upstreams its links
-/// name, ties broken by name so the answer is deterministic. A cycle is
-/// refused with the path that closes it.
-///
-/// The order a host reports in, and the order a host that caches compiled
-/// terms fills its cache in.
+/// The chain in dependency order, ties broken by name, or the cycle.
 pub fn chain_order(functions: &BTreeMap<String, Closed>) -> Result<Vec<String>, ChainError> {
     let edges = upstreams(functions);
-    let mut order = Vec::with_capacity(functions.len());
-    let mut settled: BTreeSet<String> = BTreeSet::new();
-    let mut path: Vec<String> = Vec::new();
+    let mut topo = Topo::default();
     for todo in functions.keys() {
-        visit(todo, &edges, &mut settled, &mut path, &mut order)?;
+        visit(todo, &edges, &mut topo)?;
     }
-    Ok(order)
+    Ok(topo.into_order())
 }
 
-/// Per todo, the upstreams its links name that are TODOS OF THIS CHAIN. A link
-/// onto something the map does not hold is not an edge: the snapshot answers
-/// it, and it constrains no order.
+/// Per todo, the todos of this chain its links name; a link onto anything else
+/// is the snapshot's to answer and constrains no order.
 fn upstreams(functions: &BTreeMap<String, Closed>) -> BTreeMap<String, BTreeSet<String>> {
     functions
         .iter()
         .map(|(todo, term)| {
-            let mut events = BTreeSet::new();
-            events_of(term.term(), &mut events);
+            let mut events = events_of(term.term());
             events.retain(|event| functions.contains_key(event));
             (todo.clone(), events)
         })
@@ -417,39 +391,32 @@ fn upstreams(functions: &BTreeMap<String, Closed>) -> BTreeMap<String, BTreeSet<
 }
 
 /// Every event name an `After` in this term binds.
-fn events_of(term: &Term, out: &mut BTreeSet<String>) {
-    if let TermF::After { event, .. } = term.out() {
-        out.insert(event.clone());
-    }
-    for child in term.out().children() {
-        events_of(child, out);
-    }
+fn events_of(term: &Term) -> BTreeSet<String> {
+    term.cata(|layer: TermF<BTreeSet<String>>| {
+        let own = match &layer {
+            TermF::After { event, .. } => Some(event.clone()),
+            _ => None,
+        };
+        layer
+            .children()
+            .into_iter()
+            .flatten()
+            .cloned()
+            .chain(own)
+            .collect()
+    })
 }
 
-/// Depth-first post-order, with the ACTIVE PATH as the cycle witness: meeting a
-/// todo that is still on the path is the loop, and the path from it is the
-/// answer the host is told.
 fn visit(
-    todo: &str,
+    todo: &String,
     edges: &BTreeMap<String, BTreeSet<String>>,
-    settled: &mut BTreeSet<String>,
-    path: &mut Vec<String>,
-    order: &mut Vec<String>,
+    topo: &mut Topo<String, ()>,
 ) -> Result<(), ChainError> {
-    if settled.contains(todo) {
-        return Ok(());
-    }
-    if let Some(from) = path.iter().position(|node| node == todo) {
-        let mut loop_ = path[from..].to_vec();
-        loop_.push(todo.to_owned());
-        return Err(ChainError::Cycle(loop_));
-    }
-    path.push(todo.to_owned());
-    for upstream in edges.get(todo).into_iter().flatten() {
-        visit(upstream, edges, settled, path, order)?;
-    }
-    path.pop();
-    settled.insert(todo.to_owned());
-    order.push(todo.to_owned());
-    Ok(())
+    topo.settle(todo, ChainError::Cycle, |topo| {
+        edges
+            .get(todo)
+            .into_iter()
+            .flatten()
+            .try_for_each(|upstream| visit(upstream, edges, topo))
+    })
 }

@@ -87,7 +87,8 @@
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `store`    — §3: objects on disk, heads, linearisation, verify, adopt/merge
-//! - `fpl`      — §7: `TermF`, `Term`, evaluation, normal form, explain (Cofree)
+//! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
+//! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
 //! - `policy`   — §5: `Standing`, the `Policy` trait, and the reference policy
 //! - `fold`     — §6.1–6.5: causal folds, flatten, history
@@ -113,4 +114,6 @@ pub mod policy;
 pub mod reference;
 pub mod registers;
 pub mod store;
+pub mod term;
+pub mod topo;
 pub mod view;

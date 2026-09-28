@@ -25,8 +25,8 @@
 
 use std::fmt::Debug;
 
-use crate::fpl::Term;
 use crate::literal::{Call, Datetime, ProdromeError, Value};
+use crate::term::Term;
 
 /// What a host attaches to a todo: the fields of §4's record kind, beyond the
 /// `todo`, `at` and `actor` every event carries.

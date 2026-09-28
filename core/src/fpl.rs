@@ -4,12 +4,10 @@
 //! ported from the reference `fpl.py` — the arithmetic ORDER is part
 //! of the port, because the vectors are the reference's floats.
 //!
-//! Types first (§1, §8). `TermF<A>` is ONE LAYER of the term functor with its
-//! child positions as `A`; `Term` is its fixed point and `Explanation` is the
-//! same shape carrying an annotation — the Cofree the spec calls "decoration,
-//! not evaluation". Invariants live in the `mk_*` smart constructors; a `Term`
-//! that exists came through one of them (or through `parse_term`, which calls
-//! them).
+//! `Explanation` is the term's shape carrying an annotation — the Cofree the
+//! spec calls "decoration, not evaluation". Invariants live in the `mk_*`
+//! smart constructors; a `Term` that exists came through one of them (or
+//! through `parse_term`, which calls them).
 //!
 //! ABSENT IS A VALUE. A term's value is `[0, 1] ∪ {∅}`, and `∅` is `None`:
 //! [`fulfillment`] answers `Option<f64>`, so an object with no claim on
@@ -32,6 +30,8 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use thiserror::Error;
 
 use crate::literal::{self, print_literal, Call, Finite, ProdromeError, Table};
+use crate::term::{normalize, CurvePoint, Term, TermF};
+use crate::topo::Topo;
 
 /// Naive local time only (§2): a stored instant never carries a zone.
 pub type Instant = NaiveDateTime;
@@ -53,341 +53,7 @@ fn err<T>(msg: impl Into<String>) -> Result<T, FplError> {
     Err(FplError(msg.into()))
 }
 
-// --- §7 the functor, its fixed point, and the environment -------------------
-
-/// A named landmark on a `Curve`. It carries no invariant of its own — the
-/// enclosing `mk_curve` validates it — which is why it is admitted as a record.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CurvePoint {
-    pub at: Instant,
-    pub value: f64,
-    pub label: String,
-}
-
-/// One layer of the term functor: every child position is an `A`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TermF<A> {
-    Flat {
-        value: f64,
-    },
-    Decay {
-        start: f64,
-        end: f64,
-        end_date: Instant,
-        lead_up: Delta,
-        start_date: Option<Instant>,
-    },
-    Curve {
-        points: Vec<CurvePoint>,
-    },
-    Conj {
-        terms: Vec<A>,
-        p: f64,
-    },
-    Offset {
-        delta: f64,
-        term: A,
-    },
-    Gate {
-        gate: A,
-        body: A,
-    },
-    Shift {
-        delta: Delta,
-        term: A,
-    },
-    Within {
-        window: Delta,
-        p: f64,
-        term: A,
-    },
-    Importance {
-        w: f64,
-        term: A,
-    },
-    After {
-        event: String,
-        anchor: Instant,
-        term: A,
-        pending: A,
-        needs: Option<Delta>,
-    },
-    /// `term`, authored against `anchor`, re-anchored to the last tending of
-    /// `todo` as `After` is to a completion; `pending` before the first.
-    Recur {
-        todo: String,
-        anchor: Instant,
-        term: A,
-        pending: A,
-    },
-    /// `term` on `[anchor, anchor + period)`, repeated on the calendar.
-    Periodic {
-        period: Delta,
-        anchor: Instant,
-        term: A,
-    },
-    Piecewise {
-        head: A,
-        pieces: Vec<(Instant, A)>,
-    },
-    OffsetBy {
-        delta: A,
-        term: A,
-    },
-    /// The fulfillment of todo `todo`: a free variable, which [`link`] binds.
-    Ref {
-        todo: String,
-    },
-    /// No temporal value: `∅` at every instant. A note, a reference, a
-    /// proposal nobody has priced.
-    Absent,
-}
-
-impl<A> TermF<A> {
-    /// The functor's action on child positions. `map` plus the fixed point is
-    /// the whole of the "types first" claim: every recursion below is either a
-    /// fold over this or a decoration of it.
-    pub fn map<B>(self, mut f: impl FnMut(A) -> B) -> TermF<B> {
-        match self {
-            TermF::Flat { value } => TermF::Flat { value },
-            TermF::Decay {
-                start,
-                end,
-                end_date,
-                lead_up,
-                start_date,
-            } => TermF::Decay {
-                start,
-                end,
-                end_date,
-                lead_up,
-                start_date,
-            },
-            TermF::Curve { points } => TermF::Curve { points },
-            TermF::Conj { terms, p } => TermF::Conj {
-                terms: terms.into_iter().map(f).collect(),
-                p,
-            },
-            TermF::Offset { delta, term } => TermF::Offset {
-                delta,
-                term: f(term),
-            },
-            TermF::Gate { gate, body } => TermF::Gate {
-                gate: f(gate),
-                body: f(body),
-            },
-            TermF::Shift { delta, term } => TermF::Shift {
-                delta,
-                term: f(term),
-            },
-            TermF::Within { window, p, term } => TermF::Within {
-                window,
-                p,
-                term: f(term),
-            },
-            TermF::Importance { w, term } => TermF::Importance { w, term: f(term) },
-            TermF::After {
-                event,
-                anchor,
-                term,
-                pending,
-                needs,
-            } => TermF::After {
-                event,
-                anchor,
-                term: f(term),
-                pending: f(pending),
-                needs,
-            },
-            TermF::Recur {
-                todo,
-                anchor,
-                term,
-                pending,
-            } => TermF::Recur {
-                todo,
-                anchor,
-                term: f(term),
-                pending: f(pending),
-            },
-            TermF::Periodic {
-                period,
-                anchor,
-                term,
-            } => TermF::Periodic {
-                period,
-                anchor,
-                term: f(term),
-            },
-            TermF::Piecewise { head, pieces } => TermF::Piecewise {
-                head: f(head),
-                pieces: pieces.into_iter().map(|(at, t)| (at, f(t))).collect(),
-            },
-            TermF::OffsetBy { delta, term } => TermF::OffsetBy {
-                delta: f(delta),
-                term: f(term),
-            },
-            TermF::Ref { todo } => TermF::Ref { todo },
-            TermF::Absent => TermF::Absent,
-        }
-    }
-
-    /// The child positions, in declaration order.
-    pub fn children(&self) -> Vec<&A> {
-        match self {
-            TermF::Flat { .. }
-            | TermF::Decay { .. }
-            | TermF::Curve { .. }
-            | TermF::Ref { .. }
-            | TermF::Absent => vec![],
-            TermF::Conj { terms, .. } => terms.iter().collect(),
-            TermF::Offset { term, .. } | TermF::Shift { term, .. } => vec![term],
-            TermF::Within { term, .. } | TermF::Importance { term, .. } => vec![term],
-            TermF::Periodic { term, .. } => vec![term],
-            TermF::Gate { gate, body } => vec![gate, body],
-            TermF::After { term, pending, .. } | TermF::Recur { term, pending, .. } => {
-                vec![term, pending]
-            }
-            TermF::Piecewise { head, pieces } => {
-                let mut out = vec![head];
-                out.extend(pieces.iter().map(|(_, t)| t));
-                out
-            }
-            TermF::OffsetBy { delta, term } => vec![delta, term],
-        }
-    }
-
-    /// The kind TAG — the name `prodrome-wasm`'s JSON shape puts on this
-    /// layer, and the one word of that shape the core still owns, because an
-    /// explanation's notes are keyed beside it.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            TermF::Flat { .. } => "flat",
-            TermF::Decay { .. } => "decay",
-            TermF::Curve { .. } => "curve",
-            TermF::Conj { .. } => "conj",
-            TermF::Offset { .. } => "offset",
-            TermF::Gate { .. } => "gate",
-            TermF::Shift { .. } => "shift",
-            TermF::Within { .. } => "within",
-            TermF::Importance { .. } => "importance",
-            TermF::After { .. } => "after",
-            TermF::Recur { .. } => "recur",
-            TermF::Periodic { .. } => "periodic",
-            TermF::Piecewise { .. } => "piecewise",
-            TermF::OffsetBy { .. } => "offsetBy",
-            TermF::Ref { .. } => "ref",
-            TermF::Absent => "absent",
-        }
-    }
-}
-
-impl<A, E> TermF<Result<A, E>> {
-    /// The functor traversed in `Result`: this layer with every child `Ok`, or
-    /// the first `Err` in declaration order.
-    pub fn transpose(self) -> Result<TermF<A>, E> {
-        Ok(match self {
-            TermF::Flat { value } => TermF::Flat { value },
-            TermF::Decay {
-                start,
-                end,
-                end_date,
-                lead_up,
-                start_date,
-            } => TermF::Decay {
-                start,
-                end,
-                end_date,
-                lead_up,
-                start_date,
-            },
-            TermF::Curve { points } => TermF::Curve { points },
-            TermF::Conj { terms, p } => TermF::Conj {
-                terms: terms.into_iter().collect::<Result<_, _>>()?,
-                p,
-            },
-            TermF::Offset { delta, term } => TermF::Offset { delta, term: term? },
-            TermF::Gate { gate, body } => TermF::Gate {
-                gate: gate?,
-                body: body?,
-            },
-            TermF::Shift { delta, term } => TermF::Shift { delta, term: term? },
-            TermF::Within { window, p, term } => TermF::Within {
-                window,
-                p,
-                term: term?,
-            },
-            TermF::Importance { w, term } => TermF::Importance { w, term: term? },
-            TermF::After {
-                event,
-                anchor,
-                term,
-                pending,
-                needs,
-            } => TermF::After {
-                event,
-                anchor,
-                term: term?,
-                pending: pending?,
-                needs,
-            },
-            TermF::Recur {
-                todo,
-                anchor,
-                term,
-                pending,
-            } => TermF::Recur {
-                todo,
-                anchor,
-                term: term?,
-                pending: pending?,
-            },
-            TermF::Periodic {
-                period,
-                anchor,
-                term,
-            } => TermF::Periodic {
-                period,
-                anchor,
-                term: term?,
-            },
-            TermF::Piecewise { head, pieces } => TermF::Piecewise {
-                head: head?,
-                pieces: pieces
-                    .into_iter()
-                    .map(|(at, t)| t.map(|t| (at, t)))
-                    .collect::<Result<_, _>>()?,
-            },
-            TermF::OffsetBy { delta, term } => TermF::OffsetBy {
-                delta: delta?,
-                term: term?,
-            },
-            TermF::Ref { todo } => TermF::Ref { todo },
-            TermF::Absent => TermF::Absent,
-        })
-    }
-}
-
-/// The fixed point: `Term ≅ TermF Term`. A deep embedding — never a closure —
-/// so a term is storable, shippable and evaluated at query time.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Term(Box<TermF<Term>>);
-
-impl Term {
-    /// Wrap one layer. Prefer the `mk_*` constructors: they are the only
-    /// sanctioned path from untrusted parameters to a trusted `Term`.
-    pub fn new(layer: TermF<Term>) -> Self {
-        Term(Box::new(layer))
-    }
-    /// Unwrap one layer.
-    pub fn out(&self) -> &TermF<Term> {
-        &self.0
-    }
-    /// Unwrap one layer, by value.
-    pub fn into_out(self) -> TermF<Term> {
-        *self.0
-    }
-}
+// --- §7 closed terms and the environment ------------------------------------
 
 /// A term with no [`TermF::Ref`] anywhere in it: what evaluation takes (§7).
 ///
@@ -410,20 +76,18 @@ impl Closed {
         self.0
     }
 
-    /// [`normalize`], which introduces no reference.
     pub fn normalize(&self) -> Closed {
         Closed(normalize(&self.0))
     }
 }
 
 fn is_closed(term: &Term) -> bool {
-    !matches!(term.out(), TermF::Ref { .. }) && term.out().children().into_iter().all(is_closed)
+    !term.any(|node| matches!(node, TermF::Ref { .. }))
 }
 
-/// Whether an `Absent` is anywhere in `term` — the only way a closed term can
-/// read `∅`, so a term without one has a value at every instant.
+/// Whether an `Absent` is anywhere in `term`, the only way a closed term reads `∅`.
 pub fn holds_absent(term: &Term) -> bool {
-    matches!(term.out(), TermF::Absent) || term.out().children().into_iter().any(holds_absent)
+    term.any(|node| matches!(node, TermF::Absent))
 }
 
 /// What history says about a named event. The two ways an event can be over
@@ -1381,176 +1045,6 @@ fn spliced(piece: &(Instant, Term), until: Option<Instant>) -> Vec<(Instant, Ter
     out
 }
 
-/// The Piecewise-outermost normal form: every operator that reads its subterms
-/// POINTWISE (Conj, Offset, Gate, Importance, OffsetBy) is pushed under a
-/// Piecewise over the merged partition of its parts' instants, and a Shift
-/// translates the instants it crosses. Within averages over a window, After
-/// and Recur bind history, and Periodic folds time onto one cycle, so none
-/// commutes with a partition; their subterms are normalised and they stay
-/// where they are.
-pub fn normalize(term: &Term) -> Term {
-    match term.out() {
-        // A Ref is a leaf here: what it stands for is not known until `link`.
-        TermF::Flat { .. }
-        | TermF::Decay { .. }
-        | TermF::Curve { .. }
-        | TermF::Ref { .. }
-        | TermF::Absent => term.clone(),
-        TermF::Piecewise { head, pieces } => piecewise(
-            normalize(head),
-            pieces.iter().map(|(at, t)| (*at, normalize(t))).collect(),
-        ),
-        TermF::Conj { terms, p } => {
-            let p = *p;
-            pointwise(terms.iter().map(normalize).collect(), &|parts| {
-                Term::new(TermF::Conj {
-                    terms: parts.to_vec(),
-                    p,
-                })
-            })
-        }
-        TermF::Offset { delta, term } => {
-            let delta = *delta;
-            pointwise(vec![normalize(term)], &|parts| {
-                Term::new(TermF::Offset {
-                    delta,
-                    term: parts[0].clone(),
-                })
-            })
-        }
-        TermF::Gate { gate, body } => pointwise(vec![normalize(gate), normalize(body)], &|parts| {
-            Term::new(TermF::Gate {
-                gate: parts[0].clone(),
-                body: parts[1].clone(),
-            })
-        }),
-        TermF::OffsetBy { delta, term } => {
-            pointwise(vec![normalize(delta), normalize(term)], &|parts| {
-                Term::new(TermF::OffsetBy {
-                    delta: parts[0].clone(),
-                    term: parts[1].clone(),
-                })
-            })
-        }
-        TermF::Importance { w, term } => {
-            let w = *w;
-            pointwise(vec![normalize(term)], &|parts| {
-                Term::new(TermF::Importance {
-                    w,
-                    term: parts[0].clone(),
-                })
-            })
-        }
-        TermF::Shift { delta, term } => {
-            let by = *delta;
-            let inner = normalize(term);
-            match inner.out() {
-                // ⟦Shift(δ, pw)⟧(now) = ⟦pw⟧(now + δ), so a piece from τ is in
-                // force from τ − δ.
-                TermF::Piecewise { head, pieces } => piecewise(
-                    Term::new(TermF::Shift {
-                        delta: by,
-                        term: head.clone(),
-                    }),
-                    pieces
-                        .iter()
-                        .map(|(at, t)| {
-                            (
-                                after(*at, -us_of(by)),
-                                Term::new(TermF::Shift {
-                                    delta: by,
-                                    term: t.clone(),
-                                }),
-                            )
-                        })
-                        .collect(),
-                ),
-                _ => Term::new(TermF::Shift {
-                    delta: by,
-                    term: inner,
-                }),
-            }
-        }
-        TermF::Within { window, p, term } => Term::new(TermF::Within {
-            window: *window,
-            p: *p,
-            term: normalize(term),
-        }),
-        TermF::After {
-            event,
-            anchor,
-            term,
-            pending,
-            needs,
-        } => Term::new(TermF::After {
-            event: event.clone(),
-            anchor: *anchor,
-            term: normalize(term),
-            pending: normalize(pending),
-            needs: *needs,
-        }),
-        TermF::Recur {
-            todo,
-            anchor,
-            term,
-            pending,
-        } => Term::new(TermF::Recur {
-            todo: todo.clone(),
-            anchor: *anchor,
-            term: normalize(term),
-            pending: normalize(pending),
-        }),
-        TermF::Periodic {
-            period,
-            anchor,
-            term,
-        } => Term::new(TermF::Periodic {
-            period: *period,
-            anchor: *anchor,
-            term: normalize(term),
-        }),
-    }
-}
-
-/// An operator over already-normalised `parts`, lifted over their schedules:
-/// the head is the operator over the heads, and at every instant any part
-/// changes, a piece with the operator over what each part reads there. Parts
-/// without a schedule are constant in the partition.
-fn pointwise(parts: Vec<Term>, rebuild: &dyn Fn(&[Term]) -> Term) -> Term {
-    if !parts
-        .iter()
-        .any(|p| matches!(p.out(), TermF::Piecewise { .. }))
-    {
-        return rebuild(&parts);
-    }
-    let mut instants: BTreeSet<Instant> = BTreeSet::new();
-    for part in &parts {
-        if let TermF::Piecewise { pieces, .. } = part.out() {
-            instants.extend(pieces.iter().map(|(at, _)| *at));
-        }
-    }
-    let at = |part: &Term, moment: Option<Instant>| -> Term {
-        match part.out() {
-            TermF::Piecewise { head, pieces } => match moment {
-                None => head.clone(),
-                Some(m) => in_force(head, pieces, m).1.clone(),
-            },
-            _ => part.clone(),
-        }
-    };
-    let head = rebuild(&parts.iter().map(|p| at(p, None)).collect::<Vec<_>>());
-    let pieces: Vec<(Instant, Term)> = instants
-        .into_iter()
-        .map(|m| {
-            (
-                m,
-                rebuild(&parts.iter().map(|p| at(p, Some(m))).collect::<Vec<_>>()),
-            )
-        })
-        .collect();
-    piecewise(head, pieces)
-}
-
 // --- Linking: every Ref bound to the todo it names --------------------------
 
 /// Why a term does not link. A value like every refusal here: a reference is
@@ -1567,70 +1061,31 @@ pub enum LinkError {
     Cycle(Vec<String>),
 }
 
-/// §7 — substitute every `Ref(x)` with `specs[x]`, recursively: bind for the
-/// free monad over `TermF`, with todo ids as its variables.
-///
-/// Total: a reference met again on the path that is expanding it is a cycle,
-/// refused, never unrolled. A closed term is its own link, untouched; a
-/// rebuilt `Piecewise` goes back through the normal form, since a substituted
-/// piece may itself be a schedule.
+/// §7.2: every `Ref(x)` bound to `specs[x]`, linked in turn, and refused as a
+/// cycle where it is reached again on its own expansion. A closed term is its
+/// own link, untouched.
 pub fn link(term: &Term, specs: &BTreeMap<String, Term>) -> Result<Closed, LinkError> {
     if let Some(closed) = Closed::of(term.clone()) {
         return Ok(closed);
     }
-    Linker {
-        specs,
-        path: Vec::new(),
-        settled: BTreeMap::new(),
-    }
-    .link(term)
-    .map(Closed)
+    linked(term, specs, &mut Topo::default()).map(Closed)
 }
 
-/// `link`'s walk: the references being expanded, which are the cycle witness,
-/// and the todos already linked, so a shared reference is linked once.
-struct Linker<'a> {
-    specs: &'a BTreeMap<String, Term>,
-    path: Vec<String>,
-    settled: BTreeMap<String, Term>,
-}
-
-impl Linker<'_> {
-    fn link(&mut self, term: &Term) -> Result<Term, LinkError> {
-        if let TermF::Ref { todo } = term.out() {
-            return self.resolve(todo);
-        }
-        let layer = term
-            .out()
-            .clone()
-            .map(|child| self.link(&child))
-            .transpose()?;
-        Ok(match layer {
-            TermF::Piecewise { head, pieces } => piecewise(head, pieces),
-            layer => Term::new(layer),
-        })
-    }
-
-    fn resolve(&mut self, todo: &str) -> Result<Term, LinkError> {
-        if let Some(linked) = self.settled.get(todo) {
-            return Ok(linked.clone());
-        }
-        if let Some(from) = self.path.iter().position(|on| on == todo) {
-            let mut cycle = self.path[from..].to_vec();
-            cycle.push(todo.to_owned());
-            return Err(LinkError::Cycle(cycle));
-        }
-        let specs = self.specs;
-        let spec = specs
-            .get(todo)
-            .ok_or_else(|| LinkError::Unknown(todo.to_owned()))?;
-        self.path.push(todo.to_owned());
-        let linked = self.link(spec);
-        self.path.pop();
-        let linked = linked?;
-        self.settled.insert(todo.to_owned(), linked.clone());
-        Ok(linked)
-    }
+fn linked(
+    term: &Term,
+    specs: &BTreeMap<String, Term>,
+    topo: &mut Topo<String, Term>,
+) -> Result<Term, LinkError> {
+    term.try_cata(|layer| match layer {
+        TermF::Ref { todo } => topo.settle(&todo, LinkError::Cycle, |topo| {
+            let spec = specs
+                .get(&todo)
+                .ok_or_else(|| LinkError::Unknown(todo.clone()))?;
+            linked(spec, specs, topo)
+        }),
+        TermF::Piecewise { head, pieces } => Ok(piecewise(head, pieces)),
+        layer => Ok(Term::new(layer)),
+    })
 }
 
 // --- ISO instants: the one instant SPELLING every boundary shares ------------

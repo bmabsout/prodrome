@@ -28,9 +28,8 @@ use common::terms::{
     moment, ok, EVENTS, TODOS,
 };
 use prodrome::chain::{self, Compiled};
-use prodrome::fpl::{
-    self, link, mk_piecewise, normalize, Closed, Env, Instant, LinkError, Outcome, Term, TermF,
-};
+use prodrome::fpl::{self, link, mk_piecewise, Closed, Env, Instant, LinkError, Outcome};
+use prodrome::term::{normalize, Term, TermF};
 use proptest::prelude::*;
 
 fn closed(term: &Term) -> Closed {
@@ -176,6 +175,17 @@ proptest! {
     #[test]
     fn mk_piecewise_unit(term in a_term()) {
         prop_assert_eq!(mk_piecewise(term.clone(), vec![]).expect("no instants to order"), term);
+    }
+
+    /// The functor's folds: `cata` of the constructor and `para` of the
+    /// subterms it sees each rebuild the term.
+    #[test]
+    fn folding_with_the_constructor_is_the_identity(term in an_open_term()) {
+        prop_assert_eq!(term.cata(Term::new), term.clone());
+        prop_assert_eq!(
+            term.para(|layer| Term::new(layer.map(|(below, _)| (*below).clone()))),
+            term
+        );
     }
 
     /// Idempotent: re-splitting a normal form at its own instants changes nothing.

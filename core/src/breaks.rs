@@ -1,160 +1,117 @@
-//! §7 breakpoints and the series a graph draws.
-//!
-//! See ../../SPEC.md. Implemented against ../../conformance/series.py, and
-//! ported from the reference `view.py` (`Breaks`, `_breakpoints`,
-//! `_operator_breaks`, `_constant`, `series_of`).
-//!
-//! The question this module answers is where a term stops being a straight
-//! line. Flat, Decay, Curve, Absent and a Piecewise of those are EXACT: knots at the
-//! window edges, at every slope change inside, and a second on either side of
-//! every jump, and a straight line between two adjacent knots IS the curve
-//! (§9.7). Everything else is sampled on top, and `exact` tells the reader
-//! which it got — a number on screen the evaluator never produced is the
-//! failure this flag exists to prevent.
-
 use std::collections::BTreeSet;
+use std::iter::Sum;
+use std::ops::Add;
 
 use chrono::Duration;
 
-use crate::fpl::{div_delta, fulfillment, Closed, Env, Instant, Term, TermF};
+use crate::fpl::{div_delta, fulfillment, Closed, Env, Instant};
+use crate::term::{Term, TermF};
 
-/// For terms that are not piecewise-linear: every ~1.9 h over a week, every
-/// ~9 h over a month.
-pub const SAMPLES: i64 = 96;
-
-/// Where a term changes slope, where it jumps, and whether that is the whole
-/// story.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Where a term changes slope, where it jumps, and whether knots there are the
+/// whole curve (§7, §9.7). A monoid: the instants concatenate and `exact` is
+/// their conjunction.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breaks {
     pub slopes: Vec<Instant>,
     pub jumps: Vec<Instant>,
-    /// Every part is piecewise-linear, so knots at these instants ARE the curve.
     pub exact: bool,
 }
 
 impl Breaks {
-    fn none() -> Self {
+    fn sampled() -> Self {
+        Breaks {
+            exact: false,
+            ..Breaks::default()
+        }
+    }
+
+    fn constant(&self) -> bool {
+        self.exact && self.slopes.is_empty() && self.jumps.is_empty()
+    }
+}
+
+impl Default for Breaks {
+    fn default() -> Self {
         Breaks {
             slopes: vec![],
             jumps: vec![],
             exact: true,
         }
     }
-    fn sampled() -> Self {
-        Breaks {
-            slopes: vec![],
-            jumps: vec![],
-            exact: false,
-        }
+}
+
+impl Add for Breaks {
+    type Output = Breaks;
+
+    fn add(mut self, other: Breaks) -> Breaks {
+        self.slopes.extend(other.slopes);
+        self.jumps.extend(other.jumps);
+        self.exact = self.exact && other.exact;
+        self
     }
 }
 
-/// The slope changes and jumps of a term, and whether that is the whole story.
-///
-/// A jump is a discontinuity — the curve needs a knot a second BEFORE it too,
-/// or a line drawn across it would be a ramp the evaluator never produced. A
-/// Decay jumps twice: at `start_date` (1.0 down to the pre-window 0.98) and at
-/// the window's start (0.98 down to `start`); its descent to `end` is
-/// continuous. A Piecewise jumps at every piece — a revision, a completion, a
-/// reopening — and is exact when its parts are; a composite part makes the
-/// whole sampled, but its transitions are still knots, since a sample grid
-/// would draw a ramp across the instant a todo was completed.
+impl Sum for Breaks {
+    fn sum<I: Iterator<Item = Breaks>>(parts: I) -> Breaks {
+        parts.fold(Breaks::default(), Add::add)
+    }
+}
+
+/// A jump needs a knot a second before it too, or the line across it would be
+/// a ramp the evaluator never produced. A piecewise part keeps its transitions
+/// as knots even when a composite part makes the whole sampled.
 pub fn breakpoints(term: &Term) -> Breaks {
-    match term.out() {
-        // `∅` at every instant: nothing changes, so nothing to mark.
-        TermF::Flat { .. } | TermF::Absent => Breaks::none(),
+    term.cata(|layer| match layer {
+        TermF::Flat { .. } | TermF::Absent => Breaks::default(),
         TermF::Decay {
             end_date,
             lead_up,
             start_date,
             ..
-        } => {
-            let mut jumps: BTreeSet<Instant> = BTreeSet::new();
-            jumps.insert(*end_date - *lead_up);
-            if let Some(sd) = start_date {
-                jumps.insert(*sd);
-            }
-            Breaks {
-                slopes: vec![*end_date],
-                jumps: jumps.into_iter().collect(),
-                exact: true,
-            }
-        }
-        TermF::Curve { points } => Breaks {
-            slopes: points.iter().map(|pt| pt.at).collect(),
-            jumps: vec![],
+        } => Breaks {
+            slopes: vec![end_date],
+            jumps: BTreeSet::from_iter(
+                [Some(end_date - lead_up), start_date].into_iter().flatten(),
+            )
+            .into_iter()
+            .collect(),
             exact: true,
         },
+        TermF::Curve { points } => Breaks {
+            slopes: points.iter().map(|point| point.at).collect(),
+            ..Breaks::default()
+        },
         TermF::Piecewise { head, pieces } => {
-            let parts: Vec<Breaks> = std::iter::once(breakpoints(head))
-                .chain(pieces.iter().map(|(_, t)| breakpoints(t)))
-                .collect();
-            Breaks {
-                slopes: parts
-                    .iter()
-                    .flat_map(|p| p.slopes.iter().copied())
-                    .collect(),
-                jumps: parts
-                    .iter()
-                    .flat_map(|p| p.jumps.iter().copied())
-                    .chain(pieces.iter().map(|(at, _)| *at))
-                    .collect(),
-                exact: parts.iter().all(|p| p.exact),
-            }
+            let transitions = Breaks {
+                jumps: pieces.iter().map(|(at, _)| *at).collect(),
+                ..Breaks::default()
+            };
+            std::iter::once(head)
+                .chain(pieces.into_iter().map(|(_, piece)| piece))
+                .sum::<Breaks>()
+                + transitions
         }
-        _ => operator_breaks(term),
-    }
-}
-
-/// The operators: two preserve piecewise-linearity outright, three preserve
-/// constancy, the rest are sampled.
-fn operator_breaks(term: &Term) -> Breaks {
-    match term.out() {
-        // x·(1−|δ|) + max(0, δ) is affine in x: same breakpoints, same exactness.
-        TermF::Offset { term: inner, .. } => breakpoints(inner),
-        // A shift by δ reads the inner term at now + δ: every breakpoint moves by −δ.
-        TermF::Shift { delta, term: inner } => {
-            let within = breakpoints(inner);
-            Breaks {
-                slopes: within.slopes.iter().map(|b| *b - *delta).collect(),
-                jumps: within.jumps.iter().map(|b| *b - *delta).collect(),
-                exact: within.exact,
-            }
-        }
-        TermF::OffsetBy { delta, term: inner } => {
-            if constant(inner) {
-                // offset(c, δ) is affine in δ on [0, 1]: the delta's breakpoints.
-                breakpoints(delta)
-            } else if constant(delta) {
-                breakpoints(inner)
-            } else {
-                Breaks::sampled()
-            }
-        }
-        // A power mean, a max, or a power of constants is a constant.
-        TermF::Conj { .. } | TermF::Gate { .. } | TermF::Importance { .. }
-            if parts(term).iter().all(|p| constant(p)) =>
+        // Affine in the child.
+        TermF::Offset { term, .. } => term,
+        TermF::Shift { delta, term } => Breaks {
+            slopes: term.slopes.iter().map(|at| *at - delta).collect(),
+            jumps: term.jumps.iter().map(|at| *at - delta).collect(),
+            exact: term.exact,
+        },
+        TermF::OffsetBy { delta, term } if term.constant() => delta,
+        TermF::OffsetBy { delta, term } if delta.constant() => term,
+        layer @ (TermF::Conj { .. } | TermF::Gate { .. } | TermF::Importance { .. })
+            if layer.children().into_iter().all(Breaks::constant) =>
         {
-            Breaks::none()
+            Breaks::default()
         }
         _ => Breaks::sampled(),
-    }
+    })
 }
 
-fn parts(term: &Term) -> Vec<&Term> {
-    match term.out() {
-        TermF::Conj { terms, .. } => terms.iter().collect(),
-        TermF::Gate { gate, body } => vec![gate, body],
-        TermF::Importance { term, .. } => vec![term],
-        _ => vec![],
-    }
-}
-
-/// A term with no slope change and no jump, exactly: a constant.
-pub fn constant(term: &Term) -> bool {
-    let breaks = breakpoints(term);
-    breaks.exact && breaks.slopes.is_empty() && breaks.jumps.is_empty()
-}
+/// For terms that are not piecewise-linear: every ~1.9 h over a week, every
+/// ~9 h over a month.
+pub const SAMPLES: i64 = 96;
 
 /// One point of a drawn curve: `∅` where the term has no value there, and a
 /// reader draws no line to or from it.

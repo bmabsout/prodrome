@@ -141,9 +141,10 @@ use prodrome::event::{
     mk_cancelled, mk_completed, mk_created, mk_reopened, mk_sealed, mk_spec_revised, mk_tended,
     mk_woven, seal_hash, Envelope, Hash, TodoEvent,
 };
-use prodrome::fpl::{self, mk_conj, mk_decay, mk_flat, mk_piecewise, mk_within, Instant, Term};
+use prodrome::fpl::{self, mk_conj, mk_decay, mk_flat, mk_piecewise, mk_within, Instant};
 use prodrome::literal::Datetime;
 pub use prodrome::reference::{mk_authored, mk_note, mk_source, mk_subtodo, Todo};
+use prodrome::term::Term;
 
 /// The corpus is written against the REFERENCE PAYLOAD (`prodrome::reference`)
 /// — the record shape `conformance/*.py` was taken with, and therefore the

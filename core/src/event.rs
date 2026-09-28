@@ -31,7 +31,7 @@ use std::marker::PhantomData;
 
 use sha2::{Digest, Sha256};
 
-use crate::fpl::{Term, TERM_SIGNATURES};
+use crate::fpl::TERM_SIGNATURES;
 use crate::literal::{
     parse_literal, print_literal, Datetime, ProdromeError, Signature, Table, Value, Vocabulary,
 };
@@ -39,6 +39,7 @@ use crate::payload::{
     as_string, datetime_field, record_signature, required, string_field, string_or_empty,
     tuple_field, Payload,
 };
+use crate::term::Term;
 
 // --- the names, as types ----------------------------------------------------
 
@@ -203,8 +204,8 @@ impl Name {
 
 // --- the spec a repricing carries -------------------------------------------
 //
-// A `SpecRevised` and a record carry a §7 `Term`, and `fpl::Term` IS that type:
-// one parser, one printer, one evaluator. The field is `fpl::Term` and not a
+// A `SpecRevised` and a record carry a §7 `Term`, and `term::Term` IS that type:
+// one parser, one printer, one evaluator. The field is `term::Term` and not a
 // wrapper, because a wrapper would be a second name for the same value and a
 // place for a second reading to grow. §7's per-field bounds arrive with it
 // (`Flat`'s 0..1, `Conj`'s `p`, `Decay`'s lead-up), so a stored spec that

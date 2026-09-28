@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::event::{mk_completed, mk_spec_revised, mk_tended, Actor, TodoEvent, TodoId};
 use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env, History};
-use prodrome::fpl::{self, print_term, Term};
+use prodrome::fpl::{self, print_term};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy, Untrusted};
 use prodrome::reference::{mk_authored, mk_subtodo, Todo};
@@ -40,6 +40,7 @@ use prodrome::registers::{
     conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Kind, Node,
 };
 use prodrome::store::EventStore;
+use prodrome::term::Term;
 use prodrome::view;
 use proptest::prelude::*;
 
