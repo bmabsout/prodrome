@@ -242,6 +242,15 @@ name makes every read refuse, since nothing can say what it held;
 again, and `verify` keeps a receipt for it until the object is restored from
 a replica.
 
+**A store under git needs `objects/** -text -diff` in its `.gitattributes`**
+(in a `.gitattributes` beside `objects/`, or with the store's path in front
+in the repository's own). An object's name is the hash of its bytes, and a
+checkout that converts line endings, or a merge driver that rewrites text,
+leaves a file that no longer hashes to its name; the attribute tells git the
+bytes are not its to touch. This repository's `.gitattributes` carries the
+line; the `roadmap-data` branch, whose store is `roadmap/`, wants it in a
+`roadmap/.gitattributes` of its own.
+
 ## WebAssembly
 
 ```console

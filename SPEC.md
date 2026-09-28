@@ -96,10 +96,12 @@ since this grammar has tuples and no mapping.
   the object set alone, in any order it is listed. A store on disk is its
   `objects/` and nothing else, so two copies that each only added objects are
   merged by uniting the files — a `git merge` of two clones is this union and
-  cannot conflict. A store written before 0.9 also holds `HEAD` (one tip) and
-  `refs/` (one file per head while there were several); nothing reads them,
-  the objects derive exactly what they named (§9.17), and `verify` reports
-  them as leftovers to delete.
+  cannot conflict. A store under git needs `objects/** -text -diff` in the
+  `.gitattributes` that governs it, so that no line-ending conversion or text
+  merge rewrites the bytes a name is the hash of. A store written before 0.9
+  also holds `HEAD` (one tip) and `refs/` (one file per head while there were
+  several); nothing reads them, the objects derive exactly what they named
+  (§9.17), and `verify` reports them as leftovers to delete.
 - **Appending** seals on every tip: none is genesis, one is a `Sealed`, more
   is a `Woven` carrying the event, so the next write after a union joins it.
 - **Linearisation** is Kahn's algorithm over parents with a min-heap on the
