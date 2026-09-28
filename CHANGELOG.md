@@ -135,6 +135,13 @@ verifies exactly as it did.
 
 ### Fixed
 
+- **A write is durable (SPEC §3).** An object was written to `<name>.tmp`
+  and renamed with no sync, so a power loss could leave a zero-length file
+  under a name that promises content. It is now written to a randomly named
+  temp file created exclusively, synced before the rename, and `objects/` is
+  synced once per append or adoption. Law: a crash between the write and the
+  rename leaves no object, only a temp that `verify` reports
+  (`a_crash_before_the_rename_leaves_only_a_temp` in `core/src/store.rs`).
 - **`verify` sees everything in `objects/` (SPEC §3).** It looked at `.py`
   files only, so a temp an interrupted write left, or any other stray, was
   never reported. Every entry that is not `<name>.py` for a well-formed name
