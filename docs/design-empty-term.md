@@ -1,6 +1,7 @@
 # Design: the empty term, and the two layers
 
-Status: proposed, 2026-09-28. Nothing here is implemented yet.
+Status: implemented, 2026-09-28 (Unreleased). SPEC §7, §7.2 and law 18 of
+§9 are the contract; this page is the reasoning.
 
 ## Why
 
