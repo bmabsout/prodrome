@@ -337,15 +337,13 @@ cli/          prodrome-cli: the `prodrome` binary — the verbs, over that paylo
               and the reference policy, and the only clock in the workspace
 wasm/         prodrome-wasm: the core compiled for the browser, built with that
               payload, plus `json`, the term codec the JavaScript side reads
-github/       prodrome-github: an optional integration, apart from the core — the
-              `prodrome-github` binary that mirrors GitHub issues into a store
 conformance/  the vectors, as literals of the grammar in SPEC §2
 docs/         how the repository runs its own roadmap: the issue mirror
 .github/      CI, and the two workflows that mirror and price issues
 SPEC.md       the specification
 
-              OPTIONAL EXTRAS, for visualising a store whose items hold Typst;
-              nothing above depends on them:
+              OPTIONAL EXTRAS; nothing above depends on them:
+github/       prodrome-github, the binary that mirrors GitHub issues into a store
 typst-wasm/   Typst compiled for the browser, its own workspace
 typst/        prodrome-typst, the Typst package of layouts
 viewer/       the static web app published to GitHub Pages
