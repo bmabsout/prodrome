@@ -604,6 +604,10 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
 /// [`wire::json_record`] — `todo`, `at`, `actor` and the payload's own fields
 /// under the names it stores them by.
 ///
+/// `order` is the rows' todo ids in §6.7's list order ([`prodrome::view::list_order`]):
+/// most urgent first, then every row with no number — `absent`, or not
+/// linking — by id. A page lists in it and does not sort for itself.
+///
 /// `created` is the other half of that lookup, for a todo with NO record: per
 /// todo, the instant of its first `Created` and the text of its last — what
 /// `prodrome list` shows as the body when there is no record to read one
@@ -619,6 +623,8 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         .map_err(refused)?;
     let rows = prodrome::view::entries(&read.nodes(), moment, &policy)
         .map_err(|e| refused(e.to_string()))?;
+    let mut listed: Vec<&prodrome::view::Entry> = rows.iter().collect();
+    listed.sort_by(|a, b| prodrome::view::list_order(a, b));
     let records: serde_json::Map<String, Value> = rows
         .iter()
         .filter_map(|row| row.content.as_ref())
@@ -648,6 +654,10 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         (
             "entries",
             Value::Array(rows.iter().map(json_entry).collect()),
+        ),
+        (
+            "order",
+            strings(listed.iter().map(|row| row.todo.as_str().to_owned())),
         ),
         ("records", Value::Object(records)),
         ("created", Value::Object(created)),

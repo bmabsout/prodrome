@@ -60,6 +60,8 @@ export interface Marks {
 export interface View {
   at: string;
   entries: Entry[];
+  /** The rows' todo ids in the core's list order (SPEC §6.7). */
+  order: string[];
   records: Record<string, Record<string, unknown>>;
   /** Per todo, its first `Created`'s instant and its last one's text. */
   created: Record<string, { at: string; text: string }>;
@@ -136,6 +138,7 @@ export function read(core: Core, objects: ObjectIn[], now: Naive, focus: string 
   const rows = JSON.parse(core.entries(sent, at, "[]")) as {
     at: string;
     entries: Entry[];
+    order: string[];
     records: View["records"];
     created: View["created"];
   };
@@ -162,6 +165,7 @@ export function read(core: Core, objects: ObjectIn[], now: Naive, focus: string 
   return {
     at: rows.at,
     entries: rows.entries,
+    order: rows.order,
     records: rows.records,
     created: rows.created,
     marks,

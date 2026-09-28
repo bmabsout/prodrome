@@ -83,6 +83,13 @@
    "value": 0.6
   }
  ],
+ "order": [
+  "ship-the-viewer",
+  "write-the-docs",
+  "polish-the-marks",
+  "bundle-font-licences",
+  "gh-1"
+ ],
  "records": {
   "e41579c4005a315d158e5a3a364fc6eae51a6852e4e4db227d263a6cccbef462": {
    "actor": "example",
