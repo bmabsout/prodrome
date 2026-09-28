@@ -1,39 +1,13 @@
-//! §7 AS JSON — the term codec, at the boundary JSON is for.
-//!
-//! JSON is JavaScript's literal grammar, and this crate is where JavaScript
-//! is. The core has ONE serialization for a term and it is §2's literal print;
-//! it kept a second one — `fpl::to_json`, `from_json`, `explanation_json` —
-//! for a browser to read, which meant a crate whose whole claim is "one
-//! grammar, one printer, one parser" shipped two of each. Since 0.4 they live
-//! here, built on the core's public `TermF`/`Explanation` and its smart
-//! constructors, and the core has no JSON in it at all.
-//!
-//! THE WIRE IS UNCHANGED. Every key, every tag, every unit is what
-//! `fpl::to_json` emitted: lowercase kind tags (`offsetBy` the one camel one),
-//! ISO instants, and spans in HOURS (`leadUpHours`, `windowHours`,
-//! `deltaHours`) because that is what a page does arithmetic in.
-//! `conformance/term-json.json` — the `json` and `explain` halves of what was
-//! `conformance/fpl.json` in the core — is frozen against exactly these
-//! answers, and `tests` below replays all 150.
-//!
-//! PARSE, DON'T VALIDATE: every arm of [`from_json`] ends in one of the core's
-//! `mk_*` constructors, so a term that comes off the wire is a term the core
-//! would have built, or a refusal.
+//! §7 as JSON, rendered from the term schema: lowercase kind tags, ISO
+//! instants and spans in hours, frozen by `conformance/term-json.json`.
 
 use prodrome::fpl::{
-    delta_from_hours, explained, iso, mk_absent, mk_after, mk_conj, mk_curve, mk_decay, mk_flat,
-    mk_gate, mk_importance, mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref,
-    mk_shift, mk_within, parse_iso, total_seconds, Closed, Env, Explanation, FplError, Instant,
-    Note, Scalar, PRIORITY_POWER,
+    delta_from_hours, explained, iso, parse_iso, total_seconds, Closed, Delta, Env, Explanation,
+    FplError, Instant, Note, Scalar,
 };
-use prodrome::term::{CurvePoint, Term, TermF};
+use prodrome::term::schema::{build, fields, Field, FieldSource, Fields, Slot};
+use prodrome::term::Term;
 use serde_json::{Map, Value};
-
-/// The core's own refusal, spelled here because `fpl::err` is private to it —
-/// this module is a second reader of §7, not a part of it.
-fn err<T>(msg: impl Into<String>) -> Result<T, FplError> {
-    Err(FplError(msg.into()))
-}
 
 fn scalar_json(s: &Scalar) -> Value {
     match s {
@@ -58,314 +32,162 @@ fn note_json(n: &Note) -> Value {
     }
 }
 
-/// The wire: `to_json`'s shape with a `value` on every node — `null` for `∅`
-/// — the notes beside it, and each part explained in place of its printed
-/// subterm.
+/// A field's JSON key: camelCase, a span suffixed `Hours`.
+fn key(name: &str, span: bool) -> String {
+    let mut words = name.split('_');
+    let mut key = words.next().unwrap_or_default().to_owned();
+    for word in words {
+        let mut chars = word.chars();
+        key.extend(chars.next().map(|c| c.to_ascii_uppercase()));
+        key.push_str(chars.as_str());
+    }
+    if span {
+        key.push_str("Hours");
+    }
+    key
+}
+
+fn hours(span: Delta) -> f64 {
+    total_seconds(span) / 3600.0
+}
+
+/// `to_json`'s shape with each node's `value` (`null` for `∅`) and notes, its
+/// scalars read from the notes.
 pub fn explanation_json(node: &Explanation) -> Value {
+    let (kind, fields) = fields(&*node.node);
     let mut out = Map::new();
-    out.insert("kind".into(), Value::String(node.node.kind().to_string()));
+    out.insert("kind".into(), Value::String(node.node.kind().to_owned()));
     out.insert("value".into(), Value::from(node.value));
     for (k, n) in &node.notes {
         out.insert(k.clone(), note_json(n));
     }
-    match &*node.node {
-        TermF::Flat { .. }
-        | TermF::Decay { .. }
-        | TermF::Curve { .. }
-        | TermF::Ref { .. }
-        | TermF::Absent => {}
-        TermF::Conj { terms, .. } => {
-            out.insert(
-                "terms".into(),
-                Value::Array(terms.iter().map(explanation_json).collect()),
-            );
-        }
-        TermF::Offset { term, .. }
-        | TermF::Importance { term, .. }
-        | TermF::Shift { term, .. }
-        | TermF::Within { term, .. }
-        | TermF::Periodic { term, .. } => {
-            out.insert("term".into(), explanation_json(term));
-        }
-        TermF::Gate { gate, body } => {
-            out.insert("gate".into(), explanation_json(gate));
-            out.insert("body".into(), explanation_json(body));
-        }
-        TermF::OffsetBy { delta, term } => {
-            out.insert("delta".into(), explanation_json(delta));
-            out.insert("term".into(), explanation_json(term));
-        }
-        TermF::After { term, pending, .. } | TermF::Recur { term, pending, .. } => {
-            out.insert("term".into(), explanation_json(term));
-            out.insert("pending".into(), explanation_json(pending));
-        }
-        // The piece in force rides in the `head` slot; it prints as "term".
-        TermF::Piecewise { head, .. } => {
-            out.insert("term".into(), explanation_json(head));
+    for (name, slot) in fields {
+        // The piece in force rides in `Piecewise`'s `head` slot, keyed "term".
+        let name = if kind == "Piecewise" { "term" } else { name };
+        match slot {
+            Slot::Child(child) => {
+                out.insert(name.into(), explanation_json(child));
+            }
+            Slot::Children(children) => {
+                out.insert(
+                    name.into(),
+                    children.into_iter().map(explanation_json).collect(),
+                );
+            }
+            _ => {}
         }
     }
     Value::Object(out)
 }
 
-/// `explained`, printed — the name every consumer already reads.
 pub fn explain(term: &Closed, now: Instant, env: &Env) -> Value {
     explanation_json(&explained(term, now, env))
 }
 
 pub fn to_json(term: &Term) -> Value {
-    let mut out = Map::new();
-    out.insert("kind".into(), Value::String(term.out().kind().to_string()));
-    match term.out() {
-        TermF::Flat { value } => {
-            out.insert("value".into(), Value::from(*value));
-        }
-        TermF::Decay {
-            start,
-            end,
-            end_date,
-            lead_up,
-            start_date,
-        } => {
-            out.insert("start".into(), Value::from(*start));
-            out.insert("end".into(), Value::from(*end));
-            out.insert("endDate".into(), Value::String(iso(*end_date)));
-            out.insert(
-                "leadUpHours".into(),
-                Value::from(total_seconds(*lead_up) / 3600.0),
-            );
-            if let Some(sd) = start_date {
-                out.insert("startDate".into(), Value::String(iso(*sd)));
-            }
-        }
-        TermF::Curve { points } => {
-            out.insert(
-                "points".into(),
-                Value::Array(
-                    points
-                        .iter()
-                        .map(|pt| {
-                            let mut m = Map::new();
-                            m.insert("at".into(), Value::String(iso(pt.at)));
-                            m.insert("value".into(), Value::from(pt.value));
-                            if !pt.label.is_empty() {
-                                m.insert("label".into(), Value::String(pt.label.clone()));
-                            }
-                            Value::Object(m)
-                        })
-                        .collect(),
-                ),
-            );
-        }
-        TermF::Conj { terms, p } => {
-            out.insert("p".into(), Value::from(*p));
-            out.insert(
-                "terms".into(),
-                Value::Array(terms.iter().map(to_json).collect()),
-            );
-        }
-        TermF::Offset { delta, term } => {
-            out.insert("delta".into(), Value::from(*delta));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Gate { gate, body } => {
-            out.insert("gate".into(), to_json(gate));
-            out.insert("body".into(), to_json(body));
-        }
-        TermF::Shift { delta, term } => {
-            out.insert(
-                "deltaHours".into(),
-                Value::from(total_seconds(*delta) / 3600.0),
-            );
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Within { window, p, term } => {
-            out.insert(
-                "windowHours".into(),
-                Value::from(total_seconds(*window) / 3600.0),
-            );
-            out.insert("p".into(), Value::from(*p));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Importance { w, term } => {
-            out.insert("w".into(), Value::from(*w));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::After {
-            event,
-            anchor,
-            term,
-            pending,
-            needs,
-        } => {
-            out.insert("event".into(), Value::String(event.clone()));
-            out.insert("anchor".into(), Value::String(iso(*anchor)));
-            out.insert("term".into(), to_json(term));
-            out.insert("pending".into(), to_json(pending));
-            if let Some(n) = needs {
-                out.insert("needsHours".into(), Value::from(total_seconds(*n) / 3600.0));
-            }
-        }
-        TermF::Recur {
-            todo,
-            anchor,
-            term,
-            pending,
-        } => {
-            out.insert("todo".into(), Value::String(todo.clone()));
-            out.insert("anchor".into(), Value::String(iso(*anchor)));
-            out.insert("term".into(), to_json(term));
-            out.insert("pending".into(), to_json(pending));
-        }
-        TermF::Periodic {
-            period,
-            anchor,
-            term,
-        } => {
-            out.insert(
-                "periodHours".into(),
-                Value::from(total_seconds(*period) / 3600.0),
-            );
-            out.insert("anchor".into(), Value::String(iso(*anchor)));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::OffsetBy { delta, term } => {
-            out.insert("delta".into(), to_json(delta));
-            out.insert("term".into(), to_json(term));
-        }
-        TermF::Ref { todo } => {
-            out.insert("todo".into(), Value::String(todo.clone()));
-        }
-        TermF::Absent => {}
-        TermF::Piecewise { head, pieces } => {
-            out.insert("head".into(), to_json(head));
-            out.insert(
-                "pieces".into(),
-                Value::Array(
-                    pieces
-                        .iter()
-                        .map(|(at, t)| {
-                            let mut m = Map::new();
-                            m.insert("at".into(), Value::String(iso(*at)));
-                            m.insert("term".into(), to_json(t));
-                            Value::Object(m)
-                        })
-                        .collect(),
-                ),
-            );
-        }
-    }
+    let mut out = object(fields(term.out()).1);
+    out.insert("kind".into(), Value::String(term.out().kind().to_owned()));
     Value::Object(out)
 }
 
-fn field<'a>(d: &'a Value, key: &str) -> Result<&'a Value, FplError> {
-    d.get(key)
-        .ok_or_else(|| FplError(format!("term json missing {key:?}")))
-}
-
-fn num(d: &Value, key: &str) -> Result<f64, FplError> {
-    field(d, key)?
-        .as_f64()
-        .ok_or_else(|| FplError(format!("term json {key:?} is not a number")))
-}
-
-fn text(d: &Value, key: &str) -> Result<String, FplError> {
-    Ok(field(d, key)?
-        .as_str()
-        .ok_or_else(|| FplError(format!("term json {key:?} is not a string")))?
-        .to_string())
-}
-
-fn list<'a>(d: &'a Value, key: &str) -> Result<&'a Vec<Value>, FplError> {
-    field(d, key)?
-        .as_array()
-        .ok_or_else(|| FplError(format!("term json {key:?} is not a list")))
+/// Every field present, an unset optional or an empty text omitted.
+fn object(fields: Fields<&Term>) -> Map<String, Value> {
+    fields
+        .into_iter()
+        .filter_map(|(name, slot)| {
+            let key = key(name, matches!(slot, Slot::Span(_)));
+            let value = match slot {
+                Slot::Real(x) => Value::from(x),
+                Slot::At(t) => Value::String(iso(t)),
+                Slot::Span(d) => Value::from(hours(d)),
+                Slot::Text(text) if text.is_empty() => return None,
+                Slot::Text(text) => Value::String(text),
+                Slot::Nothing => return None,
+                Slot::Child(term) => to_json(term),
+                Slot::Children(terms) => terms.into_iter().map(to_json).collect(),
+                Slot::Rows(_, rows) => rows
+                    .into_iter()
+                    .map(|row| Value::Object(object(row)))
+                    .collect(),
+            };
+            Some((key, value))
+        })
+        .collect()
 }
 
 pub fn from_json(d: &Value) -> Result<Term, FplError> {
-    match d.get("kind").and_then(Value::as_str).unwrap_or("") {
-        "flat" => mk_flat(num(d, "value")?),
-        "decay" => mk_decay(
-            num(d, "start")?,
-            num(d, "end")?,
-            parse_iso(&text(d, "endDate")?)?,
-            delta_from_hours(num(d, "leadUpHours")?),
-            match d.get("startDate") {
-                Some(_) => Some(parse_iso(&text(d, "startDate")?)?),
-                None => None,
+    let tag = d.get("kind").and_then(Value::as_str).unwrap_or("");
+    let mut chars = tag.chars();
+    match chars.next() {
+        Some(initial) if initial.is_ascii_lowercase() => build(
+            &format!("{}{}", initial.to_ascii_uppercase(), chars.as_str()),
+            &mut JsonSource(d),
+        ),
+        _ => Err(FplError(format!("unknown term kind: {tag:?}"))),
+    }
+}
+
+/// An object's fields, `null` or left out being absent.
+struct JsonSource<'a>(&'a Value);
+
+impl<'a> JsonSource<'a> {
+    fn read<T>(
+        &self,
+        name: &'static str,
+        span: bool,
+        decode: impl FnOnce(&'a Value) -> Option<T>,
+    ) -> Field<T> {
+        let key = key(name, span);
+        Field::new(
+            name,
+            match self.0.get(&key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(value) => decode(value)
+                    .map(Some)
+                    .ok_or_else(|| FplError(format!("term json {key:?} is malformed"))),
             },
-        ),
-        "curve" => {
-            let mut points = vec![];
-            for pt in list(d, "points")? {
-                points.push(CurvePoint {
-                    at: parse_iso(&text(pt, "at")?)?,
-                    value: num(pt, "value")?,
-                    label: pt
-                        .get("label")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                });
-            }
-            mk_curve(points)
-        }
-        "conj" => {
-            let mut terms = vec![];
-            for t in list(d, "terms")? {
-                terms.push(from_json(t)?);
-            }
-            mk_conj(
-                terms,
-                d.get("p").and_then(Value::as_f64).unwrap_or(PRIORITY_POWER),
-            )
-        }
-        "offset" => mk_offset(num(d, "delta")?, from_json(field(d, "term")?)?),
-        "gate" => mk_gate(from_json(field(d, "gate")?)?, from_json(field(d, "body")?)?),
-        "shift" => mk_shift(
-            delta_from_hours(num(d, "deltaHours")?),
-            from_json(field(d, "term")?)?,
-        ),
-        "within" => mk_within(
-            delta_from_hours(num(d, "windowHours")?),
-            num(d, "p")?,
-            from_json(field(d, "term")?)?,
-        ),
-        "importance" => mk_importance(num(d, "w")?, from_json(field(d, "term")?)?),
-        "after" => mk_after(
-            text(d, "event")?,
-            parse_iso(&text(d, "anchor")?)?,
-            from_json(field(d, "term")?)?,
-            from_json(field(d, "pending")?)?,
-            match d.get("needsHours") {
-                Some(_) => Some(delta_from_hours(num(d, "needsHours")?)),
-                None => None,
-            },
-        ),
-        "recur" => mk_recur(
-            text(d, "todo")?,
-            parse_iso(&text(d, "anchor")?)?,
-            from_json(field(d, "term")?)?,
-            from_json(field(d, "pending")?)?,
-        ),
-        "periodic" => mk_periodic(
-            delta_from_hours(num(d, "periodHours")?),
-            parse_iso(&text(d, "anchor")?)?,
-            from_json(field(d, "term")?)?,
-        ),
-        "offsetBy" => mk_offset_by(
-            from_json(field(d, "delta")?)?,
-            from_json(field(d, "term")?)?,
-        ),
-        "piecewise" => {
-            let mut pieces = vec![];
-            for p in list(d, "pieces")? {
-                pieces.push((parse_iso(&text(p, "at")?)?, from_json(field(p, "term")?)?));
-            }
-            mk_piecewise(from_json(field(d, "head")?)?, pieces)
-        }
-        "ref" => mk_ref(text(d, "todo")?),
-        "absent" => Ok(mk_absent()),
-        other => err(format!("unknown term kind: {other:?}")),
+        )
+    }
+}
+
+impl FieldSource for JsonSource<'_> {
+    fn real(&mut self, name: &'static str) -> Field<f64> {
+        self.read(name, false, Value::as_f64)
+    }
+
+    fn at(&mut self, name: &'static str) -> Field<Instant> {
+        self.read(name, false, Value::as_str).and_then(parse_iso)
+    }
+
+    fn span(&mut self, name: &'static str) -> Field<Delta> {
+        self.read(name, true, |value| value.as_f64().map(delta_from_hours))
+    }
+
+    fn text(&mut self, name: &'static str) -> Field<String> {
+        self.read(name, false, |value| value.as_str().map(str::to_owned))
+    }
+
+    fn child(&mut self, name: &'static str) -> Field<Term> {
+        self.read(name, false, Some).and_then(from_json)
+    }
+
+    fn children(&mut self, name: &'static str) -> Field<Vec<Term>> {
+        self.read(name, false, Value::as_array)
+            .and_then(|items| items.iter().map(from_json).collect())
+    }
+
+    fn rows<T>(
+        &mut self,
+        name: &'static str,
+        _row: &'static str,
+        mut read: impl FnMut(&mut Self) -> Result<T, FplError>,
+    ) -> Field<Vec<T>> {
+        self.read(name, false, Value::as_array).and_then(|items| {
+            items
+                .iter()
+                .map(|item| read(&mut JsonSource(item)))
+                .collect()
+        })
     }
 }
 
