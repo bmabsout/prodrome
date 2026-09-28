@@ -6,7 +6,8 @@
 // and the environment, `link` closes a function over the others, and
 // `fulfillment`, `series_knots` and `explain` read it. What this file adds is
 // WHICH instants to ask about — the 72 hours of the ring and the 30 days of
-// the bar — and the shape `typst/lib.typ` reads.
+// the bar — and the shape `typst/lib.typ` reads. A value is a number or `∅`
+// (`null`): a term with no value at an instant, never read as a number.
 
 import { DAY, HOUR, iso, naive, plus, type Naive } from "./time";
 
@@ -15,7 +16,7 @@ export interface Core {
   entries(objects: string, at: string | null | undefined, untrusted: string): string;
   fold(objects: string, at: string | null | undefined, untrusted: string): string;
   link(term: string, specs: string): string;
-  fulfillment(term: string, now: string, env: string): number;
+  fulfillment(term: string, now: string, env: string): number | undefined;
   explain(term: string, now: string, env: string): string;
   series_knots(term: string, from: string, to: string, history: string): string;
 }
@@ -32,14 +33,18 @@ export interface Entry {
   state: string;
   at: string;
   claimed: string;
-  value: number | null;
+  /** A number, `"absent"` where the function reads ∅, `null` where it does not link. */
+  value: number | "absent" | null;
   unlinked: string | null;
   unconfirmed: boolean;
   conflicts: Record<string, string[]>;
   content: string | null;
-  spec: string | null;
+  spec: string;
   stream: string[];
 }
+
+/** A reading at one instant: a number, or `null` for ∅. */
+export type Reading = number | null;
 
 /** One event on a todo's timeline, from `fold`'s `stream`. */
 export interface Marker {
@@ -51,9 +56,9 @@ export interface Marker {
 
 export interface Marks {
   /** Fulfillment at now and each hour after, `RING_HOURS` of them. */
-  ring: number[];
+  ring: Reading[];
   /** One value per day; the cells before `now` are the past. */
-  bar: { values: number[]; now: number };
+  bar: { values: Reading[]; now: number };
 }
 
 /** What `typst/lib.typ` reads — see typst/README.md. */
@@ -78,25 +83,32 @@ export const BAR_PAST = 10;
 
 interface Fold {
   env: unknown;
-  flatten: Record<string, unknown>;
+  /** Every todo the objects mention, its function or `absent`: what a ref links against. */
+  functions: Record<string, unknown>;
   history: unknown;
   stream: Record<string, Marker[]>;
 }
 
 interface Knots {
-  knots: [string, number][];
+  knots: [string, Reading][];
   exact: boolean;
 }
 
-/** A curve read off its knots, straight between them, flat past the ends. */
-function between(knots: [Naive, number][], at: Naive): number {
-  if (knots.length === 0) return NaN;
+/**
+ * A curve read off its knots, straight between them, flat past the ends. No
+ * line is drawn to or from ∅: between a knot with no value and any other, the
+ * reading is ∅.
+ */
+function between(knots: [Naive, Reading][], at: Naive): Reading {
+  if (knots.length === 0) return null;
   if (at <= knots[0][0]) return knots[0][1];
   for (let i = 1; i < knots.length; i++) {
     const [t1, v1] = knots[i];
     if (at <= t1) {
       const [t0, v0] = knots[i - 1];
-      return t1 === t0 ? v1 : v0 + ((v1 - v0) * (at - t0)) / (t1 - t0);
+      if (t1 === t0) return v1;
+      if (v0 === null || v1 === null) return null;
+      return v0 + ((v1 - v0) * (at - t0)) / (t1 - t0);
     }
   }
   return knots[knots.length - 1][1];
@@ -110,17 +122,18 @@ function between(knots: [Naive, number][], at: Naive): number {
  * week ago.
  */
 function marksOf(core: Core, closed: string, now: Naive, env: string, history: string): Marks {
-  const ring: number[] = [];
+  const at = (when: Naive): Reading => core.fulfillment(closed, iso(when), env) ?? null;
+  const ring: Reading[] = [];
   for (let h = 0; h < RING_HOURS; h++) {
-    ring.push(core.fulfillment(closed, iso(plus(now, h * HOUR)), env));
+    ring.push(at(plus(now, h * HOUR)));
   }
   const from = plus(now, -BAR_PAST * DAY);
   const past = JSON.parse(core.series_knots(closed, iso(from), iso(now), history)) as Knots;
-  const knots = past.knots.map(([at, v]) => [naive(at), v] as [Naive, number]);
-  const values: number[] = [];
+  const knots = past.knots.map(([when, v]) => [naive(when), v] as [Naive, Reading]);
+  const values: Reading[] = [];
   for (let d = 0; d < BAR_DAYS; d++) {
     const middle = plus(from, d * DAY + DAY / 2);
-    values.push(d < BAR_PAST ? between(knots, middle) : core.fulfillment(closed, iso(middle), env));
+    values.push(d < BAR_PAST ? between(knots, middle) : at(middle));
   }
   return { ring, bar: { values, now: BAR_PAST } };
 }
@@ -143,13 +156,13 @@ export function read(core: Core, objects: ObjectIn[], now: Naive, focus: string 
     created: View["created"];
   };
   const fold = JSON.parse(core.fold(sent, at, "[]")) as Fold;
-  const specs = JSON.stringify(fold.flatten);
+  const specs = JSON.stringify(fold.functions);
   const env = JSON.stringify(fold.env);
   const history = JSON.stringify(fold.history);
 
   const marks: View["marks"] = {};
   const explain: View["explain"] = {};
-  for (const [todo, term] of Object.entries(fold.flatten)) {
+  for (const [todo, term] of Object.entries(fold.functions)) {
     // `link` refuses an unknown todo or a loop; that todo then has no marks,
     // and its row already says why it has no value (`unlinked`).
     let closed: string;

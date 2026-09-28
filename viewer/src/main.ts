@@ -16,7 +16,7 @@ import initTypst, * as typstWasm from "typst-wasm";
 import { editor } from "./editor";
 import { iso, wall, type Naive } from "./time";
 import { body, compilePage, itemDocument, listDocument, scratchDocument, type Typst } from "./typst";
-import { read, type ObjectIn, type View } from "./view";
+import { read, type Entry, type ObjectIn, type View } from "./view";
 
 declare const __BUILD__: string;
 
@@ -86,17 +86,23 @@ async function loadTypst(): Promise<Typst> {
   return typstWasm;
 }
 
-/** Before Typst has arrived, or if it never does: the list as plain HTML. */
+/** A row's value as the list prints it: a percentage, `∅` for absent, `—` unlinked. */
+function percent(value: Entry["value"]): string {
+  if (value === "absent") return "∅";
+  if (value === null) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+/** Before Typst has arrived, or if it never does: the list as plain HTML, in the core's order. */
 function plain(view: View): HTMLElement {
   const list = document.createElement("ol");
-  const open = view.entries
-    .filter((e) => e.state === "open")
-    .sort((a, b) => (a.value ?? 2) - (b.value ?? 2) || a.todo.localeCompare(b.todo));
+  const rows = new Map(view.entries.map((e) => [e.todo, e]));
+  const open = view.order.map((todo) => rows.get(todo) as Entry).filter((e) => e.state === "open");
   for (const entry of open) {
     const li = document.createElement("li");
     const a = Object.assign(document.createElement("a"), { href: `#/todo/${entry.todo}` });
     a.textContent = entry.todo;
-    const value = entry.value === null ? "—" : `${Math.round(entry.value * 100)}%`;
+    const value = percent(entry.value);
     li.append(`${value} `, a, ` ${view.created[entry.todo]?.text ?? ""}`);
     list.append(li);
   }
