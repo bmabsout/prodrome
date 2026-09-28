@@ -66,7 +66,8 @@ change under this file's rule: no stored object changes, a term without
   thick line, the past faded, in a 0–100% frame. Every value is drawn in
   `colour(v)`, a sample of one continuous OKLCH gradient from red to green;
   Problem, Watch and Fine are words only. Instants read as dates, and an item's
-  price as its explanation reads it ("70%, flat"). It reads the core's JSON
+  price in words ("42% now, falling from 55% to 5% by Sep 29, 17:00, over 3
+  days"), with its explanation's parts beneath it. It reads the core's JSON
   and computes nothing about fulfillment. `checks.prodrome-typst` compiles
   its examples to PDF and HTML, and its laws (`tests/laws.typ`).
 - **`viewer/`**, the static web app (`nix build .#prodrome-viewer`), with
