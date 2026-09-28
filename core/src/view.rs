@@ -11,7 +11,7 @@
 //! | ----------- | ---------------------------------------------------------- |
 //! | `outcome`   | `env_of(registers::fold(nodes, t, policy))`                 |
 //! | `claim`     | `fold::env_at(events, t, Everything)`, where it DISAGREES   |
-//! | `spec`      | `fold::flatten(events, t, policy)`                          |
+//! | `spec`      | `fold::flatten(events, t, policy)`, `Absent` where none     |
 //! | `value`     | `fulfillment(link(spec, link_specs(all)), t, env(confirmed))`
 //! | `content`   | `registers::chosen_of(confirmed, Kind::Content)`            |
 //! | `conflicts` | `registers::conflicts_of(confirmed)`                        |
@@ -34,10 +34,10 @@
 //!
 //! ABSENCE. Three of them, and each is a type rather than a sentinel:
 //!
-//! - no spec and no checklist means NO FUNCTION (§6.4), so no value either —
-//!   which is why [`Priced`] is one field and not two `Option`s that could
-//!   disagree. Absence is not zero: a todo the chain has no price for is not
-//!   a todo worth nothing.
+//! - no spec and no checklist means NO FUNCTION (§6.4), and the row's
+//!   function is then `Absent`, whose value is `∅` — `None` in
+//!   [`Price::value`], never a number. Absence is not zero: a todo the chain
+//!   has no price for is not a todo worth nothing.
 //! - no binding means OPEN, which is an absent `outcome` and not a third
 //!   constructor beside `Completed` and `Cancelled`.
 //! - no content record means the chain holds events about this todo and no
@@ -68,22 +68,20 @@ use crate::policy::{Everything, Policy};
 use crate::registers::{self, Kind, Node};
 
 /// A todo's price at a moment: §6.4's function and that function's value
-/// there.
-///
-/// ONE value and not two fields, because there is no spec without a value and
-/// no value without a spec — §6.4's absence rule ("a todo with no spec and no
-/// checklist has no function") stated as a type instead of as two `Option`s a
-/// reader would have to be told agree.
+/// there. Every row has one: a todo with no function is priced by `Absent`
+/// (§7), which reads `∅`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Priced {
+pub struct Price {
     /// The todo's fulfillment FUNCTION over all of time — its revisions and
     /// its lifecycle as pieces of one term. Not the authored spec of the
-    /// moment; `specs_at` is that. Open: its `Ref`s are other todos'.
+    /// moment; `specs_at` is that. Open: its `Ref`s are other todos'. `Absent`
+    /// where the todo has no spec and no checklist.
     pub spec: Term,
     /// `spec`, linked against every todo's function, at the moment the entry
-    /// was taken, in [0, 1] — or why it does not link. A function whose
-    /// reference is unknown or loops has no value, and says so.
-    pub value: Result<f64, LinkError>,
+    /// was taken: a number in [0, 1], `∅` (`None`) where it has none, or why
+    /// it does not link. A function whose reference is unknown or loops has
+    /// no value, and says so.
+    pub value: Result<Option<f64>, LinkError>,
     /// `spec`, linked: what a consumer explains, samples or compiles, so no
     /// reader links a second time with a different set of specs.
     pub linked: Result<fpl::Closed, LinkError>,
@@ -158,8 +156,8 @@ pub struct Entry {
     /// (`view._entry`'s `disputed`, which compares the two outcomes' kinds).
     pub claim: Option<Binding>,
     pub confidence: Confidence,
-    /// §6.4's function and its value here, absent together (see [`Priced`]).
-    pub priced: Option<Priced>,
+    /// §6.4's function and its value here (see [`Price`]).
+    pub price: Price,
     /// The NAME of the object whose write the content register shows.
     pub content: Option<Hash>,
     /// The registers of this todo with more than one live write — a DAG's
@@ -174,29 +172,24 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn spec(&self) -> Option<&Term> {
-        self.priced.as_ref().map(|priced| &priced.spec)
+    pub fn spec(&self) -> &Term {
+        &self.price.spec
     }
 
-    pub fn value(&self) -> Option<f64> {
-        self.priced
-            .as_ref()
-            .and_then(|priced| priced.value.as_ref().ok().copied())
+    /// A number, `∅` (`Ok(None)`), or why the function does not link.
+    pub fn value(&self) -> Result<Option<f64>, &LinkError> {
+        self.price.value.as_ref().copied()
     }
 
     /// The function, linked against every todo's, when it links: what to
     /// explain, sample or compile.
     pub fn linked(&self) -> Option<&fpl::Closed> {
-        self.priced
-            .as_ref()
-            .and_then(|priced| priced.linked.as_ref().ok())
+        self.price.linked.as_ref().ok()
     }
 
-    /// Why the function has no value, where it has one and does not link.
+    /// Why the function has no value, where it does not link.
     pub fn unlinked(&self) -> Option<&LinkError> {
-        self.priced
-            .as_ref()
-            .and_then(|priced| priced.value.as_ref().err())
+        self.price.value.as_ref().err()
     }
 
     /// The lifecycle as the WIRE spells it: the outcome's constructor name
@@ -250,11 +243,12 @@ fn lowered(binding: Option<Binding>) -> &'static str {
 /// 2. `outcome = env_of(confirmed)[todo]`;
 ///    `claim = env_at(events, t, Everything)[todo]` where the two outcomes
 ///    name different kinds;
-/// 3. `spec = flatten(events of nodes, t, policy)[todo]`, and `value` is
-///    `fulfillment(link(spec, link_specs(flatten(…))), t,
-///    evaluation_env(env_of(confirmed)))` — every `Ref` bound to that todo's
-///    own function, and the CONFIRMED environment, because a claim does not
-///    price; a `LinkError` in place of the number where the spec does not link;
+/// 3. `spec = flatten(events of nodes, t, policy)[todo]`, `Absent` where it
+///    has none, and `value` is `fulfillment(link(spec, link_specs(flatten(…),
+///    todos)), t, evaluation_env(env_of(confirmed)))` — every `Ref` bound to
+///    that todo's own function, `Absent` for a known todo with none, and the
+///    CONFIRMED environment, because a claim does not price; a `LinkError` in
+///    place of the reading where the spec does not link;
 /// 4. `content = chosen_of(confirmed, Kind::Content)[todo]`,
 ///    `conflicts = conflicts_of(confirmed)[todo]`;
 /// 5. `confidence` is `Confidence::of(claim.is_some(),
@@ -289,7 +283,6 @@ pub fn entries<P: Payload>(
     // keyed by event NAME and the fold's by `TodoId`, and converting per todo
     // would rebuild it once per row.
     let env = fold::evaluation_env(&believed);
-    let linkable = fold::link_specs(&specs);
     let now = fpl::instant_of(t);
 
     // Which objects wrote about which todo, in the order the DAG handed them
@@ -304,6 +297,7 @@ pub fn entries<P: Payload>(
                 .push(node.name.clone());
         }
     }
+    let linkable = fold::link_specs(&specs, streams.keys());
 
     // The content records the policy does not CONFIRM, by object name — the
     // second half of `confidence`, and the one question here that standing
@@ -329,22 +323,21 @@ pub fn entries<P: Payload>(
             .and_then(|name| unconfirmed_content.get(name))
             .copied()
             .unwrap_or(false);
-        let priced = specs.get(&todo).map(|spec| {
-            let linked = fpl::link(spec, &linkable);
-            Priced {
-                value: linked
-                    .as_ref()
-                    .map(|closed| fpl::fulfillment(closed, now, &env))
-                    .map_err(Clone::clone),
-                linked,
-                spec: spec.clone(),
-            }
-        });
+        let spec = specs.get(&todo).cloned().unwrap_or_else(fpl::mk_absent);
+        let linked = fpl::link(&spec, &linkable);
+        let price = Price {
+            value: linked
+                .as_ref()
+                .map(|closed| fpl::fulfillment(closed, now, &env))
+                .map_err(Clone::clone),
+            linked,
+            spec,
+        };
         out.push(Entry {
             claim: if disputed { claimed } else { None },
             confidence: Confidence::of(disputed, provisional_content),
             outcome,
-            priced,
+            price,
             content: written,
             conflicts: conflicts
                 .remove(&todo)
@@ -451,7 +444,11 @@ mod tests {
             Confidence::Provisional(Provisional::Claimed),
             "the claim alone, since bassel wrote the content"
         );
-        assert_eq!(entry.value(), Some(0.25), "an open todo prices by its spec");
+        assert_eq!(
+            entry.value(),
+            Ok(Some(0.25)),
+            "an open todo prices by its spec"
+        );
         assert_eq!(entry.stream.len(), 2);
     }
 
@@ -473,9 +470,11 @@ mod tests {
             "the name of the winning record, not the record"
         );
         assert_eq!(
-            entry.priced, None,
-            "no spec and no checklist is no function, so no value"
+            fpl::print_term(entry.spec()),
+            "Absent()",
+            "no spec and no checklist is no function: Absent"
         );
+        assert_eq!(entry.value(), Ok(None), "and Absent reads ∅, not a number");
     }
 
     #[test]
@@ -492,7 +491,7 @@ mod tests {
         };
         assert_eq!(entry.confidence, Confidence::Confirmed);
         assert_eq!(entry.outcome, None);
-        assert_eq!(entry.priced, None, "the chain knows no price yet");
+        assert_eq!(entry.value(), Ok(None), "the chain knows no price yet");
         assert_eq!(entry.content, None, "and no record yet");
         assert_eq!(entry.stream.len(), 1, "the object is still its stream");
     }
@@ -513,7 +512,7 @@ mod tests {
         );
         assert_eq!(entry.claim, None, "the two folds agree");
         assert_eq!(entry.confidence, Confidence::Confirmed);
-        assert_eq!(entry.value(), Some(1.0));
+        assert_eq!(entry.value(), Ok(Some(1.0)));
     }
 
     #[test]
@@ -535,10 +534,11 @@ mod tests {
         let rows = entries(&nodes, at(2), &roster()).expect("folds");
         // The harmonic mean of 0.25 and 0.5 while both are open ...
         assert_eq!(rows[2].todo.as_str(), "group");
-        assert!((rows[2].value().expect("linked") - 1.0 / 3.0).abs() < 1e-12);
+        let value = |row: &Entry| row.value().expect("linked").expect("a value");
+        assert!((value(&rows[2]) - 1.0 / 3.0).abs() < 1e-12);
         // ... and of 0.25 and 1.0 once beta is done.
         let rows = entries(&nodes, at(9), &roster()).expect("folds");
-        assert!((rows[2].value().expect("linked") - 0.4).abs() < 1e-12);
+        assert!((value(&rows[2]) - 0.4).abs() < 1e-12);
         assert_eq!(rows[2].unlinked(), None);
     }
 
@@ -551,14 +551,46 @@ mod tests {
             Some(fpl::mk_ref("ghost".to_owned()).expect("valid")),
         )]);
         let rows = entries(&nodes, at(9), &roster()).expect("folds");
+        assert_eq!(fpl::print_term(rows[0].spec()), "Ref(todo='ghost')");
         assert_eq!(
-            rows[0].spec().map(fpl::print_term).as_deref(),
-            Some("Ref(todo='ghost')")
+            rows[0].value(),
+            Err(&LinkError::Unknown("ghost".to_owned()))
         );
-        assert_eq!(rows[0].value(), None);
         assert_eq!(
             rows[0].unlinked(),
             Some(&LinkError::Unknown("ghost".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_reference_to_a_known_todo_with_no_spec_links_to_absent() {
+        let group = fpl::mk_conj(
+            vec![
+                fpl::mk_ref("alpha".to_owned()).expect("valid"),
+                fpl::mk_ref("beta".to_owned()).expect("valid"),
+                fpl::mk_ref("gamma".to_owned()).expect("valid"),
+            ],
+            -1.0,
+        )
+        .expect("valid");
+        let nodes = chain(vec![
+            authored("alpha", 1, "bassel", Some(mk_flat(0.25).expect("valid"))),
+            // A record with no spec, and a todo only ever created.
+            authored("beta", 1, "bassel", None),
+            crate::event::mk_created("gamma", at(1), "bassel", "a note", "").expect("valid"),
+            authored("group", 1, "bassel", Some(group)),
+        ]);
+        let rows = entries(&nodes, at(9), &roster()).expect("folds");
+        let [alpha, beta, gamma, group] = &rows[..] else {
+            panic!("four todos")
+        };
+        assert_eq!(alpha.value(), Ok(Some(0.25)));
+        assert_eq!((beta.value(), gamma.value()), (Ok(None), Ok(None)));
+        // The two absent members neither raise nor lower the mean.
+        assert_eq!(group.value(), Ok(Some(0.25)));
+        assert_eq!(
+            group.linked().map(|closed| fpl::print_term(closed.term())),
+            Some("Conj(terms=(Flat(value=0.25), Absent(), Absent()), p=-1.0)".to_owned())
         );
     }
 

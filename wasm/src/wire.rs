@@ -387,6 +387,9 @@ pub fn json_content<P: Payload>(content: &BTreeMap<TodoId, Authored<P>>) -> Valu
 /// One §6.7 entry, in the shape the reference's row carried and the
 /// wire still carries — one row, one reading, on every host.
 ///
+/// `value` is a number, `"absent"` where the function reads `∅`, or `null`
+/// where it does not link, and `unlinked` then says why.
+///
 /// `spec` is the todo's §6.4 function as its canonical PRINT and not as
 /// `to_json`, which is the exception to this file's "terms travel as JSON"
 /// rule and is deliberate: it is the value's IDENTITY (§3), it is what the
@@ -398,7 +401,11 @@ pub fn json_entry(entry: &Entry) -> Value {
         "state": entry.state(),
         "at": entry.at(),
         "claimed": entry.claimed(),
-        "value": entry.value(),
+        "value": match entry.value() {
+            Ok(Some(value)) => json!(value),
+            Ok(None) => json!("absent"),
+            Err(_) => Value::Null,
+        },
         "unlinked": entry.unlinked().map(ToString::to_string),
         "unconfirmed": entry.confidence.is_provisional(),
         "conflicts": Value::Object(
@@ -414,7 +421,7 @@ pub fn json_entry(entry: &Entry) -> Value {
                 .collect(),
         ),
         "content": entry.content.as_ref().map(Hash::as_str),
-        "spec": entry.spec().map(fpl::print_term),
+        "spec": fpl::print_term(entry.spec()),
         "stream": strings(entry.stream.iter().map(|name| name.as_str().to_owned())),
     })
 }
@@ -451,7 +458,7 @@ mod tests {
     use prodrome::fpl::{instant_of, mk_flat};
     use prodrome::literal::Datetime;
     use prodrome::registers::Kind;
-    use prodrome::view::{Confidence, Priced, Provisional};
+    use prodrome::view::{Confidence, Price, Provisional};
 
     fn at(day: u32) -> Datetime {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
@@ -465,8 +472,8 @@ mod tests {
     /// the struct: `conformance/view/*.py` freezes ten of these fields' VALUES
     /// in the core, and this freezes the JSON keys and forms the browser reads
     /// them under — the lowercased state, `isoformat(" ")`, `""` for an absent
-    /// claim, `null` for an absent value, and a term as its §2 PRINT and never
-    /// as `to_json`'s shape.
+    /// claim, `"absent"` for an absent value, and a term as its §2 PRINT and
+    /// never as `to_json`'s shape.
     #[test]
     fn an_entry_crosses_as_the_eleven_keys_the_page_reads() {
         let entry = Entry {
@@ -474,11 +481,11 @@ mod tests {
             outcome: Some(Binding::Completed(instant_of(at(3)))),
             claim: None,
             confidence: Confidence::Provisional(Provisional::Content),
-            priced: Some(Priced {
+            price: Price {
                 spec: mk_flat(0.25).expect("valid"),
-                value: Ok(0.25),
+                value: Ok(Some(0.25)),
                 linked: Ok(fpl::Closed::of(mk_flat(0.25).expect("valid")).expect("closed")),
-            }),
+            },
             content: Some(name('a')),
             conflicts: [(Kind::State, vec![name('b'), name('c')])]
                 .into_iter()
@@ -504,8 +511,8 @@ mod tests {
     }
 
     /// The absences, which are the half a shape test usually misses: an OPEN
-    /// todo with no record and no price is `"open"`, `""`, `null`, `null`,
-    /// `null` — never a zero and never a missing key.
+    /// todo with no record and no price is `"open"`, `""`, `"absent"`,
+    /// `Absent()` and `null` — never a zero and never a missing key.
     #[test]
     fn an_open_unpriced_todo_crosses_as_absences_and_not_as_zeroes() {
         let entry = Entry {
@@ -513,7 +520,11 @@ mod tests {
             outcome: None,
             claim: Some(Binding::Cancelled(instant_of(at(5)))),
             confidence: Confidence::Provisional(Provisional::Claimed),
-            priced: None,
+            price: Price {
+                spec: fpl::mk_absent(),
+                value: Ok(None),
+                linked: Ok(fpl::Closed::of(fpl::mk_absent()).expect("closed")),
+            },
             content: None,
             conflicts: BTreeMap::new(),
             stream: vec![],
@@ -525,12 +536,12 @@ mod tests {
                 "state": "open",
                 "at": "",
                 "claimed": "cancelled",
-                "value": Value::Null,
+                "value": "absent",
                 "unlinked": Value::Null,
                 "unconfirmed": true,
                 "conflicts": {},
                 "content": Value::Null,
-                "spec": Value::Null,
+                "spec": "Absent()",
                 "stream": [],
             })
         );
@@ -559,7 +570,7 @@ mod tests {
         );
         let closed = parse_closed("term", &json.to_string()).expect("closed");
         let now = instant_of(at(1));
-        assert_eq!(fpl::fulfillment(&closed, now, &fpl::Env::new()), 0.25);
+        assert_eq!(fpl::fulfillment(&closed, now, &fpl::Env::new()), Some(0.25));
     }
 
     /// The environment crosses as its two halves and comes back as the core's:
@@ -594,10 +605,19 @@ mod tests {
                 "pending": {"kind": "flat", "value": 0.3}}"#,
         )
         .expect("a closed term");
-        assert_eq!(fpl::fulfillment(&recur, instant_of(at(3)), &back), 0.5);
-        assert_eq!(fpl::fulfillment(&recur, instant_of(at(10)), &back), 1.0);
+        assert_eq!(
+            fpl::fulfillment(&recur, instant_of(at(3)), &back),
+            Some(0.5)
+        );
+        assert_eq!(
+            fpl::fulfillment(&recur, instant_of(at(10)), &back),
+            Some(1.0)
+        );
         let empty = parse_env("{}").expect("the empty environment");
-        assert_eq!(fpl::fulfillment(&recur, instant_of(at(3)), &empty), 0.3);
+        assert_eq!(
+            fpl::fulfillment(&recur, instant_of(at(3)), &empty),
+            Some(0.3)
+        );
         assert!(
             parse_env(r#"{"brush": {"kind": "Completed", "at": "2026-09-02T12:00:00"}}"#).is_err()
         );
@@ -637,21 +657,18 @@ mod tests {
             outcome: None,
             claim: None,
             confidence: Confidence::Confirmed,
-            priced: Some(Priced {
+            price: Price {
                 spec: fpl::mk_ref("ghost".to_owned()).expect("valid"),
                 value: Err(fpl::LinkError::Unknown("ghost".to_owned())),
                 linked: Err(fpl::LinkError::Unknown("ghost".to_owned())),
-            }),
+            },
             content: None,
             conflicts: BTreeMap::new(),
             stream: vec![],
         };
         let json = json_entry(&entry);
         assert_eq!(json["value"], Value::Null);
-        assert_eq!(
-            json["unlinked"],
-            "Ref(\"ghost\") names no todo with a function"
-        );
+        assert_eq!(json["unlinked"], "Ref(\"ghost\") names no known todo");
         assert_eq!(json["spec"], "Ref(todo='ghost')");
     }
 }

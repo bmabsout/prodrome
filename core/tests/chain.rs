@@ -39,7 +39,7 @@ fn compile(term: &Term, snapshot: &Env) -> Compiled {
     chain::compile(&closed(term.clone()), snapshot)
 }
 
-fn fulfillment(term: &Term, now: Instant, snapshot: &Env) -> f64 {
+fn fulfillment(term: &Term, now: Instant, snapshot: &Env) -> Option<f64> {
     fpl::fulfillment(&closed(term.clone()), now, snapshot)
 }
 
@@ -139,8 +139,11 @@ fn agrees(term: &Term, snapshot: &Env) {
         let interpreted = fulfillment(term, now, snapshot);
         let value = compiled.fulfillment(now);
         assert!(
-            (interpreted - value).abs() <= 1e-9,
-            "at {}: interpreted {interpreted}, compiled {value}",
+            match (interpreted, value) {
+                (Some(x), Some(y)) => (x - y).abs() <= 1e-9,
+                (x, y) => x == y,
+            },
+            "at {}: interpreted {interpreted:?}, compiled {value:?}",
             iso(now)
         );
         assert_eq!(
@@ -219,8 +222,8 @@ fn a_cancelled_upstream_is_a_graded_offset_at_one_and_is_reported() {
         "Piecewise(head=Flat(value=0.35), pieces=(Piece(at=datetime(2026, 9, 2, 0, 0, 0), \
          term=Offset(delta=1.0, term=Flat(value=0.2))),))"
     );
-    assert_eq!(compiled.fulfillment(moment(25)), 1.0);
-    assert_eq!(compiled.fulfillment(moment(23)), 0.35);
+    assert_eq!(compiled.fulfillment(moment(25)), Some(1.0));
+    assert_eq!(compiled.fulfillment(moment(23)), Some(0.35));
 
     // NEVER SILENTLY (§7): the 1.0 above is indistinguishable from a demand
     // met, and these are what tell them apart.
@@ -236,6 +239,25 @@ fn a_cancelled_upstream_is_a_graded_offset_at_one_and_is_reported() {
         Some(&Note::Many(vec![Scalar::Text("beta".to_owned())])),
         "explain carries the cancellation to the reader at the root"
     );
+    agrees(&term, &snapshot);
+}
+
+/// A cancelled upstream is moot whatever the body reads, and `offset(∅, 1)` is
+/// `∅`: a body that holds an `Absent` is written as the gate that reads 1.0
+/// either way, the dropped demand still in the tree. An absent pending branch
+/// is just what the link reads before the cancellation.
+#[test]
+fn a_cancelled_upstream_over_an_absent_body_is_still_moot() {
+    let term = after("beta", 0, fpl::mk_absent(), fpl::mk_absent(), None);
+    let snapshot = env(&[("beta", Outcome::Cancelled(moment(24)))]);
+    let compiled = compile(&term, &snapshot);
+    assert_eq!(
+        print_term(compiled.term().term()),
+        "Piecewise(head=Absent(), pieces=(Piece(at=datetime(2026, 9, 2, 0, 0, 0), \
+         term=Gate(gate=Absent(), body=Flat(value=1.0))),))"
+    );
+    assert_eq!(compiled.fulfillment(moment(23)), None);
+    assert_eq!(compiled.fulfillment(moment(25)), Some(1.0));
     agrees(&term, &snapshot);
 }
 
@@ -342,8 +364,8 @@ fn a_chain_with_a_cancellation_in_the_middle_is_moot_from_there() {
     let compiled = compile(&a_chain(), &snapshot);
     // Moot from hour 30 and not from hour 20: alpha slipped 10 hours, so the
     // whole subchain under it is read 10 hours behind the clock.
-    assert_eq!(compiled.fulfillment(moment(35)), 1.0);
-    assert_eq!(compiled.fulfillment(moment(25)), 0.3);
+    assert_eq!(compiled.fulfillment(moment(35)), Some(1.0));
+    assert_eq!(compiled.fulfillment(moment(25)), Some(0.3));
     assert_eq!(
         compiled.moot().map(Link::event).collect::<Vec<_>>(),
         ["beta"]

@@ -11,10 +11,24 @@ use prodrome::view::{Confidence, Entry, Provisional};
 use crate::price::iso;
 use crate::Reading;
 
-/// A price, `None` where §6.4 says a todo has none: a todo with no spec and
-/// no checklist has no function, and absence is not a zero.
-fn priced(entry: &Entry) -> Option<String> {
-    entry.value().map(|value| format!("{value:.3}"))
+/// A price as `show` says it: the number, `absent` where the function reads
+/// `∅` — absence is not a zero — or why the function does not link.
+fn priced(entry: &Entry) -> String {
+    match entry.value() {
+        Ok(Some(value)) => format!("{value:.3}"),
+        Ok(None) => "absent".to_owned(),
+        Err(unlinked) => format!("does not link: {unlinked}"),
+    }
+}
+
+/// A price in `list`'s column, five wide: `∅` for absent, `—` for a function
+/// that does not link.
+fn column(entry: &Entry) -> String {
+    match entry.value() {
+        Ok(Some(value)) => format!("{value:.3}"),
+        Ok(None) => "  ∅  ".to_owned(),
+        Err(_) => "  —  ".to_owned(),
+    }
 }
 
 /// Why a row is not the confirmed reading, whole — empty when it is.
@@ -55,7 +69,8 @@ pub fn list(reading: &Reading) -> String {
         .iter()
         .filter(|entry| entry.outcome.is_none() && reading.existed(&entry.todo))
         .collect();
-    rows.sort_by(|a, b| match (a.value(), b.value()) {
+    let number = |entry: &Entry| entry.value().ok().flatten();
+    rows.sort_by(|a, b| match (number(a), number(b)) {
         (Some(x), Some(y)) => x.total_cmp(&y).then_with(|| a.todo.cmp(&b.todo)),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -76,7 +91,7 @@ pub fn list(reading: &Reading) -> String {
     for entry in rows {
         out.push(format!(
             "{}  {:width$}  {}{}",
-            priced(entry).unwrap_or_else(|| "  —  ".to_owned()),
+            column(entry),
             entry.todo.as_str(),
             reading.body(&entry.todo),
             provisional(entry)
@@ -110,12 +125,8 @@ pub fn show(reading: &Reading, todo: &TodoId) -> Option<String> {
         },
     );
     field(&mut out, "created", reading.created_at(todo));
-    field(&mut out, "price", priced(entry).unwrap_or_default());
-    field(
-        &mut out,
-        "spec",
-        entry.spec().map(print_term).unwrap_or_default(),
-    );
+    field(&mut out, "price", priced(entry));
+    field(&mut out, "spec", print_term(entry.spec()));
     field(&mut out, "body", reading.body(todo));
     field(&mut out, "detail", reading.detail(todo));
     field(

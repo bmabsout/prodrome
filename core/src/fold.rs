@@ -102,13 +102,25 @@ pub fn evaluation_env(env: &Env) -> fpl::Env {
     }
 }
 
-/// [`flatten`]'s functions as [`fpl::link`] reads them: a `Ref(x)` in one
-/// todo's function means todo `x`'s whole function, its lifecycle included.
-pub fn link_specs(functions: &BTreeMap<TodoId, Term>) -> BTreeMap<String, Term> {
-    functions
-        .iter()
-        .map(|(todo, term)| (todo.as_str().to_owned(), term.clone()))
-        .collect()
+/// [`flatten`]'s functions as [`fpl::link`] reads them, over every todo in
+/// `known`: a `Ref(x)` in one todo's function means todo `x`'s whole function,
+/// its lifecycle included, and `Absent` where `x` is known and has none
+/// (§7.2). A todo in neither is one the store has never seen, and a reference
+/// to it stays [`fpl::LinkError::Unknown`].
+pub fn link_specs<'a>(
+    functions: &BTreeMap<TodoId, Term>,
+    known: impl IntoIterator<Item = &'a TodoId>,
+) -> BTreeMap<String, Term> {
+    let mut specs: BTreeMap<String, Term> = known
+        .into_iter()
+        .map(|todo| (todo.as_str().to_owned(), fpl::mk_absent()))
+        .collect();
+    specs.extend(
+        functions
+            .iter()
+            .map(|(todo, term)| (todo.as_str().to_owned(), term.clone())),
+    );
+    specs
 }
 
 /// The events known by `t`, in CAUSAL order — THE ordering every fold below
@@ -531,8 +543,8 @@ mod tests {
         let term =
             &fpl::Closed::of(flat[&TodoId::new("alpha").expect("valid")].clone()).expect("no Ref");
         let env = evaluation_env(&env_at(&log, at(9), &policy));
-        assert_eq!(fulfillment(term, fpl::instant_of(at(2)), &env), 0.2);
-        assert_eq!(fulfillment(term, fpl::instant_of(at(4)), &env), 1.0);
+        assert_eq!(fulfillment(term, fpl::instant_of(at(2)), &env), Some(0.2));
+        assert_eq!(fulfillment(term, fpl::instant_of(at(4)), &env), Some(1.0));
     }
 
     #[test]

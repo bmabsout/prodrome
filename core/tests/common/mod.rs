@@ -109,6 +109,16 @@ pub fn close(path: &str, mine: f64, theirs: f64) -> Result<(), String> {
     }
 }
 
+/// A READING compared the way §9.8 compares one: `None` — the vector's `∅` —
+/// only against `None`, and a number to 1e-9.
+pub fn reading(path: &str, mine: Option<f64>, theirs: &Value) -> Result<(), String> {
+    match (mine, vectors::maybe_number(theirs)) {
+        (Some(mine), Some(theirs)) => close(path, mine, theirs),
+        (None, None) => Ok(()),
+        (mine, theirs) => Err(format!("{path}: {mine:?} != {theirs:?}")),
+    }
+}
+
 // --- the synthetic corpus ----------------------------------------------------
 //
 // The suites that used to read a vector file of stored objects read this
@@ -513,7 +523,8 @@ pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {
 ///
 /// THE SAME TEN FIELDS `prodrome-wasm`'s `wire::json_entry` puts on the wire,
 /// in the same forms — the lowercased state, `isoformat(" ")`, `""` for an
-/// absent claim, `None` for an absent value, a term as its §2 PRINT. That is
+/// absent claim, `'absent'` for an absent value and `None` for one that does
+/// not link, a term as its §2 PRINT. That is
 /// deliberate and is what `conformance/view/*.py` is frozen against: the entry
 /// as a CONSUMER reads it, not as the `Entry` struct happens to be shaped.
 /// `wasm/src/wire.rs`'s own test pins the JSON spelling of these same fields.
@@ -552,9 +563,11 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
             ("claimed".to_owned(), Value::Str(entry.claimed().to_owned())),
             (
                 "value".to_owned(),
-                entry.value().map_or(Value::None, |v| {
-                    Value::float(v).expect("a fulfillment is finite")
-                }),
+                match entry.value() {
+                    Ok(Some(v)) => Value::float(v).expect("a fulfillment is finite"),
+                    Ok(None) => Value::Str("absent".to_owned()),
+                    Err(_) => Value::None,
+                },
             ),
             (
                 "unconfirmed".to_owned(),
@@ -565,10 +578,7 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
                 "content".to_owned(),
                 optional(entry.content.as_ref().map(|h| h.as_str().to_owned())),
             ),
-            (
-                "spec".to_owned(),
-                optional(entry.spec().map(fpl::print_term)),
-            ),
+            ("spec".to_owned(), Value::Str(fpl::print_term(entry.spec()))),
             (
                 "stream".to_owned(),
                 Value::Tuple(
@@ -584,7 +594,7 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
 }
 
 /// One `explain` tree as the vector grammar's `Node(...)`: the kind tag, the
-/// value, the notes, and the children in order.
+/// value (`None` for `∅`), the notes, and the children in order.
 ///
 /// THE DECORATION AND NOT THE TERM. The term's own shape is the case's `term`
 /// print, which the same vector holds; what explaining ADDS is a value and a
@@ -616,7 +626,9 @@ pub fn explanation_value(node: &prodrome::fpl::Explanation) -> Value {
             ("kind".to_owned(), Value::Str(node.node.kind().to_owned())),
             (
                 "value".to_owned(),
-                Value::float(node.value).expect("a fulfillment is finite"),
+                node.value.map_or(Value::None, |v| {
+                    Value::float(v).expect("a fulfillment is finite")
+                }),
             ),
             ("notes".to_owned(), Value::Tuple(notes)),
             ("terms".to_owned(), Value::Tuple(children)),

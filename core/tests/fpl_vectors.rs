@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::vectors::{each, field, integer, moment, number, text_at, vectors};
+use common::vectors::{each, field, integer, moment, text_at, vectors};
 use prodrome::fpl::{
     explained, fulfillment, instant_of, normalize, parse_term, print_term, Closed, Env, Outcome,
 };
@@ -52,10 +52,10 @@ fn every_term_prints_evaluates_normalises_and_explains_as_the_reference() {
         let env = env_of(each(case, "env"));
         for sample in each(case, "samples") {
             let now = instant_of(moment(field(sample, "now")));
-            common::close(
+            common::reading(
                 "fulfillment",
                 fulfillment(&closed, now, &env),
-                number(field(sample, "value")),
+                field(sample, "value"),
             )
             .unwrap_or_else(|e| panic!("seed {seed} at {now}: {e}"));
             samples += 1;

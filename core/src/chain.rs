@@ -184,7 +184,7 @@ impl Compiled {
     /// What the compiled term is worth at an instant. §7's ONE evaluator,
     /// against the empty environment — the argument is absent because there is
     /// nothing left in the term that could read it.
-    pub fn fulfillment(&self, now: Instant) -> f64 {
+    pub fn fulfillment(&self, now: Instant) -> Option<f64> {
         fpl::fulfillment(&self.term, now, &Env::new())
     }
 
@@ -349,8 +349,18 @@ fn mk_shift(delta: Delta, term: Term) -> Term {
 /// The MOOT CONSTANT as the graded offset it is: `offset(x, 1) = x·0 + 1 = 1`
 /// for every `x` in [0, 1], so the value is exactly 1.0 and the demand that
 /// was dropped is still in the tree for a reader to see.
+///
+/// An offset of `∅` is `∅`, and a cancelled upstream is moot whatever the
+/// body reads, so a body holding an `Absent` is gated instead: `max(1 − x, 1)
+/// = 1`, and an absent gate is no gate — exactly 1.0 either way, the demand
+/// still in the tree.
 fn mk_moot(term: Term) -> Term {
-    fpl::mk_offset(1.0, term).expect("1.0 is in [-1, 1]")
+    if fpl::holds_absent(&term) {
+        fpl::mk_gate(term, fpl::mk_flat(1.0).expect("1.0 is in [0, 1]"))
+            .expect("Gate admits every pair")
+    } else {
+        fpl::mk_offset(1.0, term).expect("1.0 is in [-1, 1]")
+    }
 }
 
 /// §7.1 — compile a whole chain: one [`Compiled`] per todo, or the cycle.
