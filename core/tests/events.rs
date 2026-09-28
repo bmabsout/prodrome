@@ -103,7 +103,8 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
             if let Some(spec) = &authored.payload.spec {
                 let now = prodrome::fpl::instant_of(authored.at);
                 let spec = prodrome::fpl::Closed::of(spec.clone()).expect("no Ref");
-                let value = prodrome::fpl::fulfillment(&spec, now, &prodrome::fpl::Env::new());
+                let value = prodrome::fpl::fulfillment(&spec, now, &prodrome::fpl::Env::new())
+                    .expect("the corpus's specs hold no Absent");
                 assert!((0.0..=1.0).contains(&value), "todo {:?}", authored.todo);
                 priced += 1;
             }
@@ -170,6 +171,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
     assert_eq!(
         names,
         [
+            "Absent",
             "After",
             "Authored",
             "Cancelled",

@@ -11,6 +11,12 @@
 //! that exists came through one of them (or through `parse_term`, which calls
 //! them).
 //!
+//! ABSENT IS A VALUE. A term's value is `[0, 1] ∪ {∅}`, and `∅` is `None`:
+//! [`fulfillment`] answers `Option<f64>`, so an object with no claim on
+//! attention — the `Absent` leaf, or anything composed only of it — cannot be
+//! read as a number. `∅` is the identity of composition: it neither raises
+//! nor lowers anything it is composed with.
+//!
 //! OPEN AND CLOSED. `Ref(todo)` names another todo's fulfillment, so a term
 //! holding one is open; [`link`] binds every reference and answers a
 //! [`Closed`] term, and only a closed term is evaluated, explained or sampled.
@@ -132,6 +138,9 @@ pub enum TermF<A> {
     Ref {
         todo: String,
     },
+    /// No temporal value: `∅` at every instant. A note, a reference, a
+    /// proposal nobody has priced.
+    Absent,
 }
 
 impl<A> TermF<A> {
@@ -219,15 +228,18 @@ impl<A> TermF<A> {
                 term: f(term),
             },
             TermF::Ref { todo } => TermF::Ref { todo },
+            TermF::Absent => TermF::Absent,
         }
     }
 
     /// The child positions, in declaration order.
     pub fn children(&self) -> Vec<&A> {
         match self {
-            TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Ref { .. } => {
-                vec![]
-            }
+            TermF::Flat { .. }
+            | TermF::Decay { .. }
+            | TermF::Curve { .. }
+            | TermF::Ref { .. }
+            | TermF::Absent => vec![],
             TermF::Conj { terms, .. } => terms.iter().collect(),
             TermF::Offset { term, .. } | TermF::Shift { term, .. } => vec![term],
             TermF::Within { term, .. } | TermF::Importance { term, .. } => vec![term],
@@ -265,6 +277,7 @@ impl<A> TermF<A> {
             TermF::Piecewise { .. } => "piecewise",
             TermF::OffsetBy { .. } => "offsetBy",
             TermF::Ref { .. } => "ref",
+            TermF::Absent => "absent",
         }
     }
 }
@@ -350,6 +363,7 @@ impl<A, E> TermF<Result<A, E>> {
                 term: term?,
             },
             TermF::Ref { todo } => TermF::Ref { todo },
+            TermF::Absent => TermF::Absent,
         })
     }
 }
@@ -404,6 +418,12 @@ impl Closed {
 
 fn is_closed(term: &Term) -> bool {
     !matches!(term.out(), TermF::Ref { .. }) && term.out().children().into_iter().all(is_closed)
+}
+
+/// Whether an `Absent` is anywhere in `term` — the only way a closed term can
+/// read `∅`, so a term without one has a value at every instant.
+pub fn holds_absent(term: &Term) -> bool {
+    matches!(term.out(), TermF::Absent) || term.out().children().into_iter().any(holds_absent)
 }
 
 /// What history says about a named event. The two ways an event can be over
@@ -610,40 +630,62 @@ pub fn phase(period: Delta, anchor: Instant, now: Instant) -> Instant {
     after(anchor, us_of(now - anchor).rem_euclid(us_of(period)))
 }
 
+/// A conjunction's reading: the power mean over the members that have a
+/// value, `∅` when none do. `Conj([])` keeps its stored meaning of 0.5 — it
+/// has no member to be absent — so only a conjunction whose members are all
+/// absent is `∅`.
+fn conj(values: &[Option<f64>], p: f64) -> Option<f64> {
+    let present: Vec<f64> = values.iter().flatten().copied().collect();
+    (values.is_empty() || !present.is_empty()).then(|| power_mean(&present, p))
+}
+
 /// Evaluate a closed term at a moment against what history says. Total by
-/// structure; every branch returns a value in [0, 1].
-pub fn fulfillment(term: &Closed, now: Instant, env: &Env) -> f64 {
+/// structure; every branch returns a value in [0, 1], or `∅` (`None`) where
+/// the term has none.
+pub fn fulfillment(term: &Closed, now: Instant, env: &Env) -> Option<f64> {
     eval(term.term(), now, env)
 }
 
 /// The evaluator proper, over the subterms of a [`Closed`] — so a `Ref` is
 /// unreachable here by the type's invariant.
-fn eval(term: &Term, now: Instant, env: &Env) -> f64 {
+fn eval(term: &Term, now: Instant, env: &Env) -> Option<f64> {
     match term.out() {
-        TermF::Flat { value } => *value,
+        TermF::Flat { value } => Some(*value),
         TermF::Decay {
             start,
             end,
             end_date,
             lead_up,
             start_date,
-        } => eval_decay(*start, *end, *end_date, *lead_up, *start_date, now),
-        TermF::Curve { points } => eval_curve(points, now),
+        } => Some(eval_decay(
+            *start,
+            *end,
+            *end_date,
+            *lead_up,
+            *start_date,
+            now,
+        )),
+        TermF::Curve { points } => Some(eval_curve(points, now)),
+        TermF::Absent => None,
         TermF::Conj { terms, p } => {
-            let vs: Vec<f64> = terms.iter().map(|t| eval(t, now, env)).collect();
-            power_mean(&vs, *p)
+            let vs: Vec<Option<f64>> = terms.iter().map(|t| eval(t, now, env)).collect();
+            conj(&vs, *p)
         }
-        TermF::Offset { delta, term } => offset(eval(term, now, env), *delta),
-        TermF::Gate { gate, body } => (1.0 - eval(gate, now, env)).max(eval(body, now, env)),
+        TermF::Offset { delta, term } => eval(term, now, env).map(|x| offset(x, *delta)),
+        // An absent gate is no gate; an absent body is `∅`.
+        TermF::Gate { gate, body } => {
+            let body = eval(body, now, env)?;
+            Some(eval(gate, now, env).map_or(body, |gate| (1.0 - gate).max(body)))
+        }
         TermF::Shift { delta, term } => eval(term, after(now, us_of(*delta)), env),
         TermF::Within { window, p, term } => {
             let step = us_of(div_delta(*window, WITHIN_SAMPLES));
-            let vs: Vec<f64> = (0..=WITHIN_SAMPLES)
+            let vs: Vec<Option<f64>> = (0..=WITHIN_SAMPLES)
                 .map(|i| eval(term, after(now, step * i), env))
                 .collect();
-            power_mean(&vs, *p)
+            conj(&vs, *p)
         }
-        TermF::Importance { w, term } => eval(term, now, env).powf(*w),
+        TermF::Importance { w, term } => eval(term, now, env).map(|x| x.powf(*w)),
         TermF::After {
             event,
             anchor,
@@ -656,7 +698,7 @@ fn eval(term: &Term, now: Instant, env: &Env) -> f64 {
             // re-anchored to the actual completion.
             Some(Outcome::Completed(done)) => eval(term, after(now, -us_of(done - *anchor)), env),
             // Moot AS PRICING — reporting must surface it (§7, After).
-            Some(Outcome::Cancelled(_)) => 1.0,
+            Some(Outcome::Cancelled(_)) => Some(1.0),
         },
         TermF::Recur {
             todo,
@@ -674,7 +716,11 @@ fn eval(term: &Term, now: Instant, env: &Env) -> f64 {
             term,
         } => eval(term, phase(*period, *anchor, now), env),
         TermF::Piecewise { head, pieces } => eval(in_force(head, pieces, now).1, now, env),
-        TermF::OffsetBy { delta, term } => offset(eval(term, now, env), eval(delta, now, env)),
+        // An absent offset is no offset; an absent term is `∅`.
+        TermF::OffsetBy { delta, term } => {
+            let x = eval(term, now, env)?;
+            Some(eval(delta, now, env).map_or(x, |delta| offset(x, delta)))
+        }
         TermF::Ref { todo } => unreachable!("Ref({todo:?}) inside a Closed term"),
     }
 }
@@ -735,7 +781,8 @@ pub enum Note {
 }
 
 /// `Cofree TermF Annotation`: the term's OWN shape, each node carrying its
-/// fulfillment at the moment the parent actually used it, plus the notes.
+/// fulfillment at the moment the parent actually used it — `∅` where the node
+/// has none — plus the notes.
 ///
 /// One documented bend in the shape: a `Piecewise` node's decoration is the
 /// PIECE IN FORCE, which rides in the `head` slot with `pieces` empty — head
@@ -746,7 +793,7 @@ pub enum Note {
 /// children by value, so the fixed point needs exactly one indirection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Explanation {
-    pub value: f64,
+    pub value: Option<f64>,
     pub notes: BTreeMap<String, Note>,
     pub node: Box<TermF<Explanation>>,
 }
@@ -853,7 +900,8 @@ fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
         }
         // Gate, OffsetBy: every field is a subterm. Piecewise: its head and
         // pieces are transitions, and `explained` writes `pieces`/`since`.
-        TermF::Gate { .. } | TermF::OffsetBy { .. } | TermF::Piecewise { .. } => {}
+        // Absent has no field at all.
+        TermF::Gate { .. } | TermF::OffsetBy { .. } | TermF::Piecewise { .. } | TermF::Absent => {}
     }
     n
 }
@@ -890,20 +938,30 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
         },
         TermF::Conj { terms, p } => {
             let kids: Vec<Explanation> = terms.iter().map(|t| explain(t, now, env)).collect();
-            notes.insert(
-                "certifies".into(),
-                Note::One(Scalar::Float(min_fulfillment(value, terms.len(), *p))),
-            );
-            let vs: Vec<f64> = kids.iter().map(|k| k.value).collect();
-            notes.insert(
-                "shares".into(),
-                Note::Many(
-                    member_shares(&vs, *p)
-                        .into_iter()
-                        .map(Scalar::Float)
-                        .collect(),
-                ),
-            );
+            // Over the members that have a value, as the mean is; an absent
+            // member bears no share. A conjunction with no value certifies
+            // nothing and apportions nothing.
+            if let Some(value) = value {
+                let vs: Vec<f64> = kids.iter().filter_map(|k| k.value).collect();
+                notes.insert(
+                    "certifies".into(),
+                    Note::One(Scalar::Float(min_fulfillment(value, vs.len(), *p))),
+                );
+                let mut shares = member_shares(&vs, *p).into_iter();
+                notes.insert(
+                    "shares".into(),
+                    Note::Many(
+                        kids.iter()
+                            .map(|k| {
+                                Scalar::Float(match k.value {
+                                    Some(_) => shares.next().expect("one share per value"),
+                                    None => 0.0,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+            }
             TermF::Conj { terms: kids, p: *p }
         }
         TermF::Offset { delta, term } => TermF::Offset {
@@ -928,8 +986,14 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
         },
         TermF::Within { window, p, term } => {
             let step = us_of(div_delta(*window, WITHIN_SAMPLES));
-            let times: Vec<Instant> = (0..=WITHIN_SAMPLES).map(|i| after(now, step * i)).collect();
-            let vs: Vec<f64> = times.iter().map(|t| eval(term, *t, env)).collect();
+            // The samples that have a value, and their instants: the mean is
+            // over these, so the peak is too. With none, there is no peak, and
+            // the subterm is explained where the window opens.
+            let sampled: Vec<(Instant, f64)> = (0..=WITHIN_SAMPLES)
+                .map(|i| after(now, step * i))
+                .filter_map(|t| eval(term, t, env).map(|v| (t, v)))
+                .collect();
+            let vs: Vec<f64> = sampled.iter().map(|(_, v)| *v).collect();
             let shares = member_shares(&vs, *p);
             // `max(range(n), key=…)` keeps the FIRST maximal index.
             let mut peak = 0usize;
@@ -938,12 +1002,18 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
                     peak = i;
                 }
             }
-            notes.insert("peakAt".into(), iso_note(times[peak]));
-            notes.insert("peakShare".into(), Note::One(Scalar::Float(shares[peak])));
+            let at = match sampled.get(peak) {
+                Some((at, _)) => {
+                    notes.insert("peakAt".into(), iso_note(*at));
+                    notes.insert("peakShare".into(), Note::One(Scalar::Float(shares[peak])));
+                    *at
+                }
+                None => now,
+            };
             TermF::Within {
                 window: *window,
                 p: *p,
-                term: explain(term, times[peak], env),
+                term: explain(term, at, env),
             }
         }
         TermF::After {
@@ -1025,6 +1095,7 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
             }
         }
         TermF::Ref { todo } => TermF::Ref { todo: todo.clone() },
+        TermF::Absent => TermF::Absent,
     };
     Explanation {
         value,
@@ -1203,6 +1274,11 @@ pub fn mk_ref(todo: String) -> Result<Term, FplError> {
     Ok(Term::new(TermF::Ref { todo }))
 }
 
+/// No temporal value. It has no field, so there is nothing to refuse.
+pub fn mk_absent() -> Term {
+    Term::new(TermF::Absent)
+}
+
 /// A todo's fulfillment function given its own spec and its checklist: each
 /// item is a leaf worth 0.5, the checklist is their conjunction, and the
 /// parent's own value is an OFFSET on that aggregate. No items: the spec
@@ -1315,9 +1391,11 @@ fn spliced(piece: &(Instant, Term), until: Option<Instant>) -> Vec<(Instant, Ter
 pub fn normalize(term: &Term) -> Term {
     match term.out() {
         // A Ref is a leaf here: what it stands for is not known until `link`.
-        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Ref { .. } => {
-            term.clone()
-        }
+        TermF::Flat { .. }
+        | TermF::Decay { .. }
+        | TermF::Curve { .. }
+        | TermF::Ref { .. }
+        | TermF::Absent => term.clone(),
         TermF::Piecewise { head, pieces } => piecewise(
             normalize(head),
             pieces.iter().map(|(at, t)| (*at, normalize(t))).collect(),
@@ -1479,8 +1557,9 @@ fn pointwise(parts: Vec<Term>, rebuild: &dyn Fn(&[Term]) -> Term) -> Term {
 /// stored data, and stored data can name a todo that is not there, or loop.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LinkError {
-    /// A `Ref` names a todo `specs` does not hold.
-    #[error("Ref({0:?}) names no todo with a function")]
+    /// A `Ref` names a todo `specs` does not hold — for a store, one it has
+    /// never seen, since a known todo with no function is `Absent` there.
+    #[error("Ref({0:?}) names no known todo")]
     Unknown(String),
     /// The references loop. The path names the cycle, its first todo repeated
     /// at the end.
@@ -1618,6 +1697,7 @@ pub const TERM_SIGNATURES: &[(&str, &[&str])] = &[
     ("Piece", &["at", "term"]),
     ("OffsetBy", &["delta", "term"]),
     ("Ref", &["todo"]),
+    ("Absent", &[]),
 ];
 
 /// The vocabulary of a BARE term — what [`parse_term`] reads against. A stored
@@ -1920,6 +2000,7 @@ impl Term {
                 vec![f("delta", delta.to_value()), f("term", term.to_value())],
             ),
             TermF::Ref { todo } => call("Ref", vec![f("todo", literal::Value::str(todo.clone()))]),
+            TermF::Absent => call("Absent", vec![]),
         }
     }
 
@@ -2019,6 +2100,7 @@ impl Term {
                 mk_piecewise(term("head")?, pieces)
             }
             "Ref" => mk_ref(lit_text(call, "todo")?),
+            "Absent" => Ok(mk_absent()),
             other => err(format!("{other:?} is not one of SPEC §7's terms")),
         }
     }

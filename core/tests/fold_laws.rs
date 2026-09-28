@@ -439,7 +439,7 @@ proptest! {
                     // unpriced and with no content, like any mention.
                     None => {
                         prop_assert_eq!(row.outcome, None);
-                        prop_assert_eq!(row.spec(), None);
+                        prop_assert_eq!(row.spec(), &fpl::mk_absent());
                         prop_assert_eq!(row.content, None);
                     }
                 }
@@ -527,8 +527,14 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
          term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0)), \
          pieces=(Piece(at=datetime(2026, 9, 1, 0, 0, 1), term=Flat(value=0.02)),))"
     );
-    assert_eq!(fpl::fulfillment(&closed(&before[&gamma]), now, &env), 0.5);
-    assert_eq!(fpl::fulfillment(&closed(&after[&gamma]), now, &env), 0.51);
+    assert_eq!(
+        fpl::fulfillment(&closed(&before[&gamma]), now, &env),
+        Some(0.5)
+    );
+    assert_eq!(
+        fpl::fulfillment(&closed(&after[&gamma]), now, &env),
+        Some(0.51)
+    );
 
     // And the other way: a spec with no content record, given a checklist for
     // the first time at tau.
@@ -570,8 +576,14 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
         "OffsetBy(delta=Flat(value=0.5), \
          term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0))"
     );
-    assert_eq!(fpl::fulfillment(&closed(&before[&beta]), now, &env), 0.5);
-    assert_eq!(fpl::fulfillment(&closed(&after[&beta]), now, &env), 0.75);
+    assert_eq!(
+        fpl::fulfillment(&closed(&before[&beta]), now, &env),
+        Some(0.5)
+    );
+    assert_eq!(
+        fpl::fulfillment(&closed(&after[&beta]), now, &env),
+        Some(0.75)
+    );
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -779,15 +791,16 @@ proptest! {
             let disputed = kinds(claimed_side.outcomes.get(todo).copied()) != kinds(bound.outcomes.get(todo).copied());
             prop_assert_eq!(row.claim, if disputed { claimed_side.outcomes.get(todo).copied() } else { None }, "claim");
 
-            // The PRICE: §6.4's function, valued at `t` under the CONFIRMED
-            // environment, and absent exactly where the function is.
-            prop_assert_eq!(row.spec().map(print_term), specs.get(todo).map(print_term), "spec");
+            // The PRICE: §6.4's function, `Absent` where there is none,
+            // linked against every known todo's and valued at `t` under the
+            // CONFIRMED environment.
+            let spec = specs.get(todo).cloned().unwrap_or_else(fpl::mk_absent);
+            prop_assert_eq!(row.spec(), &spec, "spec");
+            let known = rows.iter().map(|row| &row.todo);
+            let linked = fpl::link(&spec, &prodrome::fold::link_specs(&specs, known));
             prop_assert_eq!(
                 row.value(),
-                specs.get(todo).and_then(|spec| {
-                    let linked = fpl::link(spec, &prodrome::fold::link_specs(&specs)).ok()?;
-                    Some(fpl::fulfillment(&linked, now, &env))
-                }),
+                linked.as_ref().map(|linked| fpl::fulfillment(linked, now, &env)),
                 "value"
             );
 

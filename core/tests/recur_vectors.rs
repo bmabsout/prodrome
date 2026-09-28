@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::vectors::{each, field, moment, number, strings, text, text_at, vectors};
+use common::vectors::{each, field, moment, strings, text, text_at, vectors};
 use prodrome::chain::compile;
 use prodrome::event::{canonical, parse_event, Actor, TodoId};
 use prodrome::fold::{env_at, evaluation_env};
@@ -51,10 +51,10 @@ fn every_recurrence_reads_its_samples_against_the_tendings() {
         let compiled = compile(&term, &env);
         for sample in each(case, "samples") {
             let now = instant_of(moment(field(sample, "now")));
-            let expected = number(field(sample, "value"));
-            common::close("fulfillment", fulfillment(&term, now, &env), expected)
+            let expected = field(sample, "value");
+            common::reading("fulfillment", fulfillment(&term, now, &env), expected)
                 .unwrap_or_else(|e| panic!("{print} at {now}: {e}"));
-            common::close("compiled", compiled.fulfillment(now), expected)
+            common::reading("compiled", compiled.fulfillment(now), expected)
                 .unwrap_or_else(|e| panic!("{print} compiled, at {now}: {e}"));
             samples += 1;
         }

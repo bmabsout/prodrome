@@ -56,7 +56,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::chain::Link;
-use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent};
+use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent, TodoId};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, total_seconds, Delta, Instant};
 use prodrome::literal::Datetime;
 use prodrome::registers;
@@ -453,6 +453,9 @@ impl Read {
 /// - `content`  — §6.3, each the reference's `json_authored` MINUS `rich`
 /// - `flatten`  — §6.4, each a [`json::to_json`] term: the todo's fulfillment
 ///                FUNCTION, which is what a `value` and a series are read off
+/// - `functions`— every todo the objects mention, each its `flatten` function
+///                or `absent` where it has none: what a `ref` links against
+///                (§7.2), and so [`link`]'s `specs` for a chain
 /// - `history`  — §6.5, as `{bindings, tended}`, and the argument
 ///                [`series_knots`] wants, so that a knot in the past is
 ///                evaluated against the environment as of that past instant
@@ -474,6 +477,13 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     let specs = prodrome::fold::specs_at(&events, moment, &policy);
     let content = prodrome::fold::authored_at(&events, moment);
     let flat = prodrome::fold::flatten(&events, moment, &policy).map_err(|e| refused(e.0))?;
+    let known: BTreeSet<&TodoId> = events.iter().map(TodoEvent::todo).collect();
+    let functions = Value::Object(
+        prodrome::fold::link_specs(&flat, known)
+            .into_iter()
+            .map(|(todo, term)| (todo, crate::json::to_json(&term)))
+            .collect(),
+    );
     let past = prodrome::fold::history(&events, &policy);
 
     let bindings = Value::Object(
@@ -524,6 +534,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
         ("specs", json_terms(&specs)),
         ("content", json_content(&content)),
         ("flatten", json_terms(&flat)),
+        ("functions", functions),
         ("history", history),
         ("stream", stream),
     ]))
@@ -772,8 +783,9 @@ fn parse_names(field: &str, json_text: &str) -> Result<Vec<Hash>, Refusal> {
 /// A `f64` and not a printed number: this is the one answer a caller does
 /// arithmetic on (the graph page compares it with the server's knot to 1e-9),
 /// and a decimal string in between would be a rounding nobody asked for.
+/// `undefined` is `∅`: the term has no value there, which is not a number.
 #[wasm_bindgen]
-pub fn fulfillment(term: &str, now: &str, env: &str) -> Result<f64, JsError> {
+pub fn fulfillment(term: &str, now: &str, env: &str) -> Result<Option<f64>, JsError> {
     let term = parse_closed("term", term).map_err(refused)?;
     let now = parse_instant("now", now).map_err(refused)?;
     let env = parse_env(env).map_err(refused)?;
@@ -884,7 +896,7 @@ pub fn link(term: &str, specs: &str) -> Result<String, JsError> {
 }
 
 /// §7's knots — the curve a graph draws over `[from, to]`, and whether the
-/// knots ARE the curve.
+/// knots ARE the curve. A knot's value is `null` where the term reads `∅`.
 ///
 /// `history` is the environment as a function of time ([`fold`]'s key of that
 /// name), because every knot is evaluated against the environment AS OF its own

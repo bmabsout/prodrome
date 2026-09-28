@@ -47,8 +47,16 @@ fn closed(term: &Term) -> Closed {
     Closed::of(term.clone()).expect("a_term() builds no Ref")
 }
 
-fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
+fn fulfillment(term: &Term, now: Instant, env: &Env) -> Option<f64> {
     fpl::fulfillment(&closed(term), now, env)
+}
+
+/// Two readings agree: both `∅`, or both numbers within `tolerance`.
+fn near(left: Option<f64>, right: Option<f64>, tolerance: f64) -> bool {
+    match (left, right) {
+        (Some(a), Some(b)) => (a - b).abs() <= tolerance,
+        (a, b) => a == b,
+    }
 }
 
 fn compile(term: &Term, env: &Env) -> Compiled {
@@ -401,8 +409,8 @@ proptest! {
             let now = moment(h);
             let (before, after) = (fulfillment(&term, now, &env), fulfillment(&normal, now, &env));
             prop_assert!(
-                (before - after).abs() <= 1e-12,
-                "at {now}: {before} became {after}",
+                near(before, after, 1e-12),
+                "at {now}: {before:?} became {after:?}",
             );
         }
     }
@@ -459,8 +467,8 @@ proptest! {
             let now = moment(h);
             let (interpreted, value) = (fulfillment(&term, now, &env), compiled.fulfillment(now));
             prop_assert!(
-                (interpreted - value).abs() <= 1e-9,
-                "at {now}: {interpreted} became {value}",
+                near(interpreted, value, 1e-9),
+                "at {now}: {interpreted:?} became {value:?}",
             );
         }
     }
@@ -521,7 +529,10 @@ proptest! {
             let now = moment(h);
             let (interpreted, value) =
                 (fulfillment(&term, now, &Env::new()), compiled.fulfillment(now));
-            prop_assert!((interpreted - value).abs() <= 1e-9, "at {now}: {interpreted} vs {value}");
+            prop_assert!(
+                near(interpreted, value, 1e-9),
+                "at {now}: {interpreted:?} vs {value:?}"
+            );
         }
     }
 }
@@ -562,7 +573,7 @@ fn readings(
     specs: &BTreeMap<String, Term>,
     env: &Env,
     probes: &[i64],
-) -> Result<Vec<f64>, LinkError> {
+) -> Result<Vec<Option<f64>>, LinkError> {
     let linked = link(term, specs)?;
     Ok(probes
         .iter()
@@ -570,8 +581,8 @@ fn readings(
         .collect())
 }
 
-fn close_enough(left: &[f64], right: &[f64]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| (a - b).abs() <= 1e-12)
+fn close_enough(left: &[Option<f64>], right: &[Option<f64>]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| near(*a, *b, 1e-12))
 }
 
 #[test]
@@ -586,10 +597,7 @@ fn a_reference_to_a_todo_the_specs_do_not_hold_is_unknown() {
     ));
     let refusal = link(&term, &specs).expect_err("zeta is not a todo here");
     assert_eq!(refusal, LinkError::Unknown("zeta".to_owned()));
-    assert_eq!(
-        refusal.to_string(),
-        "Ref(\"zeta\") names no todo with a function"
-    );
+    assert_eq!(refusal.to_string(), "Ref(\"zeta\") names no known todo");
 }
 
 #[test]
@@ -811,8 +819,12 @@ fn a_recurrence_explains_its_last_tending() {
         note("agoHours"),
         fpl::Note::One(fpl::Scalar::Float(44.0 * 24.0))
     );
-    assert!((explanation.value - (0.98 - 0.68 * 44.0 / 60.0)).abs() < 1e-12);
-    assert_eq!(fpl::fulfillment(&closed(&term), day(8, 1), &env), 0.3);
+    assert!(near(
+        explanation.value,
+        Some(0.98 - 0.68 * 44.0 / 60.0),
+        1e-12
+    ));
+    assert_eq!(fpl::fulfillment(&closed(&term), day(8, 1), &env), Some(0.3));
 }
 
 proptest! {

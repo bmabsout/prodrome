@@ -5,7 +5,7 @@
 //! `_operator_breaks`, `_constant`, `series_of`).
 //!
 //! The question this module answers is where a term stops being a straight
-//! line. Flat, Decay, Curve and a Piecewise of those are EXACT: knots at the
+//! line. Flat, Decay, Curve, Absent and a Piecewise of those are EXACT: knots at the
 //! window edges, at every slope change inside, and a second on either side of
 //! every jump, and a straight line between two adjacent knots IS the curve
 //! (§9.7). Everything else is sampled on top, and `exact` tells the reader
@@ -61,7 +61,8 @@ impl Breaks {
 /// would draw a ramp across the instant a todo was completed.
 pub fn breakpoints(term: &Term) -> Breaks {
     match term.out() {
-        TermF::Flat { .. } => Breaks::none(),
+        // `∅` at every instant: nothing changes, so nothing to mark.
+        TermF::Flat { .. } | TermF::Absent => Breaks::none(),
         TermF::Decay {
             end_date,
             lead_up,
@@ -155,11 +156,12 @@ pub fn constant(term: &Term) -> bool {
     breaks.exact && breaks.slopes.is_empty() && breaks.jumps.is_empty()
 }
 
-/// One point of a drawn curve.
+/// One point of a drawn curve: `∅` where the term has no value there, and a
+/// reader draws no line to or from it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Knot {
     pub at: Instant,
-    pub value: f64,
+    pub value: Option<f64>,
 }
 
 /// A term's fulfillment over a window, and whether the knots ARE the curve.
