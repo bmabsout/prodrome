@@ -22,7 +22,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use prodrome::event::{
-    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, Actor, TodoEvent, TodoId,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, Actor, Hash, TodoEvent,
+    TodoId,
 };
 use prodrome::fold::authored_at;
 use prodrome::fpl::FplError;
@@ -310,6 +311,11 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
                     ok: false,
                 })
             }
+        }
+
+        Command::Quarantine { name } => {
+            let aside = store.quarantine(&Hash::new(name.as_str())?)?;
+            Ok(Outcome::said(format!("set aside in {}", aside.display())))
         }
 
         Command::Weave => {

@@ -17,13 +17,17 @@
 //! - a load REVERIFIES, hashing the STORED BYTES against the filename before
 //!   parsing — tamper-evidence on read — and never a reprint→rehash, which
 //!   would couple every old object's validity to the current printer;
-//! - a write is content-addressed and idempotent, through a temp file and a
-//!   rename, so the object appearing under its name IS the append: there is no
-//!   second file to move after it, and no crash leaves a store half-written.
+//! - a write is content-addressed and idempotent, through a randomly named
+//!   temp file synced before it is renamed, so the object appearing under its
+//!   name IS the append: there is no second file to move after it, and no
+//!   crash leaves a store half-written or an object empty.
 
 use std::cmp::Reverse;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
+use std::hash::{BuildHasher, Hasher};
+use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -169,6 +173,14 @@ pub struct EventStore<P, Pol = Untrusted> {
     parents: Arc<Mutex<BTreeMap<Hash, Vec<Hash>>>>,
 }
 
+/// `objects/`, read once: the entries named as objects, and every other
+/// entry's file name.
+#[derive(Debug, Default)]
+struct Listing {
+    objects: Vec<Hash>,
+    garbage: Vec<String>,
+}
+
 impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     pub fn new(root: impl Into<PathBuf>, policy: Pol) -> EventStore<P, Pol> {
         EventStore {
@@ -217,6 +229,9 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// FALLIBLE, because it reads every object it has not already verified: a
     /// store holding a file that does not verify has no honest answer to "what
     /// are its heads", since the file it cannot read might name any of them.
+    /// The refusal does not guess, and it does not leave the store stuck
+    /// either: a file failing its hash is named, with the
+    /// [`EventStore::quarantine`] that sets it aside.
     /// Empty for an empty store. The parents come from the handle's index, so
     /// a steady store costs a directory listing.
     pub fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
@@ -238,32 +253,38 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     }
 
     /// The name of every object file, in no particular order — nothing that
-    /// reads it depends on one (SPEC §9.17). A `.py` file whose stem is not an
-    /// object name is refused: the store is a set of NAMED objects, and a file
-    /// that is not one is a store somebody else has written in. A store with
-    /// no `objects/` yet holds nothing.
+    /// reads it depends on one (SPEC §9.17). A store with no `objects/` yet
+    /// holds nothing.
     fn names(&self) -> Result<Vec<Hash>, ProdromeError> {
+        Ok(self.listing()?.objects)
+    }
+
+    /// What `objects/` holds, SPLIT BY NAME: an entry named `<name>.py` for a
+    /// well-formed object name is an object, and every other entry is not one
+    /// — a temp an interrupted write left, or a stray somebody put there.
+    ///
+    /// The reads take the objects and pass over the rest, so a crash that left
+    /// a temp stops no read and no write; `verify` reports the rest, every
+    /// entry of it, so nothing in the directory goes unsaid.
+    fn listing(&self) -> Result<Listing, ProdromeError> {
         let dir = self.objects_dir();
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Listing::default())
+            }
             Err(error) => return Err(Self::io(&dir, error)),
         };
-        let mut names: Vec<Hash> = Vec::new();
+        let mut listing = Listing::default();
         for entry in entries {
             let file = entry.map_err(|e| Self::io(&dir, e))?.file_name();
-            let file = file.to_string_lossy();
-            let Some(stem) = file.strip_suffix(".py") else {
-                continue;
-            };
-            names.push(Hash::new(stem).map_err(|_| {
-                ProdromeError::Store(format!(
-                    "{} is not named by an object hash",
-                    dir.join(&*file).display()
-                ))
-            })?);
+            let file = file.to_string_lossy().into_owned();
+            match file.strip_suffix(".py").map(Hash::new) {
+                Some(Ok(name)) => listing.objects.push(name),
+                _ => listing.garbage.push(file),
+            }
         }
-        Ok(names)
+        Ok(listing)
     }
 
     /// EVERY OBJECT THE STORE HOLDS, by name, each REVERIFIED — the one read
@@ -499,19 +520,51 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         }
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
-        for (name, raw) in &taken {
-            self.place_bytes(name, raw)?;
-        }
-        Ok(())
+        self.place(taken.iter().map(|(name, raw)| (name, raw.as_slice())))
     }
 
-    /// Bytes onto disk under their name, through a temp file and a rename, so
-    /// a reader never sees a half-written object even though the name it
-    /// would read it under is the hash of the whole.
-    fn place_bytes(&self, digest: &Hash, bytes: &[u8]) -> Result<(), ProdromeError> {
-        let temp = self.objects_dir().join(format!("{}.tmp", digest.as_str()));
-        fs::write(&temp, bytes).map_err(|e| Self::io(&temp, e))?;
-        fs::rename(&temp, self.object_path(digest)).map_err(|e| Self::io(&temp, e))
+    /// Objects onto disk under their names, in the order given, DURABLY: each
+    /// is [`EventStore::stage`]d and renamed over its name, and the directory
+    /// is synced once when all of them are, so a batch — one adoption, one
+    /// append — costs one directory sync and not one per object.
+    ///
+    /// The file is synced BEFORE its rename, which is the order that matters:
+    /// a rename can reach the disk before the bytes it names, and a power loss
+    /// between the two would leave a zero-length file under a name that
+    /// promises content. Synced first, a crash anywhere leaves either no
+    /// object or the whole one, and at worst a temp that `verify` reports.
+    fn place<'a>(
+        &self,
+        objects: impl IntoIterator<Item = (&'a Hash, &'a [u8])>,
+    ) -> Result<(), ProdromeError> {
+        for (digest, bytes) in objects {
+            let temp = self.stage(bytes)?;
+            fs::rename(&temp, self.object_path(digest)).map_err(|e| Self::io(&temp, e))?;
+        }
+        sync_dir(&self.objects_dir())
+    }
+
+    /// Bytes into a fresh temp file in `objects/`, synced to disk: the first
+    /// half of a placement, and all a crash before the rename leaves behind.
+    ///
+    /// The name is RANDOM and the file is created EXCLUSIVELY, never a fixed
+    /// `<name>.tmp`: two writers placing the same object would otherwise
+    /// write into one temp together, and one of them rename the other's half.
+    /// A temp is not named like an object, so no read takes it for one.
+    fn stage(&self, bytes: &[u8]) -> Result<PathBuf, ProdromeError> {
+        loop {
+            let temp = self.objects_dir().join(temp_name());
+            match File::options().write(true).create_new(true).open(&temp) {
+                Ok(mut file) => {
+                    file.write_all(bytes)
+                        .and_then(|()| file.sync_all())
+                        .map_err(|e| Self::io(&temp, e))?;
+                    return Ok(temp);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(Self::io(&temp, error)),
+            }
+        }
     }
 
     /// One object onto disk, content-addressed and idempotent: identical bytes
@@ -533,7 +586,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             }
             return Ok(digest);
         }
-        self.place_bytes(&digest, text.as_bytes())?;
+        self.place([(&digest, text.as_bytes())])?;
         self.remember(&digest, object);
         Ok(digest)
     }
@@ -543,6 +596,13 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// hashes bytes and not semantics, so that a future printer change cannot
     /// false-alarm the whole store as tampered.
     pub fn load(&self, digest: &Hash) -> Result<Envelope<P>, ProdromeError> {
+        let object = decode(digest, &self.raw(digest)?)?;
+        self.remember(digest, &object);
+        Ok(object)
+    }
+
+    /// One object file's bytes, unchecked.
+    fn raw(&self, digest: &Hash) -> Result<Vec<u8>, ProdromeError> {
         let path = self.object_path(digest);
         if !path.exists() {
             return Err(ProdromeError::Store(format!(
@@ -550,10 +610,55 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
                 digest.as_str()
             )));
         }
-        let raw = fs::read(&path).map_err(|e| Self::io(&path, e))?;
-        let object = decode(digest, &raw)?;
-        self.remember(digest, &object);
-        Ok(object)
+        fs::read(&path).map_err(|e| Self::io(&path, e))
+    }
+
+    fn quarantine_dir(&self) -> PathBuf {
+        self.root.join("quarantine")
+    }
+
+    fn quarantined_path(&self, digest: &Hash) -> PathBuf {
+        self.quarantine_dir()
+            .join(format!("{}.py", digest.as_str()))
+    }
+
+    /// SET ASIDE AN OBJECT FILE THAT FAILS ITS HASH: move it from `objects/`
+    /// to `quarantine/`, so the store answers again. Answers where it went.
+    ///
+    /// A file whose bytes are not the hash of its name has no honest reading,
+    /// and [`EventStore::tips`] refuses to guess one — so one damaged file
+    /// would stop every write. Moving it out makes the store what it holds
+    /// without it: the tips derive, an append writes, and `verify` still says
+    /// what is missing, as the receipt for the quarantined file. Bringing the
+    /// object back from a replica (an `adopt`, or a copy of its file) is the
+    /// repair; the move only stops the damage from spreading to every reader.
+    ///
+    /// ⚠️ What that answer is, stated: the tips of what the store HOLDS. The
+    /// set-aside object's parents are named by nothing readable, so they may
+    /// be tips again, and the next append weaves them in beside the rest — a
+    /// parent that is also an ancestor, which reads the same once the object
+    /// is back.
+    ///
+    /// ONLY A FILE THAT FAILS ITS HASH. One that hashes to its name is that
+    /// object, whatever it holds — one this reader cannot parse may be a newer
+    /// writer's — and setting it aside would be hiding it, so that is refused.
+    /// Moved under the store's lock, and both directories synced after.
+    pub fn quarantine(&self, digest: &Hash) -> Result<PathBuf, ProdromeError> {
+        let _locked = self.lock()?;
+        let path = self.object_path(digest);
+        if rehash(digest, &self.raw(digest)?).is_ok() {
+            return Err(ProdromeError::Store(format!(
+                "object {} hashes to its name: there is nothing to quarantine",
+                digest.as_str()
+            )));
+        }
+        let aside = self.quarantine_dir();
+        fs::create_dir_all(&aside).map_err(|e| Self::io(&aside, e))?;
+        let to = self.quarantined_path(digest);
+        fs::rename(&path, &to).map_err(|e| Self::io(&path, e))?;
+        sync_dir(&aside)?;
+        sync_dir(&self.objects_dir())?;
+        Ok(to)
     }
 
     /// Everything `digest` transitively rests on — STRICTLY: an object is not
@@ -710,20 +815,65 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// and cannot parse — the constructor is the boundary); every parent named
     /// exists; the objects go into one order without a cycle; no event the
     /// policy does not CONFIRM is dated behind anything it rests on; and no
-    /// `HEAD` or `refs/` is left over from before the tips were derived.
+    /// `HEAD` or `refs/` is left over from before the tips were derived; and
+    /// every entry of `objects/` is an object — anything else there, a temp an
+    /// interrupted write left or a stray, is reported by name as garbage.
     ///
     /// NO UNREACHABLE OBJECT AND NO STALE HEAD, and not because they are
     /// forgiven: they cannot be stated any more. Every object is a tip or
     /// beneath one, and a tip is by definition something nothing rests on.
     pub fn verify(&self) -> Vec<String> {
-        let files = self.object_files();
+        let Listing {
+            mut objects,
+            mut garbage,
+        } = match self.listing() {
+            Ok(listing) => listing,
+            Err(error) => return vec![error.to_string()],
+        };
+        objects.sort();
+        garbage.sort();
         let mut problems: Vec<String> = Vec::new();
-        for path in &files {
-            problems.extend(self.object_problems(path));
+        for name in &objects {
+            problems.extend(self.object_problems(name));
         }
+        problems.extend(garbage.iter().map(|file| {
+            format!(
+                "objects/{file} is not an object: a temp an interrupted write left, or a stray \
+                 (SPEC §3); delete it"
+            )
+        }));
         problems.extend(self.leftovers());
-        problems.extend(self.graph_problems(&files));
+        problems.extend(self.quarantined());
+        problems.extend(self.graph_problems(&objects));
         problems
+    }
+
+    /// THE RECEIPT FOR EVERY QUARANTINED FILE. [`EventStore::quarantine`]
+    /// made the store answer; it did not make it whole. Until the object is
+    /// back from a replica the store lacks it, and whatever rests on it rests
+    /// on nothing here — which this one finding says, in place of a "chain
+    /// broke" for each object naming it.
+    fn quarantined(&self) -> Vec<String> {
+        let dir = self.quarantine_dir();
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => return vec![Self::io(&dir, error).to_string()],
+        };
+        let mut files: Vec<String> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        files
+            .into_iter()
+            .map(|file| {
+                format!(
+                    "quarantine/{file} failed its hash and was set aside (SPEC §3): restore the \
+                     object from a replica, then delete this file"
+                )
+            })
+            .collect()
     }
 
     /// `HEAD` and `refs/`, which a store written before 0.9 carries and
@@ -749,27 +899,14 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         problems
     }
 
-    fn object_files(&self) -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = match fs::read_dir(self.objects_dir()) {
-            Ok(entries) => entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "py"))
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        files.sort();
-        files
-    }
-
     /// One object's fsck findings: byte-hash against the filename, then
     /// parseability. A malformed envelope is caught HERE, by the parser,
     /// because the `mk_*` constructors are the parse boundary — a `Woven` with
     /// one parent cannot be built, so it cannot be read back either, and the
     /// finding names the rule it broke.
-    fn object_problems(&self, path: &Path) -> Vec<String> {
-        let stem = stem_of(path);
-        let Ok(raw) = fs::read(path) else {
+    fn object_problems(&self, name: &Hash) -> Vec<String> {
+        let stem = name.as_str();
+        let Ok(raw) = fs::read(self.object_path(name)) else {
             return vec![format!("object {stem} could not be read")];
         };
         if hex(&Sha256::digest(&raw)) != stem {
@@ -788,33 +925,36 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
 
     /// The graph the READABLE objects make: every parent one of them names
     /// that the store cannot give back (absent, or failing its own check —
-    /// which `object_problems` has already said once about the file itself),
-    /// then, only if there is none, a cycle, and the dating rule.
-    fn graph_problems(&self, files: &[PathBuf]) -> Vec<String> {
-        let objects: BTreeMap<Hash, Envelope<P>> = files
+    /// which `object_problems` has already said once about the file itself)
+    /// and that is not in quarantine, whose receipt already says it; then,
+    /// only if no parent is missing at all, a cycle, and the dating rule.
+    fn graph_problems(&self, names: &[Hash]) -> Vec<String> {
+        let objects: BTreeMap<Hash, Envelope<P>> = names
             .iter()
-            .filter_map(|path| {
-                let name = Hash::new(stem_of(path)).ok()?;
-                let object = self.load(&name).ok()?;
-                Some((name, object))
+            .filter_map(|name| {
+                let object = self.load(name).ok()?;
+                Some((name.clone(), object))
             })
             .collect();
         let named: BTreeSet<Hash> = objects.values().flat_map(parents_of).collect();
-        let breaks: Vec<String> = named
+        let missing: Vec<&Hash> = named
             .iter()
             .filter(|parent| !objects.contains_key(*parent))
+            .collect();
+        if missing.is_empty() {
+            return match linearise(&objects) {
+                Ok(order) => dating_problems(&order, &objects, &self.policy),
+                Err(error) => vec![error.to_string()],
+            };
+        }
+        missing
+            .into_iter()
+            .filter(|parent| !self.quarantined_path(parent).exists())
             .filter_map(|parent| {
                 let error = self.load(parent).err()?;
                 Some(format!("chain broke at {}: {error}", parent.as_str()))
             })
-            .collect();
-        if !breaks.is_empty() {
-            return breaks;
-        }
-        match linearise(&objects) {
-            Ok(order) => dating_problems(&order, &objects, &self.policy),
-            Err(error) => vec![error.to_string()],
-        }
+            .collect()
     }
 }
 
@@ -879,23 +1019,50 @@ fn dating_problems<P: Payload>(
     problems
 }
 
+/// A stored object's bytes, reverified and parsed.
 fn decode<P: Payload>(digest: &Hash, raw: &[u8]) -> Result<Envelope<P>, ProdromeError> {
-    let recomputed = hex(&Sha256::digest(raw));
-    if recomputed != digest.as_str() {
-        return Err(ProdromeError::Store(format!(
-            "object {} hashes to {recomputed} — tampered or corrupt",
-            digest.as_str()
-        )));
-    }
+    rehash(digest, raw)?;
     let text = std::str::from_utf8(raw)
         .map_err(|_| ProdromeError::Store(format!("object {} is not UTF-8", digest.as_str())))?;
     crate::event::parse_envelope(text)
 }
 
-fn stem_of(path: &Path) -> String {
-    path.file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default()
+/// Do these bytes hash to the name they are stored under?
+///
+/// The refusal NAMES THE WAY OUT. Every read that meets such a file refuses
+/// rather than guess what it held — [`EventStore::tips`] among them, and so
+/// every append — which leaves a store with one damaged file stuck until
+/// somebody sets that file aside; the message says how.
+fn rehash(digest: &Hash, raw: &[u8]) -> Result<(), ProdromeError> {
+    let recomputed = hex(&Sha256::digest(raw));
+    if recomputed == digest.as_str() {
+        Ok(())
+    } else {
+        Err(ProdromeError::Store(format!(
+            "object {name} hashes to {recomputed} — tampered or corrupt: `prodrome quarantine \
+             {name}` (`EventStore::quarantine`) sets it aside so the store answers again",
+            name = digest.as_str()
+        )))
+    }
+}
+
+/// A temp file's name: sixteen random hex digits and `.tmp`, which is never
+/// `<name>.py`. The randomness is the standard library's per-process hash
+/// keys, advanced on every draw, so no dependency is taken for it; the
+/// exclusive create in [`EventStore::stage`] is what makes a clash harmless.
+fn temp_name() -> String {
+    format!("{:016x}.tmp", RandomState::new().build_hasher().finish())
+}
+
+/// Sync a directory, so the renames into it are on disk and not only in the
+/// page cache.
+fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
+    File::open(dir)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|error| ProdromeError::Io {
+            path: dir.display().to_string(),
+            message: error.to_string(),
+        })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -908,6 +1075,7 @@ mod tests {
     use crate::event::{mk_completed, mk_created, mk_reopened, Actor};
     use crate::literal::Datetime;
     use crate::reference::Todo;
+    use proptest::prelude::*;
 
     /// The store these tests drive. The payload is the reference one because
     /// a store has to hold SOME record shape; nothing below reads a field of
@@ -1270,7 +1438,9 @@ mod tests {
                     digest.as_str()
                 ),
                 format!(
-                    "chain broke at {digest}: object {digest} hashes to {} — tampered or corrupt",
+                    "chain broke at {digest}: object {digest} hashes to {} — tampered or \
+                     corrupt: `prodrome quarantine {digest}` (`EventStore::quarantine`) sets it \
+                     aside so the store answers again",
                     hex(&Sha256::digest(fs::read(&path).expect("reads"))),
                     digest = digest.as_str()
                 ),
@@ -1427,6 +1597,207 @@ mod tests {
         assert_eq!(tips(&store), [first, other].into_iter().collect());
         assert_eq!(store.verify(), Vec::<String>::new());
         assert_eq!(store.events().expect("reads").len(), 2);
+        let _ = fs::remove_dir_all(store.root());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// A CRASH BETWEEN WRITE AND RENAME LEAVES NO OBJECT, only a temp that
+        /// `verify` reports. A chain of `crash` events is written, and the
+        /// next object's placement stops after its temp is written and synced
+        /// and before the rename — the crash. The store is then exactly the
+        /// chain: the tips derive from it, the object the crash interrupted is
+        /// not there under any name, and `verify`'s one finding is the temp,
+        /// by name.
+        #[test]
+        fn a_crash_before_the_rename_leaves_only_a_temp(
+            crash in 0usize..5
+        ) {
+            let store = Store::new(scratch("crash"), roster());
+            let mut written: Vec<Hash> = Vec::new();
+            for day in 0..crash {
+                let day = u32::try_from(day).expect("a few days") + 1;
+                written.push(
+                    store
+                        .append(mk_reopened("alpha", at(day), "bassel", "").expect("valid"), None)
+                        .expect("appends"),
+                );
+            }
+            let day = u32::try_from(crash).expect("a few days") + 1;
+            let next: Envelope<Todo> = mk_sealed(
+                written.last().cloned(),
+                mk_reopened("alpha", at(day), "bassel", "").expect("valid"),
+            );
+            fs::create_dir_all(store.objects_dir()).expect("creates objects/");
+            let temp = store
+                .stage(crate::event::canonical_envelope(&next).as_bytes())
+                .expect("stages");
+            let file = temp.file_name().expect("a name").to_string_lossy().into_owned();
+
+            let fresh = Store::new(store.root(), roster());
+            let tips = fresh.tips();
+            let landed = store.object_path(&seal_hash(&next)).exists();
+            let found = store.verify();
+            let _ = fs::remove_dir_all(store.root());
+            prop_assert_eq!(
+                tips.expect("the tips derive"),
+                written.last().cloned().into_iter().collect::<BTreeSet<_>>()
+            );
+            prop_assert!(!landed, "the interrupted object is not in the store");
+            prop_assert_eq!(
+                found,
+                vec![format!(
+                    "objects/{file} is not an object: a temp an interrupted write left, or a \
+                     stray (SPEC §3); delete it"
+                )]
+            );
+        }
+    }
+
+    /// An entry of `objects/` that could be taken for an object and is not
+    /// one: a `.tmp`, a name one character short or in capitals, a `.py` of
+    /// anything, a file with no suffix. Drawn and then filtered, so a draw
+    /// that happens to be a well-formed object name is not a stray.
+    fn a_stray() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[0-9a-f]{64}\\.tmp",
+            "[0-9a-f]{63}\\.py",
+            "[0-9A-F]{64}\\.py",
+            "[a-z0-9_.-]{1,12}\\.py",
+            "[a-zA-Z0-9_-]{1,70}",
+        ]
+        .prop_filter("an object name is not a stray", |file| {
+            file.strip_suffix(".py")
+                .map(Hash::new)
+                .is_none_or(|name| name.is_err())
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// VERIFY NAMES EVERY STRAY, and the reads pass over them. Whatever
+        /// lands in `objects/` beside a healthy store's objects, `verify`
+        /// reports each such entry once, by name, in name order, and nothing
+        /// else; the tips and the objects read exactly as they did.
+        #[test]
+        fn verify_names_every_stray(strays in prop::collection::btree_set(a_stray(), 1..6)) {
+            let store = Store::new(scratch("strays"), roster());
+            store
+                .append(mk_created("alpha", at(1), "bassel", "", "").expect("valid"), None)
+                .expect("appends");
+            let tip = store
+                .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"), None)
+                .expect("appends");
+            for file in &strays {
+                fs::write(store.objects_dir().join(file), "stray").expect("writes a stray");
+            }
+            let found = store.verify();
+            let expected: Vec<String> = strays
+                .iter()
+                .map(|file| {
+                    format!(
+                        "objects/{file} is not an object: a temp an interrupted write left, or a \
+                         stray (SPEC §3); delete it"
+                    )
+                })
+                .collect();
+            let fresh = Store::new(store.root(), roster());
+            let tips = fresh.tips();
+            let read = fresh.read_dag_named().map(|dag| dag.len());
+            let _ = fs::remove_dir_all(store.root());
+            prop_assert_eq!(found, expected);
+            prop_assert_eq!(tips.expect("the tips derive"), [tip].into_iter().collect::<BTreeSet<_>>());
+            prop_assert_eq!(read.expect("the store reads"), 2);
+        }
+    }
+
+    /// ONE BAD OBJECT DOES NOT STOP EVERYTHING. A chain of three whose middle
+    /// file is damaged: a fresh handle's `tips` refuses, naming the object and
+    /// the command that sets it aside, and so does every append. Once it is
+    /// quarantined the store answers again — the tips derive, the damaged
+    /// object's parent among them, and an append weaves them — and after that
+    /// append as before it, `verify` is clean but for the receipt,
+    /// which stands in for the "chain broke" the tip resting on it would be.
+    /// A healthy object is not quarantined: that would be hiding it.
+    #[test]
+    fn after_quarantine_the_store_answers_and_verify_holds_the_receipt() {
+        let store = Store::new(scratch("quarantine"), roster());
+        let first = store
+            .append(
+                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let middle = store
+            .append(
+                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let last = store
+            .append(
+                mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let path = store.object_path(&middle);
+        let text = fs::read_to_string(&path).expect("reads");
+        fs::write(&path, text.replace("alpha", "omega")).expect("damages");
+
+        let fresh = Store::new(store.root(), roster());
+        let refusal = fresh.tips().expect_err("no honest tips").to_string();
+        assert!(refusal.contains(middle.as_str()), "{refusal}");
+        assert!(
+            refusal.contains(&format!("`prodrome quarantine {}`", middle.as_str())),
+            "{refusal}"
+        );
+        assert!(fresh
+            .append(
+                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
+                None
+            )
+            .is_err());
+        assert!(fresh.quarantine(&first).is_err(), "a healthy object stays");
+
+        let aside = fresh.quarantine(&middle).expect("sets it aside");
+        assert_eq!(
+            aside,
+            store
+                .root()
+                .join("quarantine")
+                .join(format!("{}.py", middle.as_str()))
+        );
+        assert!(!path.exists());
+        // Nothing the store can read names `first` any more, so it is a tip
+        // beside `last`: the tips of what the store holds, exactly.
+        assert_eq!(
+            tips(&fresh),
+            [first.clone(), last.clone()].into_iter().collect()
+        );
+        let receipt = format!(
+            "quarantine/{}.py failed its hash and was set aside (SPEC §3): restore the object \
+             from a replica, then delete this file",
+            middle.as_str()
+        );
+        assert_eq!(fresh.verify(), vec![receipt.clone()]);
+        let next = fresh
+            .append(
+                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("the store writes again");
+        assert_eq!(tips(&fresh), [next.clone()].into_iter().collect());
+        let mut both = vec![first, last];
+        both.sort();
+        assert_eq!(parents_of(&fresh.load(&next).expect("loads")), both);
+        assert_eq!(fresh.verify(), vec![receipt]);
+
+        // The repair: the object back from a replica, the receipt deleted.
+        fs::write(&path, text).expect("restores");
+        fs::remove_dir_all(store.root().join("quarantine")).expect("deletes the receipt");
+        assert_eq!(fresh.verify(), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
     }
 

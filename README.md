@@ -219,6 +219,7 @@ The precise semantics are in [`SPEC.md`](SPEC.md).
 <root>/
   objects/<sha256>.py     one object, its canonical print
   .lock                   held during an append
+  quarantine/<sha256>.py  a file set aside for failing its hash
 ```
 
 Objects are append-only and never rewritten. A print is a Python-literal
@@ -232,6 +233,23 @@ merge, with nothing that can conflict. The next append on the merged store is
 written on top of both tips at once. (A store from before 0.9 has a `HEAD`,
 and `refs/` if it had several heads; `prodrome verify` asks for them to be
 deleted, and the tips it derives are the ones they named.)
+
+An object is synced to disk before it appears under its name, so a crash
+leaves at most a temp file, which `prodrome verify` reports with anything
+else in `objects/` that is not an object. A file that no longer hashes to its
+name makes every read refuse, since nothing can say what it held;
+`prodrome quarantine <name>` moves it to `quarantine/`, the store answers
+again, and `verify` keeps a receipt for it until the object is restored from
+a replica.
+
+**A store under git needs `objects/** -text -diff` in its `.gitattributes`**
+(in a `.gitattributes` beside `objects/`, or with the store's path in front
+in the repository's own). An object's name is the hash of its bytes, and a
+checkout that converts line endings, or a merge driver that rewrites text,
+leaves a file that no longer hashes to its name; the attribute tells git the
+bytes are not its to touch. This repository's `.gitattributes` carries the
+line; the `roadmap-data` branch, whose store is `roadmap/`, wants it in a
+`roadmap/.gitattributes` of its own.
 
 ## WebAssembly
 
