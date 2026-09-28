@@ -920,6 +920,50 @@ proptest! {
         };
         prop_assert_eq!(sorted(&relinearised(&nodes, &keys)), sorted(&nodes));
     }
+
+    /// Law 27 — A CLAIM SETTLES NOTHING IT IS NOT TRUSTED TO. A claiming write
+    /// over every tip leaves every confirmed frontier, and every price, as it
+    /// was.
+    #[test]
+    fn claim_never_settles(
+        shared in a_schedule(1..8),
+        mine in a_schedule(1..6),
+        theirs in a_schedule(1..6),
+        claim in a_claim(),
+        when in 0i64..WINDOW,
+    ) {
+        let policy = roster();
+        let (_guard, store) =
+            diverged(&realise(&shared, 0), &branch(&mine, "mine"), &branch(&theirs, "theirs"));
+        let t = moment(when);
+        let frontiers = |nodes: &[Chain]| -> BTreeMap<TodoId, [Vec<Hash>; 3]> {
+            fold(nodes).todos().map(|(todo, stream)| {
+                let registers = Registers::read(stream, Some(fpl::instant_of(t)), &policy);
+                (todo.clone(), [Kind::State, Kind::Spec, Kind::Content].map(|k| registers.frontier(k).names()))
+            })
+            .collect()
+        };
+        let prices = |nodes: &[Chain]| -> BTreeMap<TodoId, (fpl::Candidates, view::Price)> {
+            view::entries(nodes, t, &policy)
+                .expect("folds")
+                .into_iter()
+                .map(|row| (row.todo.clone(), (row.outcome, row.price)))
+                .collect()
+        };
+        let before = nodes_from(&store);
+        let claim = claim.at(moment(when));
+        let todo = claim.todo().clone();
+        store.append(claim, None).expect("appends over every tip");
+        let after = nodes_from(&store);
+        let (mut was, is) = (frontiers(&before), frontiers(&after));
+        was.entry(todo.clone()).or_insert_with(|| [vec![], vec![], vec![]]);
+        prop_assert_eq!(is, was);
+        let (mut was, is) = (prices(&before), prices(&after));
+        if let Some(fresh) = is.get(&todo).filter(|_| !was.contains_key(&todo)) {
+            was.insert(todo, fresh.clone());
+        }
+        prop_assert_eq!(is, was);
+    }
 }
 
 fn tendings(drawn: &[(&'static str, i64)], note: &str) -> Vec<Event> {
