@@ -29,13 +29,15 @@
 #let problem = rgb("#e55900")
 #let watch = rgb("#a44554")
 #let fine = rgb("#379775")
-/// No value at all — a todo with no price. Absence is not a zero.
+/// No value at all — `∅`, a todo with no price, or one that does not link.
+/// Absence is not a zero.
 #let unpriced = rgb("#9b9b9b")
 #let ink = rgb("#222222")
 
 /// "Problem" below 0.5, "Watch" below 0.7, "Fine" from there, "Unpriced" for
-/// `none`.
-#let state-of(value) = if value == none {
+/// no number: `"absent"` (a row reading `∅`) or `none` (a mark or a node
+/// reading `∅`, or a row that does not link).
+#let state-of(value) = if value == none or value == "absent" {
   "Unpriced"
 } else if value < 0.5 {
   "Problem"
@@ -52,8 +54,9 @@
   Unpriced: unpriced,
 ).at(state-of(value))
 
-/// A value as the percentage the CLI prints (`0.42` is `42%`), `—` for none.
-#let percent(value) = if value == none { "—" } else {
+/// A value as the percentage the CLI prints (`0.42` is `42%`), `∅` for
+/// absent, `—` for none.
+#let percent(value) = if value == "absent" { "∅" } else if value == none { "—" } else {
   str(int(calc.round(value * 100))) + "%"
 }
 
@@ -286,11 +289,8 @@
   if detail != "" { _div("detail", _text(detail, markup)) }
 
   heading(level: 2)[Price]
-  if entry.spec == none {
-    [No spec: this item has no price, which is not a zero.]
-  } else {
-    raw(entry.spec, block: true, lang: "python")
-  }
+  raw(entry.spec, block: true, lang: "python")
+  if entry.value == "absent" [Absent: this item has no value, which is not a zero.]
   if entry.unlinked != none [Not priced: #entry.unlinked]
 
   let tree = data.at("explain", default: (:)).at(todo, default: none)

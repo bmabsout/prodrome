@@ -17,7 +17,7 @@ The one reading it adds is the state a value falls in, for colour.
 | Problem  | below 0.5     | `#e55900` |
 | Watch    | below 0.7     | `#a44554` |
 | Fine     | 0.7 and above | `#379775` |
-| Unpriced | none          | grey      |
+| Unpriced | `∅` or none   | grey      |
 
 Low is urgent: a value says how well things go if nothing changes.
 
@@ -57,7 +57,7 @@ store by the viewer's own `viewer/src/view.ts`.
 | `order`   | the rows' todo ids in the core's list order                       | `entries(..).order`             |
 | `records` | the records the rows name, by object name                        | `entries(..).records`           |
 | `created` | per todo, its first `Created`'s `at` and its last one's `text`    | `entries(..).created`           |
-| `marks`   | per todo, `ring` (72 hourly values from now) and `bar` (`values`, one per day, and `now`, the index of the present) | `fulfillment`, `series_knots` |
+| `marks`   | per todo, `ring` (72 hourly values from now) and `bar` (`values`, one per day, and `now`, the index of the present); `null` where the todo reads `∅` | `fulfillment`, `series_knots` |
 | `explain` | per todo, the explanation tree (optional)                         | `explain`                       |
 | `history` | per todo, its events: `at`, `kind`, `actor`, `hash` (optional)    | `fold(..).stream`               |
 | `focus`   | the todo a page is about, or `null`                               | the host                        |
