@@ -198,6 +198,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Gate",
             "Genesis",
             "Importance",
+            "Least",
             "Note",
             "Offset",
             "OffsetBy",

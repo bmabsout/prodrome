@@ -279,6 +279,23 @@ mod tests {
     }
 
     #[test]
+    fn least_crosses_as_its_kind_and_its_members() {
+        let term = parse_term("Least(terms=(Flat(value=0.25), Absent()))").expect("a term");
+        let json = to_json(&term);
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "least", "terms": [
+                {"kind": "flat", "value": 0.25}, {"kind": "absent"}
+            ]})
+        );
+        assert_eq!(from_json(&json).expect("a term"), term);
+        let at = parse_iso("2026-09-01T00:00:00").expect("an instant");
+        let tree = explain(&Closed::of(term).expect("closed"), at, &Env::new());
+        assert_eq!(tree["value"], 0.25);
+        assert_eq!(tree["terms"][0]["value"], 0.25);
+    }
+
+    #[test]
     fn every_term_has_the_json_and_explain_shape_the_vectors_froze() {
         let doc: Value = serde_json::from_str(VECTORS).expect("the fixture is JSON");
         let terms = doc["terms"].as_array().expect("a terms array");
