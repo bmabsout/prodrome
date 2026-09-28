@@ -254,37 +254,49 @@ fn resolve(term: &Term, env: &Env, links: &mut Vec<Link>) -> Term {
         } => return recurrence(todo, *anchor, body, pending, env, links),
         _ => return Term::new(term.out().map(|child| resolve(child, env, links))),
     };
-    let link = match env.outcomes.get(event) {
-        None => Link::Pending {
-            event: event.clone(),
-        },
-        Some(Outcome::Completed(at)) => Link::Completed {
-            event: event.clone(),
-            at: *at,
-            slip: *at - *anchor,
-            needs: *needs,
-            // §7.1: `needs` is CONSUMED HERE and nowhere else. The compiler is
-            // the first reader holding the declared lead time beside the
-            // upstream's actual instant; the evaluator still never reads it.
-            ready: needs.map(|needs| *at + needs),
-        },
-        Some(Outcome::Cancelled(at)) => Link::Moot {
-            event: event.clone(),
-            at: *at,
-        },
-    };
-    links.push(link.clone());
-    let pending = resolve(pending, env, links);
-    match link {
-        Link::Pending { .. } => pending,
-        Link::Completed { at, slip, .. } => {
-            piecewise(pending, vec![(at, slid(slip, resolve(body, env, links)))])
-        }
-        Link::Moot { at, .. } => {
-            let body = resolve(body, env, links);
-            piecewise(pending, vec![(at, mk_moot(body))])
-        }
-    }
+    // A conflict compiles to its most urgent candidate: `Least` of each.
+    let candidates: Vec<Option<Outcome>> = env
+        .outcomes
+        .get(event)
+        .map_or_else(|| vec![None], |held| held.iter().copied().collect());
+    let terms = candidates
+        .into_iter()
+        .map(|binding| {
+            let link = match binding {
+                None => Link::Pending {
+                    event: event.clone(),
+                },
+                Some(Outcome::Completed(at)) => Link::Completed {
+                    event: event.clone(),
+                    at,
+                    slip: at - *anchor,
+                    needs: *needs,
+                    // §7.1: `needs` is CONSUMED HERE and nowhere else. The
+                    // compiler is the first reader holding the declared lead
+                    // time beside the upstream's actual instant; the evaluator
+                    // still never reads it.
+                    ready: needs.map(|needs| at + needs),
+                },
+                Some(Outcome::Cancelled(at)) => Link::Moot {
+                    event: event.clone(),
+                    at,
+                },
+            };
+            links.push(link.clone());
+            let pending = resolve(pending, env, links);
+            match link {
+                Link::Pending { .. } => pending,
+                Link::Completed { at, slip, .. } => {
+                    piecewise(pending, vec![(at, slid(slip, resolve(body, env, links)))])
+                }
+                Link::Moot { at, .. } => {
+                    let body = resolve(body, env, links);
+                    piecewise(pending, vec![(at, mk_moot(body))])
+                }
+            }
+        })
+        .collect();
+    fpl::least_of(terms).expect("an event has a candidate")
 }
 
 /// A `Recur` as the schedule its tendings make: pending before the first, and
