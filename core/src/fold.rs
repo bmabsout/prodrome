@@ -20,10 +20,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::event::{Authored, TodoEvent, TodoId};
-use crate::fpl::{self, FplError, Instant, Term};
+use crate::fpl::{self, FplError, Instant};
 use crate::literal::Datetime;
 use crate::payload::Payload;
 use crate::policy::Policy;
+use crate::term::Term;
 
 /// What history says about a todo: the two ways it can be over, which mean
 /// OPPOSITE things downstream (a cancellation prices as moot, a completion

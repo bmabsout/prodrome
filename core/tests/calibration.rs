@@ -20,8 +20,9 @@
 use chrono::{Duration, NaiveDate};
 use prodrome::fpl::{
     self, mk_after, mk_conj, mk_decay, mk_flat, mk_gate, mk_within, Closed, Env, FplError, Instant,
-    Outcome, Term, PRIORITY_POWER,
+    Outcome, PRIORITY_POWER,
 };
+use prodrome::term::Term;
 
 fn ok(t: Result<Term, FplError>) -> Term {
     t.expect("the harness only builds terms the constructors admit")

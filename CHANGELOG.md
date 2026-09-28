@@ -132,6 +132,12 @@ verifies exactly as it did.
   `null` values as unpriced; the viewer marks every todo the store knows.
 - The frozen view vectors change in exactly their unpriced rows, which now
   read `value='absent'` and `spec='Absent()'`.
+- **`prodrome::term` holds the functor:** `Term`, `TermF`, `CurvePoint` and
+  `normalize` move there from `fpl`. `TermF::traverse` is the one function
+  that names every field; `map` borrows the layer, `as_ref` joins
+  `children`, and `transpose` is gone. `Term::cata`, `try_cata`, `para` and
+  `any` fold a term, `breaks::Breaks` is a monoid whose `Default` is its
+  identity (`exact: true`), and `breaks::constant` is gone.
 
 ### Fixed
 

@@ -12,9 +12,10 @@ use std::time::Instant as Clock;
 use chrono::{Duration, NaiveDate};
 use prodrome::chain::{self, chain_order, compile_chain, ChainError, Compiled, Link};
 use prodrome::fpl::{
-    self, delta_from_hours, iso, print_term, Closed, Env, Instant, Note, Outcome, Scalar, Term,
-    TermF, WITHIN_SAMPLES,
+    self, delta_from_hours, iso, print_term, Closed, Env, Instant, Note, Outcome, Scalar,
+    WITHIN_SAMPLES,
 };
+use prodrome::term::{Term, TermF};
 
 fn origin() -> Instant {
     NaiveDate::from_ymd_opt(2026, 9, 1)
