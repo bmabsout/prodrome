@@ -1,7 +1,9 @@
 //! SPEC §9.7/§9.8 over `conformance/series.py`: 60 random terms drawn over a
 //! window. The knot INSTANTS are exact — they are the term's own transitions —
 //! and the values agree to 1e-9. Beside that, the law: between two adjacent
-//! knots of an exact fragment, the straight line IS the evaluator.
+//! knots of an exact fragment, the straight line IS the evaluator. And §9.18
+//! over `conformance/absent/series.py`: 30 seeded exact terms holding an
+//! `Absent`, whose knots are `∅` where the term has no value.
 
 mod common;
 
@@ -144,4 +146,10 @@ fn every_series_has_the_reference_knots() {
 #[test]
 fn interpolation_between_exact_knots_equals_evaluation() {
     interpolate("series.py");
+}
+
+#[test]
+fn every_absent_series_has_its_frozen_knots_and_they_are_the_curve() {
+    replay("absent/series.py", 30);
+    interpolate("absent/series.py");
 }

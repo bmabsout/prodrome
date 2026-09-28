@@ -318,6 +318,12 @@ and regenerating it is a separate, manual step —
 `cargo run --example generate_view_vectors -p prodrome-core` — that `nix
 flake check` and CI never run.
 
+`conformance/absent/*.py` (§9.18) is seeded the same way, for `Absent`:
+terms, exact series and logs drawn from the generators the laws of `∅` run
+over (`core/tests/common/terms.rs`, and `a_log_with_absence`), frozen, and
+regenerated only by hand with
+`cargo run --example generate_absent_vectors -p prodrome-core`.
+
 `conformance/link.py` (§7.2) is the other exception: it is written BY HAND
 from `link`'s laws — a few specs, the prints they link to, their values at a
 few instants and one loop refused — because a law's own consequences are the

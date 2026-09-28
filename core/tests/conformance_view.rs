@@ -49,7 +49,7 @@ struct Case {
 }
 
 fn cases(name: &str) -> (Vec<Case>, Untrusted) {
-    let data = vectors(&format!("view/{name}"));
+    let data = vectors(name);
     let untrusted = Untrusted::of(
         strings(&data, "untrusted")
             .iter()
@@ -105,7 +105,7 @@ fn replay(name: &str) -> (usize, usize) {
 
 #[test]
 fn every_entry_agrees_under_the_triage_untrusted_policy() {
-    let (logs, rows) = replay("triage-untrusted.py");
+    let (logs, rows) = replay("view/triage-untrusted.py");
     assert_eq!(logs, 30, "view/triage-untrusted.py lost a case");
     assert!(rows > 0, "some case has at least one entry");
     println!("view/triage-untrusted.py: {logs} logs, {rows} entry-instants");
@@ -113,7 +113,7 @@ fn every_entry_agrees_under_the_triage_untrusted_policy() {
 
 #[test]
 fn every_entry_agrees_under_the_bassel_untrusted_policy() {
-    let (logs, rows) = replay("bassel-untrusted.py");
+    let (logs, rows) = replay("view/bassel-untrusted.py");
     assert_eq!(logs, 30, "view/bassel-untrusted.py lost a case");
     assert!(rows > 0, "some case has at least one entry");
     println!("view/bassel-untrusted.py: {logs} logs, {rows} entry-instants");
@@ -128,7 +128,7 @@ fn every_entry_agrees_under_the_bassel_untrusted_policy() {
 #[test]
 fn the_vectors_show_a_claim_and_an_unconfirmed_record_between_them() {
     let mut unconfirmed = BTreeMap::new();
-    for name in ["triage-untrusted.py", "bassel-untrusted.py"] {
+    for name in ["view/triage-untrusted.py", "view/bassel-untrusted.py"] {
         let (cases, _) = cases(name);
         let mut any = false;
         for case in &cases {
@@ -148,4 +148,34 @@ fn the_vectors_show_a_claim_and_an_unconfirmed_record_between_them() {
         vec![true, true],
         "both policies should provoke at least one unconfirmed entry: {unconfirmed:?}"
     );
+}
+
+/// §9.18 over `conformance/absent/view.py`: logs whose specs are `Absent`,
+/// references to todos with no function, to todos never seen and to each
+/// other. Every row agrees, and between them the rows show all three
+/// readings a value has: a number, `absent`, and one that does not link.
+#[test]
+fn every_entry_agrees_over_logs_with_absence() {
+    let (logs, rows) = replay("absent/view.py");
+    assert_eq!(logs, 30, "absent/view.py lost a case");
+    let (cases, _) = cases("absent/view.py");
+    let values: Vec<&Value> = cases
+        .iter()
+        .flat_map(|case| &case.instants)
+        .flat_map(|(_, entries)| entries)
+        .map(|entry| field(entry, "value"))
+        .collect();
+    assert!(
+        values.iter().any(|v| matches!(v, Value::Float(_))),
+        "a number"
+    );
+    assert!(
+        values.iter().any(|v| v.as_str() == Some("absent")),
+        "an absent row"
+    );
+    assert!(
+        values.iter().any(|v| matches!(v, Value::None)),
+        "an unlinked row"
+    );
+    println!("absent/view.py: {logs} logs, {rows} entry-instants");
 }

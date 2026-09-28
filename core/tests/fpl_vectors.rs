@@ -1,6 +1,8 @@
 //! SPEC §9.8 over `conformance/fpl.py`: 150 random terms, each as a literal
 //! print, six `fulfillment` samples, the `normalized` print, and `explain` at
-//! one moment. Prints are compared EXACTLY; floats to 1e-9.
+//! one moment. Prints are compared EXACTLY; floats to 1e-9. And §9.18 over
+//! `conformance/absent/fpl.py`, the same shape for 40 seeded terms that hold
+//! an `Absent`, where a reading or a node may be `∅` (`None`).
 //!
 //! WHAT `explain` IS HERE. The vector holds the DECORATION — a kind tag, a
 //! value and the notes at each node — and not the term's shape, which is the
@@ -34,11 +36,12 @@ fn env_of(bounds: &[Value]) -> Env {
     }
 }
 
-#[test]
-fn every_term_prints_evaluates_normalises_and_explains_as_the_reference() {
-    let data = vectors("fpl.py");
+/// Every case of `file`: the print, the readings, the normal form and the
+/// explanation.
+fn replay(file: &str, expected: usize) {
+    let data = vectors(file);
     let terms = each(&data, "terms");
-    assert_eq!(terms.len(), 150, "the vector file lost cases");
+    assert_eq!(terms.len(), expected, "{file} lost cases");
     let (mut samples, mut explains) = (0usize, 0usize);
     for case in terms {
         let seed = integer(field(case, "seed"));
@@ -78,9 +81,19 @@ fn every_term_prints_evaluates_normalises_and_explains_as_the_reference() {
         explains += 1;
     }
     println!(
-        "fpl.py: {} terms, {samples} fulfillment samples, {explains} explain trees; \
+        "{file}: {} terms, {samples} fulfillment samples, {explains} explain trees; \
          largest float deviation {:e}",
         terms.len(),
         common::worst_seen()
     );
+}
+
+#[test]
+fn every_term_prints_evaluates_normalises_and_explains_as_the_reference() {
+    replay("fpl.py", 150);
+}
+
+#[test]
+fn every_absent_term_prints_evaluates_normalises_and_explains_as_frozen() {
+    replay("absent/fpl.py", 40);
 }
