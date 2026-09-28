@@ -14,6 +14,9 @@
 #[path = "vectors.rs"]
 pub mod vectors;
 
+#[path = "terms.rs"]
+pub mod terms;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{Duration, NaiveDate};
@@ -463,13 +466,43 @@ pub fn a_random_spec() -> impl Strategy<Value = Term> {
     })
 }
 
+/// A spec as a log carries one now that `∅` and references exist:
+/// [`a_random_spec`]'s shapes, `Absent`, a `Ref` onto one of the generator's
+/// todos — which may have no function, or loop — or onto `delta`, which no
+/// event names, and a conjunction mixing them.
+pub fn a_spec_with_absence() -> impl Strategy<Value = Term> {
+    let reference = prop::sample::select(vec!["alpha", "beta", "gamma", "delta"])
+        .prop_map(|todo| fpl::mk_ref(todo.to_owned()).expect("a todo id"));
+    let member = prop_oneof![
+        2 => a_random_spec().boxed(),
+        1 => Just(fpl::mk_absent()).boxed(),
+        1 => reference.clone().boxed(),
+    ];
+    prop_oneof![
+        3 => a_random_spec().boxed(),
+        1 => Just(fpl::mk_absent()).boxed(),
+        1 => reference.boxed(),
+        1 => (
+            prop::collection::vec(member, 1..4),
+            prop::sample::select(vec![-4.0, -1.0, 0.0])
+        )
+            .prop_map(|(terms, p)| fpl::mk_conj(terms, p).expect("p is in range"))
+            .boxed(),
+    ]
+}
+
 pub fn a_draft() -> impl Strategy<Value = Draft> {
+    a_draft_with(a_random_spec())
+}
+
+/// [`a_draft`] with its specs drawn from `specs`.
+pub fn a_draft_with(specs: impl Strategy<Value = Term>) -> impl Strategy<Value = Draft> {
     (
         prop::sample::select(TODOS.to_vec()),
         prop::sample::select(ACTORS.to_vec()),
         0u8..8,
         // The generator carries a spec on most `Authored` records and not all.
-        prop::option::weighted(0.85, a_random_spec()),
+        prop::option::weighted(0.85, specs),
         prop::sample::select(vec![0usize, 0, 2, 3]),
         0u32..999,
     )
@@ -503,6 +536,18 @@ pub fn realise(schedule: &[(Draft, i64)], shift: i64) -> Vec<Event> {
 
 pub fn a_log() -> impl Strategy<Value = Vec<Event>> {
     a_schedule(0..25).prop_map(|schedule| realise(&schedule, 0))
+}
+
+/// [`a_log`] whose specs are [`a_spec_with_absence`]'s: records and revisions
+/// that price by `Absent`, reference todos with no function, never-seen ones
+/// and each other.
+pub fn a_log_with_absence() -> impl Strategy<Value = Vec<Event>> {
+    prop::collection::vec((a_draft_with(a_spec_with_absence()), 0i64..WINDOW), 0..25).prop_map(
+        |mut drafts| {
+            drafts.sort_by_key(|(_, at)| *at);
+            realise(&drafts, 0)
+        },
+    )
 }
 
 /// A log as the chain a single writer builds: each object sealed on the one
