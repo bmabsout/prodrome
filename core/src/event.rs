@@ -26,18 +26,21 @@
 //! is NOT a shipped string — `Sealed.prev` at genesis, `Woven.event` — it is an
 //! `Option`, and the printer puts the `''`/`None` back.
 
-use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
 use sha2::{Digest, Sha256};
 
+use crate::change::Change;
+use crate::genesis::Genesis;
 use crate::literal::{
-    parse_literal, print_literal, Datetime, ProdromeError, Signature, Table, Value, Vocabulary,
+    parse_literal, print_literal, Call, Datetime, ProdromeError, Signature, Table, Value,
+    Vocabulary,
 };
 use crate::payload::{
     as_string, datetime_field, record_signature, required, string_field, string_or_empty,
     tuple_field, Payload,
 };
+use crate::snapshot::Snapshot;
 use crate::term::schema::signatures;
 use crate::term::Term;
 
@@ -98,6 +101,13 @@ newtype_str! {
     Name
 }
 
+pub(crate) fn lower_hex(text: &str, len: usize) -> bool {
+    text.len() == len
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn matches_todo(text: &str) -> bool {
     !text.is_empty()
         && text
@@ -128,11 +138,7 @@ impl Hash {
     /// name, a ref filename, a `prev` — is a name and not a hope.
     pub fn new(text: impl Into<String>) -> Result<Hash, ProdromeError> {
         let text = text.into();
-        if text.len() == 64
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
+        if lower_hex(&text, 64) {
             Ok(Hash(text))
         } else {
             Err(ProdromeError::invalid(format!(
@@ -332,25 +338,21 @@ impl<P: Payload> TodoEvent<P> {
     }
 }
 
-/// The stored object: one envelope or the other (§3). ONE parent (or none) is a
-/// `Sealed`, two or more a `Woven`, and there is no second spelling of either —
-/// which is what lets [`parents_of`] be total and lets `verify` call a
-/// one-parent `Woven` malformed rather than ambiguous.
+/// The stored object (§3). `Sealed` and `Woven` are the legacy envelopes,
+/// read forever and written by no writer under Draft A.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Envelope<P> {
-    /// The chain envelope. `prev` is `None` at genesis — `Sealed.prev == ""` is
-    /// an absence, not a name, and the type says so.
     Sealed {
         prev: Option<Hash>,
         event: TodoEvent<P>,
     },
-    /// The MERGE envelope: two or more parents, sorted and distinct, and an
-    /// OPTIONAL event, because a merge is structure and not a fact about a
-    /// todo.
     Woven {
         parents: Vec<Hash>,
         event: Option<TodoEvent<P>>,
     },
+    Genesis(Genesis),
+    Change(Change<P>),
+    Snapshot(Snapshot),
 }
 
 impl<P> Envelope<P> {
@@ -358,20 +360,38 @@ impl<P> Envelope<P> {
         match self {
             Envelope::Sealed { event, .. } => Some(event),
             Envelope::Woven { event, .. } => event.as_ref(),
+            Envelope::Change(change) => Some(&change.event),
+            Envelope::Genesis(_) | Envelope::Snapshot(_) => None,
+        }
+    }
+
+    pub fn into_event(self) -> Option<TodoEvent<P>> {
+        match self {
+            Envelope::Sealed { event, .. } => Some(event),
+            Envelope::Woven { event, .. } => event,
+            Envelope::Change(change) => Some(change.event),
+            Envelope::Genesis(_) | Envelope::Snapshot(_) => None,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Envelope::Sealed { .. } => "Sealed",
+            Envelope::Woven { .. } => "Woven",
+            Envelope::Genesis(_) => "Genesis",
+            Envelope::Change(_) => "Change",
+            Envelope::Snapshot(_) => "Snapshot",
         }
     }
 }
 
-/// The objects this one rests on. Genesis has none, and returning an empty
-/// slice for it is what lets every reader treat "no parents" as one condition
-/// instead of two.
 pub fn parents_of<P>(envelope: &Envelope<P>) -> Vec<Hash> {
     match envelope {
-        Envelope::Sealed { prev: None, .. } => Vec::new(),
-        Envelope::Sealed {
-            prev: Some(prev), ..
-        } => vec![prev.clone()],
+        Envelope::Sealed { prev, .. } => prev.iter().cloned().collect(),
         Envelope::Woven { parents, .. } => parents.clone(),
+        Envelope::Genesis(_) => Vec::new(),
+        Envelope::Change(change) => change.deps.clone(),
+        Envelope::Snapshot(snapshot) => snapshot.parents(),
     }
 }
 
@@ -481,11 +501,24 @@ pub fn mk_sealed<P: Payload>(prev: Option<Hash>, event: TodoEvent<P>) -> Envelop
     Envelope::Sealed { prev, event }
 }
 
-/// The parse boundary for a merge. Two parents at least (one is a `Sealed`,
-/// none is genesis), each named once — a duplicate would be a second edge to
-/// the same history, which says nothing and would let two different objects
-/// mean one merge. SORTED, so the merge of a parent set is one object with one
-/// hash wherever it is made.
+/// Sorted, so a set of names is one print wherever it is made; a name twice
+/// is refused, since it would let two objects mean one set.
+pub(crate) fn sorted_distinct(
+    field: &str,
+    what: &str,
+    mut names: Vec<Hash>,
+) -> Result<Vec<Hash>, ProdromeError> {
+    names.sort();
+    if names.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(ProdromeError::invalid(format!(
+            "{field} names a {what} twice: {:?}",
+            names.iter().map(Hash::as_str).collect::<Vec<_>>()
+        )));
+    }
+    Ok(names)
+}
+
+/// Two parents at least: one is a `Sealed`, none is genesis.
 pub fn mk_woven<P: Payload>(
     parents: Vec<Hash>,
     event: Option<TodoEvent<P>>,
@@ -496,29 +529,22 @@ pub fn mk_woven<P: Payload>(
             parents.len()
         )));
     }
-    let mut sorted = parents;
-    sorted.sort();
-    let distinct: BTreeSet<&Hash> = sorted.iter().collect();
-    if distinct.len() != sorted.len() {
-        return Err(ProdromeError::invalid(format!(
-            "Woven.parents names a parent twice: {:?}",
-            sorted.iter().map(Hash::as_str).collect::<Vec<_>>()
-        )));
-    }
     Ok(Envelope::Woven {
-        parents: sorted,
+        parents: sorted_distinct("Woven.parents", "parent", parents)?,
         event,
     })
 }
 
 // --- the vocabulary ----------------------------------------------------------
 
-/// §4's constructors that are the DATABASE's, name and declared field order —
-/// the envelope kinds and the six kinds whose fields are its own semantics.
-/// The record kind is the payload's and is not here.
+/// The database's constructors, name and declared field order: the envelopes
+/// and the six kinds whose fields are its own semantics.
 pub const EVENT_SIGNATURES: &[(&str, &[&str])] = &[
     ("Sealed", &["prev", "event"]),
     ("Woven", &["parents", "event"]),
+    ("Genesis", &["label", "nonce"]),
+    ("Change", &["genesis", "deps", "event"]),
+    ("Snapshot", &["genesis", "tips", "previous"]),
     ("Created", &["todo", "at", "actor", "text", "note"]),
     ("Completed", &["todo", "at", "actor", "note"]),
     ("Cancelled", &["todo", "at", "actor", "note"]),
@@ -578,12 +604,26 @@ fn text(value: impl Into<String>) -> Value {
     Value::Str(value.into())
 }
 
-fn tuple_of<T>(items: &[T], each: impl Fn(&T) -> Value) -> Value {
-    Value::Tuple(items.iter().map(each).collect())
+pub(crate) fn field(name: &str, value: Value) -> (String, Value) {
+    (name.to_owned(), value)
 }
 
-fn field(name: &str, value: Value) -> (String, Value) {
-    (name.to_owned(), value)
+pub(crate) fn hashes_value(names: &[Hash]) -> Value {
+    Value::Tuple(names.iter().map(|name| text(name.as_str())).collect())
+}
+
+pub(crate) fn hashes(call: &Call, name: &str) -> Result<Vec<Hash>, ProdromeError> {
+    let context = format!("{}.{name}", call.name);
+    tuple_field(call, name)?
+        .iter()
+        .map(|item| Hash::new(as_string(item, &context)?))
+        .collect()
+}
+
+/// A name where `''` is absent.
+pub(crate) fn optional_hash(call: &Call, name: &str) -> Result<Option<Hash>, ProdromeError> {
+    let text = string_field(call, name)?;
+    (!text.is_empty()).then(|| Hash::new(text)).transpose()
 }
 
 impl<P: Payload> TodoEvent<P> {
@@ -662,53 +702,46 @@ impl<P: Payload> Envelope<P> {
             Envelope::Sealed { prev, event } => Value::call(
                 "Sealed",
                 vec![
-                    field(
-                        "prev",
-                        text(prev.as_ref().map(|hash| hash.0.clone()).unwrap_or_default()),
-                    ),
+                    field("prev", text(prev.as_ref().map_or("", Hash::as_str))),
                     field("event", event.to_value()),
                 ],
             ),
             Envelope::Woven { parents, event } => Value::call(
                 "Woven",
                 vec![
-                    field("parents", tuple_of(parents, |hash| text(hash.0.clone()))),
+                    field("parents", hashes_value(parents)),
                     field(
                         "event",
                         event.as_ref().map_or(Value::None, TodoEvent::to_value),
                     ),
                 ],
             ),
+            Envelope::Genesis(genesis) => genesis.to_value(),
+            Envelope::Change(change) => change.to_value(),
+            Envelope::Snapshot(snapshot) => snapshot.to_value(),
         }
     }
 
-    /// The parse boundary for a stored object: a literal in, a validated
-    /// envelope out, every `mk_*` rule applied on the way.
+    /// A literal in, an envelope out, through every `mk_*` rule.
     pub fn from_value(value: &Value) -> Result<Envelope<P>, ProdromeError> {
         let call = value
             .as_call()
             .ok_or_else(|| ProdromeError::invalid("an object must be a Sealed or a Woven"))?;
         match call.name.as_str() {
-            "Sealed" => {
-                let prev = string_field(call, "prev")?;
-                let prev = if prev.is_empty() {
-                    None
-                } else {
-                    Some(Hash::new(prev)?)
-                };
-                Ok(mk_sealed(prev, event_from_value(required(call, "event")?)?))
-            }
+            "Sealed" => Ok(mk_sealed(
+                optional_hash(call, "prev")?,
+                event_from_value(required(call, "event")?)?,
+            )),
             "Woven" => {
-                let parents = tuple_field(call, "parents")?
-                    .iter()
-                    .map(|item| Hash::new(as_string(item, "Woven.parents")?))
-                    .collect::<Result<Vec<_>, _>>()?;
                 let event = match call.field("event") {
                     None | Some(Value::None) => None,
                     Some(other) => Some(event_from_value(other)?),
                 };
-                mk_woven(parents, event)
+                mk_woven(hashes(call, "parents")?, event)
             }
+            "Genesis" => Ok(Envelope::Genesis(Genesis::from_call(call)?)),
+            "Change" => Ok(Envelope::Change(Change::from_call(call)?)),
+            "Snapshot" => Ok(Envelope::Snapshot(Snapshot::from_call(call)?)),
             other => Err(ProdromeError::invalid(format!(
                 "object is not a chain envelope: {other}"
             ))),
@@ -716,7 +749,7 @@ impl<P: Payload> Envelope<P> {
     }
 }
 
-fn event_from_value<P: Payload>(value: &Value) -> Result<TodoEvent<P>, ProdromeError> {
+pub(crate) fn event_from_value<P: Payload>(value: &Value) -> Result<TodoEvent<P>, ProdromeError> {
     let call = value.as_call().ok_or_else(|| {
         ProdromeError::invalid(format!(
             "an event must be a constructor call, got {value:?}"
@@ -759,6 +792,11 @@ fn event_from_value<P: Payload>(value: &Value) -> Result<TodoEvent<P>, ProdromeE
 /// tiebreak sorts by.
 pub fn canonical<P: Payload>(event: &TodoEvent<P>) -> String {
     print_literal(&event.to_value())
+}
+
+/// An event's name apart from where it was written; never stored.
+pub fn event_id<P: Payload>(event: &TodoEvent<P>) -> Hash {
+    Hash::of_bytes(canonical(event).as_bytes())
 }
 
 /// The canonical print of an envelope. This is the object's BYTES: the name is

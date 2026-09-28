@@ -4,7 +4,7 @@ use std::ops::Add;
 
 use chrono::Duration;
 
-use crate::fpl::{div_delta, fulfillment, Closed, Env, Instant};
+use crate::fpl::{div_delta, eval, fulfillment, Closed, Env, Instant};
 use crate::term::{Term, TermF};
 
 /// Where a term changes slope, where it jumps, and whether knots there are the
@@ -61,7 +61,14 @@ impl Sum for Breaks {
 /// a ramp the evaluator never produced. A piecewise part keeps its transitions
 /// as knots even when a composite part makes the whole sampled.
 pub fn breakpoints(term: &Term) -> Breaks {
-    term.cata(|layer| match layer {
+    term.para(|layer| match layer {
+        TermF::Least { terms } => least(terms),
+        layer => local(layer.map(|(_, breaks)| breaks.clone())),
+    })
+}
+
+fn local(layer: TermF<Breaks>) -> Breaks {
+    match layer {
         TermF::Flat { .. } | TermF::Absent => Breaks::default(),
         TermF::Decay {
             end_date,
@@ -106,7 +113,54 @@ pub fn breakpoints(term: &Term) -> Breaks {
             Breaks::default()
         }
         _ => Breaks::sampled(),
-    })
+    }
+}
+
+/// Exact members are lines between their instants, so their least bends only
+/// there and where two of them cross.
+fn least(members: Vec<(&Term, Breaks)>) -> Breaks {
+    let (terms, breaks): (Vec<&Term>, Vec<Breaks>) = members.into_iter().unzip();
+    let mut whole: Breaks = breaks.into_iter().sum();
+    if whole.exact {
+        let instants: BTreeSet<Instant> =
+            whole.slopes.iter().chain(&whole.jumps).copied().collect();
+        let crossings: Vec<Instant> = instants
+            .iter()
+            .zip(instants.iter().skip(1))
+            .flat_map(|(from, to)| crossings(&terms, *from, *to))
+            .collect();
+        whole.slopes.extend(crossings);
+    }
+    whole
+}
+
+/// Where two members, each a line on `[from, to)`, meet strictly inside it.
+/// An exact term reads no history, so the empty environment is its reading.
+fn crossings(terms: &[&Term], from: Instant, to: Instant) -> Vec<Instant> {
+    let span = (to - from).num_microseconds().unwrap_or(i64::MAX);
+    let half = span / 2;
+    let read = |at: Instant| -> Vec<Option<f64>> {
+        terms
+            .iter()
+            .map(|term| eval(term, at, &Env::new()))
+            .collect()
+    };
+    let lines: Vec<(f64, f64)> = read(from)
+        .into_iter()
+        .zip(read(from + Duration::microseconds(half)))
+        .filter_map(|(start, middle)| Some((start?, middle?)))
+        .collect();
+    let mut out = Vec::new();
+    for (i, (a0, a1)) in lines.iter().enumerate() {
+        for (b0, b1) in &lines[i + 1..] {
+            let (d0, d1) = (a0 - b0, a1 - b1);
+            let at = d0 / (d0 - d1) * half as f64;
+            if d0 != d1 && 0.0 < at && at < span as f64 {
+                out.push(from + Duration::microseconds(at.round() as i64));
+            }
+        }
+    }
+    out
 }
 
 /// For terms that are not piecewise-linear: every ~1.9 h over a week, every

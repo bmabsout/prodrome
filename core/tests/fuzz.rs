@@ -3,15 +3,30 @@
 //! is the same property in Rust, where "never a crash" also means never a
 //! stack overflow — a deep nest is a refusal, not an abort (`MAX_DEPTH`).
 
+use prodrome::event::parse_envelope;
 use prodrome::literal::{parse_literal, print_literal, Open, Table};
+use prodrome::reference::Todo;
 use proptest::prelude::*;
 
 /// A vocabulary shaped like a real one, so the fuzzer reaches the call arms.
 static VOCABULARY: Table = Table(&[
     ("Sealed", &["prev", "event"]),
     ("Woven", &["parents", "event"]),
+    ("Genesis", &["label", "nonce"]),
+    ("Change", &["genesis", "deps", "event"]),
+    ("Snapshot", &["genesis", "tips", "previous"]),
     ("Note", &["on", "lines"]),
 ]);
+
+/// One of each of Draft A's objects, ASCII so any byte offset is a cut.
+const OBJECTS: [&str; 3] = [
+    "Genesis(label='suzatary', nonce='9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c')",
+    "Change(genesis='0000000000000000000000000000000000000000000000000000000000000000', \
+     deps=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',), \
+     event=Completed(todo='a', at=datetime(2026, 9, 1, 0, 0, 0), actor='bassel', note=''))",
+    "Snapshot(genesis='0000000000000000000000000000000000000000000000000000000000000000', \
+     tips=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',), previous='')",
+];
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4096))]
@@ -29,6 +44,21 @@ proptest! {
         }
     }
 
+    /// An object with a cut or a splice in it is a refusal or an object.
+    #[test]
+    fn a_damaged_object_never_panics(
+        which in 0..OBJECTS.len(),
+        at in any::<prop::sample::Index>(),
+        cut in 0usize..8,
+        splice in ".{0,8}",
+    ) {
+        let object = OBJECTS[which];
+        let at = at.index(object.len() + 1);
+        let end = (at + cut).min(object.len());
+        let damaged = format!("{}{splice}{}", &object[..at], &object[end..]);
+        let _ = parse_envelope::<Todo>(&damaged);
+    }
+
     /// Whatever survives the parse must print back to something the parser
     /// accepts, and the second print must equal the first — the stability that
     /// lets `seal_hash` hash a print (`literals.py`'s module docstring).
@@ -39,6 +69,13 @@ proptest! {
             let again = parse_literal(&once, &VOCABULARY).expect("a canonical print reparses");
             prop_assert_eq!(once, print_literal(&again));
         }
+    }
+}
+
+#[test]
+fn every_object_the_fuzzer_damages_parses_whole() {
+    for object in OBJECTS {
+        assert!(parse_envelope::<Todo>(object).is_ok(), "{object}");
     }
 }
 
