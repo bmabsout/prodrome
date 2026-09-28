@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 
 use crate::fpl::{
-    mk_absent, mk_after, mk_conj, mk_curve, mk_decay, mk_flat, mk_gate, mk_importance, mk_offset,
-    mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref, mk_shift, mk_within, Delta,
-    FplError, Instant, PRIORITY_POWER,
+    mk_absent, mk_after, mk_conj, mk_curve, mk_decay, mk_flat, mk_gate, mk_importance, mk_least,
+    mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref, mk_shift, mk_within,
+    Delta, FplError, Instant, PRIORITY_POWER,
 };
 use crate::literal::{Signature, Vocabulary};
 
@@ -81,6 +81,7 @@ pub fn fields<A>(layer: &TermF<A>) -> (&'static str, Fields<&A>) {
             "Conj",
             vec![("terms", Children(terms.iter().collect())), ("p", Real(*p))],
         ),
+        TermF::Least { terms } => ("Least", vec![("terms", Children(terms.iter().collect()))]),
         TermF::Offset { delta, term } => (
             "Offset",
             vec![("delta", Real(*delta)), ("term", Child(term))],
@@ -226,7 +227,7 @@ type Builder<S> = fn(&mut S) -> Result<Term, FplError>;
 
 /// Each constructor read in declared order; the defaults are what a hand-written
 /// literal may leave out.
-fn builders<S: FieldSource>() -> [(&'static str, Builder<S>); 16] {
+fn builders<S: FieldSource>() -> [(&'static str, Builder<S>); 17] {
     [
         ("Flat", |s| mk_flat(s.real("value").need()?)),
         ("Decay", |s| {
@@ -253,6 +254,7 @@ fn builders<S: FieldSource>() -> [(&'static str, Builder<S>); 16] {
         ("Conj", |s| {
             mk_conj(s.children("terms").need()?, s.real("p").or(PRIORITY_POWER)?)
         }),
+        ("Least", |s| mk_least(s.children("terms").need()?)),
         ("Offset", |s| {
             mk_offset(s.real("delta").need()?, s.child("term").need()?)
         }),
@@ -437,7 +439,7 @@ mod tests {
              Recur(todo='a', anchor={at}, term=Absent(), pending=Absent()), \
              Periodic(period=timedelta(days=7), anchor={at}, term=Absent()), \
              Piecewise(head=Absent(), pieces=(Piece(at={at}, term=Flat(value=0.5)),)), \
-             OffsetBy(delta=Absent(), term=Absent())), p=-4.0)"
+             OffsetBy(delta=Absent(), term=Absent()), Least(terms=(Absent(),))), p=-4.0)"
         ))
         .expect("a term");
         let mut seen = Vec::new();
@@ -457,6 +459,6 @@ mod tests {
                 "{kind}"
             );
         }
-        assert_eq!(signatures().0.len(), 18);
+        assert_eq!(signatures().0.len(), 19);
     }
 }

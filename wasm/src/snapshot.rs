@@ -32,6 +32,14 @@ const COMPOSITE: &str = r#"{"kind": "conj", "p": -4.0, "terms": [
    "term": {"kind": "periodic", "periodHours": 168.0, "anchor": "2026-09-01T00:00:00",
      "term": {"kind": "decay", "start": 0.98, "end": 0.3, "endDate": "2026-09-08T00:00:00", "leadUpHours": 120.0}},
    "pending": {"kind": "flat", "value": 0.3}}]}"#;
+/// Two lines that cross and a schedule that starts absent: exact, with a knot
+/// at the crossing.
+const LEAST: &str = r#"{"kind": "least", "terms": [
+  {"kind": "decay", "start": 0.9, "end": 0.1, "endDate": "2026-10-15T00:00:00", "leadUpHours": 720.0},
+  {"kind": "flat", "value": 0.5},
+  {"kind": "piecewise", "head": {"kind": "absent"},
+   "pieces": [{"at": "2026-09-10T00:00:00", "term": {"kind": "curve", "points": [
+     {"at": "2026-09-10T00:00:00", "value": 0.8}, {"at": "2026-10-10T00:00:00", "value": 0.2}]}}]}]}"#;
 const NOWS: [&str; 3] = [
     "2026-08-15T00:00:00",
     "2026-09-20T12:00:00",
@@ -130,10 +138,11 @@ fn answers() -> String {
     let env = env.to_string();
     let history = folded["history"].to_string();
     let composite: Value = serde_json::from_str(COMPOSITE).expect("JSON");
-    for (todo, function) in functions
-        .iter()
-        .chain([(&"composite".to_owned(), &composite)])
-    {
+    let least: Value = serde_json::from_str(LEAST).expect("JSON");
+    for (todo, function) in functions.iter().chain([
+        (&"composite".to_owned(), &composite),
+        (&"least".to_owned(), &least),
+    ]) {
         let linked = ok(crate::link(&function.to_string(), &specs));
         put(format!("link {todo}"), linked.clone());
         let compiled = ok(crate::compile(&linked, &env));

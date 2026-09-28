@@ -313,7 +313,7 @@ pub fn fulfillment(term: &Closed, now: Instant, env: &Env) -> Option<f64> {
 
 /// The evaluator proper, over the subterms of a [`Closed`] — so a `Ref` is
 /// unreachable here by the type's invariant.
-fn eval(term: &Term, now: Instant, env: &Env) -> Option<f64> {
+pub(crate) fn eval(term: &Term, now: Instant, env: &Env) -> Option<f64> {
     match term.out() {
         TermF::Flat { value } => Some(*value),
         TermF::Decay {
@@ -336,6 +336,10 @@ fn eval(term: &Term, now: Instant, env: &Env) -> Option<f64> {
             let vs: Vec<Option<f64>> = terms.iter().map(|t| eval(t, now, env)).collect();
             conj(&vs, *p)
         }
+        TermF::Least { terms } => terms
+            .iter()
+            .filter_map(|t| eval(t, now, env))
+            .reduce(f64::min),
         TermF::Offset { delta, term } => eval(term, now, env).map(|x| offset(x, *delta)),
         // An absent gate is no gate; an absent body is `∅`.
         TermF::Gate { gate, body } => {
@@ -580,6 +584,9 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
             }
             TermF::Conj { terms: kids, p: *p }
         }
+        TermF::Least { terms } => TermF::Least {
+            terms: terms.iter().map(|t| explain(t, now, env)).collect(),
+        },
         TermF::Offset { delta, term } => TermF::Offset {
             delta: *delta,
             term: explain(term, now, env),
@@ -785,6 +792,14 @@ pub fn mk_conj(terms: Vec<Term>, p: f64) -> Result<Term, FplError> {
         return err(format!("Conj.p must be in [-32, 0], got {p}"));
     }
     Ok(Term::new(TermF::Conj { terms, p }))
+}
+
+/// Never empty, so a term reads `∅` only where it holds an `Absent`.
+pub fn mk_least(terms: Vec<Term>) -> Result<Term, FplError> {
+    if terms.is_empty() {
+        return err("Least needs a member");
+    }
+    Ok(Term::new(TermF::Least { terms }))
 }
 
 pub fn mk_offset(delta: f64, term: Term) -> Result<Term, FplError> {

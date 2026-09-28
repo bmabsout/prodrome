@@ -22,6 +22,10 @@ pub enum TermF<A> {
         terms: Vec<A>,
         p: f64,
     },
+    /// The least of the members that have a value; `∅` when none does.
+    Least {
+        terms: Vec<A>,
+    },
     Offset {
         delta: f64,
         term: A,
@@ -118,6 +122,9 @@ impl<A> TermF<A> {
                 terms: terms.iter().map(f).collect::<Result<_, _>>()?,
                 p: *p,
             },
+            TermF::Least { terms } => TermF::Least {
+                terms: terms.iter().map(f).collect::<Result<_, _>>()?,
+            },
             TermF::Offset { delta, term } => TermF::Offset {
                 delta: *delta,
                 term: f(term)?,
@@ -210,6 +217,7 @@ impl<A> TermF<A> {
             TermF::Decay { .. } => "decay",
             TermF::Curve { .. } => "curve",
             TermF::Conj { .. } => "conj",
+            TermF::Least { .. } => "least",
             TermF::Offset { .. } => "offset",
             TermF::Gate { .. } => "gate",
             TermF::Shift { .. } => "shift",

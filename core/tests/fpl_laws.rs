@@ -17,6 +17,9 @@
 //! term without one has a value everywhere, and `explain` and the series
 //! carry `∅` where a node has none. Every generator here draws `Absent` among
 //! its leaves, so every law above quantifies over it too.
+//!
+//! And law 26: `Least` is a semilattice with `Absent` as its identity; the
+//! generators draw it, so every law above covers it.
 
 mod common;
 
@@ -234,7 +237,7 @@ proptest! {
         nodes(&normal, &mut all);
         for node in &all {
             let buried = match node.out() {
-                TermF::Conj { terms, .. } => terms.iter().any(is_piecewise),
+                TermF::Conj { terms, .. } | TermF::Least { terms } => terms.iter().any(is_piecewise),
                 TermF::Offset { term, .. }
                 | TermF::Importance { term, .. }
                 | TermF::Shift { term, .. } => is_piecewise(term),
@@ -906,6 +909,69 @@ proptest! {
                 (None, None) => prop_assert_eq!(real, None),
                 ends => return Err(TestCaseError::fail(format!("{ends:?} over more than a second"))),
             }
+        }
+    }
+}
+
+fn least(terms: Vec<Term>) -> Term {
+    ok(fpl::mk_least(terms))
+}
+
+#[test]
+fn a_least_has_a_member_and_prints_it() {
+    assert!(fpl::mk_least(vec![]).is_err());
+    assert!(fpl::parse_term("Least(terms=())").is_err());
+    assert_eq!(
+        fpl::print_term(&least(vec![absent()])),
+        "Least(terms=(Absent(),))"
+    );
+}
+
+/// Two lines that cross between their breakpoints bend the least there, and
+/// the series puts a knot on the crossing.
+#[test]
+fn the_least_of_two_lines_has_a_knot_where_they_cross() {
+    let falling = ok(fpl::mk_decay(
+        0.9,
+        0.1,
+        moment(100),
+        Duration::hours(100),
+        None,
+    ));
+    let term = least(vec![falling, ok(fpl::mk_flat(0.5))]);
+    let series =
+        prodrome::breaks::series_knots(&closed(&term), moment(-10), moment(110), |_| Env::new());
+    assert!(series.exact);
+    assert!(series.knots.iter().any(|knot| knot.at == moment(50)));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Law 26: commutative, associative, idempotent, `Least([t]) = t`, and
+    /// `Absent` is the identity.
+    #[test]
+    fn least_is_a_semilattice(
+        a in a_term(),
+        b in a_term(),
+        c in a_term(),
+        env in an_env(),
+        h in -500i64..500,
+    ) {
+        let now = moment(h);
+        let reads = |t: Term| fulfillment(&t, now, &env);
+        let x = reads(a.clone());
+        prop_assert_eq!(reads(least(vec![a.clone(), b.clone()])), reads(least(vec![b.clone(), a.clone()])));
+        prop_assert_eq!(
+            reads(least(vec![least(vec![a.clone(), b.clone()]), c.clone()])),
+            reads(least(vec![a.clone(), least(vec![b.clone(), c])])),
+        );
+        prop_assert_eq!(reads(least(vec![a.clone(), a.clone()])), x);
+        prop_assert_eq!(reads(least(vec![a.clone()])), x);
+        prop_assert_eq!(reads(least(vec![a.clone(), absent()])), x);
+        let both = reads(least(vec![a, b.clone()]));
+        for member in [x, reads(b)].into_iter().flatten() {
+            prop_assert!(both.is_some_and(|both| both <= member));
         }
     }
 }
