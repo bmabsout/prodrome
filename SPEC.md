@@ -77,6 +77,10 @@ since this grammar has tuples and no mapping.
 
 ## 3. Objects and the DAG
 
+> **Draft A** (below §10, NOT in force) proposes naming a change by its event
+> and the register frontiers it supersedes rather than by the tips it was
+> written on. Nothing in this section changes until it lands.
+
 - An **envelope** is `Sealed(prev, event)`, one parent with `prev == ""` at
   genesis, or `Woven(parents, event)`, two or more parents, sorted and
   distinct, where `event` may be `None`: a merge is structure.
@@ -738,3 +742,74 @@ number.
 
 A clock in the merge; a second evaluator; a rendering as a source of truth;
 multi-tenancy; a hosted service.
+
+---
+
+## Draft A. Change identity — PROPOSED, NOT IN FORCE
+
+> **DRAFT.** This section is a proposal under review
+> (`docs/design-change-identity.md`). No implementation reads it, no vector
+> checks it, and §1–§10 above are the contract until it is folded into them
+> and this section is deleted. Where it says "§3 gains", §3 has not.
+
+**A1. The envelope (amends §3).** A third envelope, `Change(deps, event)`:
+`deps` a tuple of object names, sorted and distinct, possibly empty; `event`
+required. Its name is the hash of its print, like every object's.
+`parents_of(Change(deps, _)) = deps`, and every definition of §3 and §6
+that reads parents reads `deps`. `Sealed` and `Woven` stay readable; a writer
+under this draft writes neither.
+
+**A2. Dependencies (amends §3's appending).** `append(event)` computes `deps`
+as the union, over the registers `event` writes (§6.6), of each register's
+frontier in the writer's store, folded STRUCTURALLY: under the policy where
+everything binds and at no moment. An event that writes no register
+(`Created`, `Tended`) has `deps = ()`. So a change depends on exactly what it
+supersedes, and its name is a function of its event and that, and of nothing
+else the writer holds.
+
+**A3. Idempotence (amends §3's appending).** Before writing, `append` looks
+for an object whose event prints byte-identically to `event`. If one exists
+anywhere in the store, it writes nothing and answers the first such in the
+linearisation. A replay never writes, even over a write that has since been
+superseded.
+
+**A4. No merges (amends §3).** `append` never writes a `Woven` into a store
+that holds a `Change`. Tips stay derived (law 17(a), (c)) and are no longer
+read to write. `merge` stays for stores written before this draft.
+
+**A5. Twins (amends §6.6).** Objects carrying byte-identical events under
+different `deps` are TWINS: distinct objects, each superseding only what its
+own `deps` reach. A frontier whose writes all carry one event print is a
+value, not a conflict. `conflicts_of` names only frontiers holding two or
+more distinct events.
+
+**A6. `verify` (amends §3).** It also reports a `Change` whose `deps` are
+unsorted or repeated, whose `deps` are not an antichain, or with a dep that
+writes no register its event writes. The clock rule is unchanged and reads
+the narrower ancestors.
+
+**A7. Stored bytes.** A store holding no `Change` reads, folds, derives and
+verifies exactly as under §3. In a mixed store a `Change` may depend on
+`Sealed` and `Woven` writes, whose ancestry keeps its global position. A
+reader without this draft refuses a `Change` by §2's whitelist.
+
+**A8. Laws (amend §9).**
+
+19. **A name is its event and its view.** The object `append(event)` writes
+    is a function of `event` and of the structural frontiers of the registers
+    it writes. Adding objects that write other registers (and do not carry
+    `event`, law 20) changes no name `append` would write.
+20. **Append is idempotent.** Appending an event whose print the store holds
+    writes nothing and answers the first object carrying it. Replaying any
+    sequence of appends, in any order, onto the store they produced leaves
+    its object set unchanged.
+21. **Independence is structural.** Changes writing disjoint registers are
+    concurrent unless one names the other's ancestor, and every fold reads
+    the same in either order.
+22. **No stored byte moves.** Every `conformance/dag.py` store, and every
+    generated store of `Sealed` and `Woven`, reads, derives, linearises and
+    verifies exactly as before.
+
+Law 6 reads "conflicts are exactly the registers both branches wrote
+different events to". Law 17(b) reads, for a store of changes, "the next
+`append` on the union writes the object one writer holding the union would".
