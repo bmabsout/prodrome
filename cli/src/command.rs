@@ -116,6 +116,15 @@ pub enum Command {
     /// no unreachable object, and the heads agree.
     Verify,
 
+    /// Move an object file that fails its hash out of `objects/` into
+    /// `quarantine/`, so the store answers again (§3). `verify` keeps a
+    /// receipt for it until the object is restored from a replica.
+    Quarantine {
+        /// The object's name, 64 lowercase hex.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+
     /// Join every head into one `Woven` carrying no event — what settles a
     /// store two branches both appended to.
     Weave,

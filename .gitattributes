@@ -1,0 +1,3 @@
+# A store's objects are named by the hash of their bytes (SPEC §3), so git
+# must never rewrite them: no line-ending conversion, no textual diff or merge.
+objects/** -text -diff

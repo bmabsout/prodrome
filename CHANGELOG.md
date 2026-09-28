@@ -21,6 +21,10 @@ change under this file's rule: no stored object changes, a term without
 `Absent` reads exactly what it read, and the API breaks where a value was an
 `f64`.
 
+And the object store is durable and its fsck honest, which are PATCH fixes
+under this file's rule: no stored byte changes, and a healthy store reads and
+verifies exactly as it did.
+
 ### Added
 
 - **`Absent`, a new leaf of `TermF` (SPEC §7):** `∅` at every instant,
@@ -131,6 +135,33 @@ change under this file's rule: no stored object changes, a term without
 
 ### Fixed
 
+- **A write is durable (SPEC §3).** An object was written to `<name>.tmp`
+  and renamed with no sync, so a power loss could leave a zero-length file
+  under a name that promises content. It is now written to a randomly named
+  temp file created exclusively, synced before the rename, and `objects/` is
+  synced once per append or adoption. Law: a crash between the write and the
+  rename leaves no object, only a temp that `verify` reports
+  (`a_crash_before_the_rename_leaves_only_a_temp` in `core/src/store.rs`).
+- **`verify` sees everything in `objects/` (SPEC §3).** It looked at `.py`
+  files only, so a temp an interrupted write left, or any other stray, was
+  never reported. Every entry that is not `<name>.py` for a well-formed name
+  is now a finding, by name; the reads pass over such entries rather than
+  refusing a `.py` whose stem is not a name. Law: `verify_names_every_stray`
+  in `core/src/store.rs`.
+- **One damaged object no longer stops every write (SPEC §3).** `tips()`
+  refused a store holding a file that fails its hash, and `append` asks
+  `tips()`, so one such file stopped the store with no way out. It still
+  refuses rather than guess, and now names the object and the fix:
+  `EventStore::quarantine(name)`, and `prodrome quarantine <name>`, move a
+  file failing its hash from `objects/` to `quarantine/` (a file that hashes
+  to its name is refused), after which the store answers and `verify`
+  reports a receipt for the quarantined file until the object is restored.
+  Test: `after_quarantine_the_store_answers_and_verify_holds_the_receipt` in
+  `core/src/store.rs`, and `prodrome-cli`'s verbs.
+- **Git must not rewrite object bytes (SPEC §3, README).** A store under git
+  needs `objects/** -text -diff` in its `.gitattributes`, or a line-ending
+  conversion leaves files that no longer hash to their names; documented,
+  and added to this repository's own `.gitattributes`.
 - `breaks::series_knots` puts a knot a second before a jump that falls
   exactly on the window's end, as it does for every other jump, instead of
   drawing a ramp across it. No frozen series moves.

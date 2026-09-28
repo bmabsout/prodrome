@@ -84,15 +84,24 @@ since this grammar has tuples and no mapping.
 - An object's **name** is `sha256(utf8(print(envelope)))` in lowercase hex.
   The file `objects/<name>.py` holds exactly that print, and a loader
   re-hashes the bytes before parsing them.
+- **A write is durable.** The print goes to a randomly named temp file in
+  `objects/`, created exclusively (never a fixed `<name>.tmp`, which two
+  writers of one object would share), and is synced to disk before it is
+  renamed to `<name>.py`; the directory is synced once after a batch of
+  placements (one append, one adoption). So a crash leaves either no object
+  or the whole one, never an empty file under a name that promises content,
+  and at worst a temp that `verify` reports.
 - **Tips are derived.** `tips()` is the set of objects no object names as a
   parent (as a `Sealed`'s `prev` or among a `Woven`'s parents): a function of
   the object set alone, in any order it is listed. A store on disk is its
   `objects/` and nothing else, so two copies that each only added objects are
   merged by uniting the files — a `git merge` of two clones is this union and
-  cannot conflict. A store written before 0.9 also holds `HEAD` (one tip) and
-  `refs/` (one file per head while there were several); nothing reads them,
-  the objects derive exactly what they named (§9.17), and `verify` reports
-  them as leftovers to delete.
+  cannot conflict. A store under git needs `objects/** -text -diff` in the
+  `.gitattributes` that governs it, so that no line-ending conversion or text
+  merge rewrites the bytes a name is the hash of. A store written before 0.9
+  also holds `HEAD` (one tip) and `refs/` (one file per head while there were
+  several); nothing reads them, the objects derive exactly what they named
+  (§9.17), and `verify` reports them as leftovers to delete.
 - **Appending** seals on every tip: none is genesis, one is a `Sealed`, more
   is a `Woven` carrying the event, so the next write after a union joins it.
 - **Linearisation** is Kahn's algorithm over parents with a min-heap on the
@@ -102,12 +111,26 @@ since this grammar has tuples and no mapping.
 - `ancestors(x)` is the transitive parent closure; `concurrent(a, b)` holds
   when neither is an ancestor of the other.
 - **`verify`** reports an object not hashing to its name, a missing parent, a
-  cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, and an event the
+  cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, every entry of
+  `objects/` that is not named `<name>.py` for a well-formed name (a temp an
+  interrupted write left, or a stray) as garbage, each by name — the reads
+  pass over such an entry, and only `verify` speaks of it — a receipt for
+  each file in `quarantine/`, which stands in for the missing parent that
+  object would otherwise be reported as, and an event the
   policy does not `confirm` (§5) dated before any of its ancestors — a writer
   whose stamp the host forces cannot legitimately be dated behind what it was
   written on top of, where a backfill can. There is no unreachable object and
   no stale head to report: every object is a tip or beneath one, and no tip
   rests on another.
+- **`quarantine(name)`** moves `objects/<name>.py` to `quarantine/<name>.py`
+  when its bytes do not hash to `name`, and refuses a file that does (that
+  file is the object, even one this reader cannot parse). A read refuses a
+  file failing its hash rather than guess what it held — `tips()` among them,
+  and so every append — and its refusal names the object and this operation
+  (`prodrome quarantine <name>`). Set aside, the store is what it holds
+  without it: `tips()` answers (the object's parents may be tips again, and
+  the next append weaves them in), and `verify` reports the receipt until
+  the object is restored from a replica and the quarantined file deleted.
 - **`adopt(source, tip)`** copies in everything `tip` rests on that the store
   lacks, verifying all of it before writing any, and writing parents before
   children, since an object belongs to the store as soon as its file exists.
