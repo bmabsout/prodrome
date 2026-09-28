@@ -27,9 +27,11 @@ fn ok(t: Result<Term, FplError>) -> Term {
     t.expect("the harness only builds terms the constructors admit")
 }
 
-/// §7's evaluator over the harness's terms, none of which holds a `Ref`.
+/// §7's evaluator over the harness's terms, none of which holds a `Ref` or
+/// an `Absent`.
 fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
     fpl::fulfillment(&Closed::of(term.clone()).expect("no Ref"), now, env)
+        .expect("no Absent, so a value")
 }
 
 fn now() -> Instant {

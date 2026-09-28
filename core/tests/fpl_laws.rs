@@ -12,101 +12,45 @@
 //! And the recurrence laws: `last_tended` reads as of now, `Recur` re-anchors
 //! to the last tending, waits for the first and ignores later ones, and
 //! `Periodic` repeats its first cycle.
+//!
+//! And the laws of `∅` (§9.18): `Absent` is the identity of composition, a
+//! term without one has a value everywhere, and `explain` and the series
+//! carry `∅` where a node has none. Every generator here draws `Absent` among
+//! its leaves, so every law above quantifies over it too.
+
+mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDate};
+use common::terms::{
+    a_spec_onto, a_term, a_valued_term, acyclic_specs, an_env, an_exact_term, an_open_term, hours,
+    moment, ok, EVENTS, TODOS,
+};
 use prodrome::chain::{self, Compiled};
 use prodrome::fpl::{
     self, link, mk_piecewise, normalize, Closed, Env, Instant, LinkError, Outcome, Term, TermF,
 };
 use proptest::prelude::*;
 
-const EVENTS: [&str; 3] = ["alpha", "beta", "gamma"];
-/// The todos a `Ref` may name. Two of them are `EVENTS` too, so a linked
-/// term's `After` and its references can name the same todo.
-const TODOS: [&str; 4] = ["alpha", "beta", "delta", "epsilon"];
-
-fn origin() -> Instant {
-    NaiveDate::from_ymd_opt(2026, 9, 1)
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .expect("a real date")
-}
-
-/// Instants live on a coarse grid so that collisions, ties and adjacent
-/// duplicates actually occur — the cases the normal form is about.
-fn moment(hours: i64) -> Instant {
-    origin() + Duration::hours(hours)
-}
-
-fn ok(t: Result<Term, fpl::FplError>) -> Term {
-    t.expect("the generator only builds terms the constructors admit")
-}
-
 fn closed(term: &Term) -> Closed {
     Closed::of(term.clone()).expect("a_term() builds no Ref")
 }
 
-fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
+fn fulfillment(term: &Term, now: Instant, env: &Env) -> Option<f64> {
     fpl::fulfillment(&closed(term), now, env)
+}
+
+/// Two readings agree: both `∅`, or both numbers within `tolerance`.
+fn near(left: Option<f64>, right: Option<f64>, tolerance: f64) -> bool {
+    match (left, right) {
+        (Some(a), Some(b)) => (a - b).abs() <= tolerance,
+        (a, b) => a == b,
+    }
 }
 
 fn compile(term: &Term, env: &Env) -> Compiled {
     chain::compile(&closed(term), env)
-}
-
-fn hours() -> impl Strategy<Value = i64> {
-    -400i64..400
-}
-
-/// Distinct, sorted grid instants — what a schedule or a curve needs.
-fn instants(n: usize) -> impl Strategy<Value = Vec<i64>> {
-    prop::collection::btree_set(hours(), 1..=n).prop_map(|s| s.into_iter().collect())
-}
-
-/// A term with no `Ref`: what evaluation takes.
-fn a_term() -> impl Strategy<Value = Term> {
-    grown(a_closed_leaf())
-}
-
-/// A term whose leaves may be `Ref`s onto `TODOS`: what `link` takes.
-fn an_open_term() -> impl Strategy<Value = Term> {
-    grown(prop_oneof![3 => a_closed_leaf(), 1 => a_ref()].boxed())
-}
-
-fn a_ref() -> BoxedStrategy<Term> {
-    refs_onto(TODOS.to_vec())
-}
-
-fn refs_onto(todos: Vec<&'static str>) -> BoxedStrategy<Term> {
-    prop::sample::select(todos)
-        .prop_map(|todo| ok(fpl::mk_ref(todo.to_owned())))
-        .boxed()
-}
-
-/// A small term with no `Within`, whose references name only `todos`.
-fn a_spec_onto(todos: Vec<&'static str>) -> BoxedStrategy<Term> {
-    let leaf = if todos.is_empty() {
-        a_closed_leaf()
-    } else {
-        prop_oneof![2 => a_closed_leaf(), 1 => refs_onto(todos)].boxed()
-    };
-    grown_to(leaf, 3, 12, false)
-}
-
-/// One spec per todo in `TODOS`, each referring only to the todos after it,
-/// so the references draw a DAG and every one links.
-fn acyclic_specs() -> impl Strategy<Value = BTreeMap<String, Term>> {
-    (0..TODOS.len())
-        .map(|i| a_spec_onto(TODOS[i + 1..].to_vec()))
-        .collect::<Vec<_>>()
-        .prop_map(|terms| {
-            TODOS
-                .iter()
-                .map(|todo| (*todo).to_owned())
-                .zip(terms)
-                .collect()
-        })
 }
 
 /// The todos a term's references name.
@@ -120,151 +64,6 @@ fn refs_of(term: &Term) -> BTreeSet<String> {
         }
     }
     out
-}
-
-fn a_closed_leaf() -> BoxedStrategy<Term> {
-    prop_oneof![
-        (0.02f64..0.98).prop_map(|v| ok(fpl::mk_flat(v))),
-        (
-            0.3f64..0.95,
-            0.0f64..0.2,
-            hours(),
-            6i64..400,
-            prop::option::of(hours())
-        )
-            .prop_map(|(start, end, at, lead, from)| ok(fpl::mk_decay(
-                start,
-                end,
-                moment(at),
-                Duration::hours(lead),
-                from.map(moment),
-            ))),
-        (instants(4), prop::collection::vec(0.0f64..1.0, 4)).prop_map(|(ats, vs)| {
-            ok(fpl::mk_curve(
-                ats.iter()
-                    .zip(&vs)
-                    .map(|(at, v)| fpl::CurvePoint {
-                        at: moment(*at),
-                        value: *v,
-                        label: String::new(),
-                    })
-                    .collect(),
-            ))
-        }),
-    ]
-    .boxed()
-}
-
-/// Every constructor over `leaf`, four levels deep.
-fn grown(leaf: BoxedStrategy<Term>) -> BoxedStrategy<Term> {
-    grown_to(leaf, 4, 48, true)
-}
-
-/// Every constructor over `leaf`, `Within` only where `windows`: a linked term
-/// nests its specs, and windows nested through several references multiply
-/// their 65 samples into a case that never finishes.
-fn grown_to(
-    leaf: BoxedStrategy<Term>,
-    depth: u32,
-    size: u32,
-    windows: bool,
-) -> BoxedStrategy<Term> {
-    leaf.prop_recursive(depth, size, 3, move |inner| {
-        let mut arms: Vec<BoxedStrategy<Term>> = vec![
-            (
-                prop::collection::vec(inner.clone(), 1..3),
-                prop::sample::select(vec![-8.0, -4.0, -1.0, 0.0]),
-            )
-                .prop_map(|(ts, p)| ok(fpl::mk_conj(ts, p)))
-                .boxed(),
-            (-0.9f64..0.9, inner.clone())
-                .prop_map(|(d, t)| ok(fpl::mk_offset(d, t)))
-                .boxed(),
-            (inner.clone(), inner.clone())
-                .prop_map(|(g, b)| ok(fpl::mk_gate(g, b)))
-                .boxed(),
-            (inner.clone(), inner.clone())
-                .prop_map(|(d, t)| ok(fpl::mk_offset_by(d, t)))
-                .boxed(),
-            (hours(), inner.clone())
-                .prop_map(|(h, t)| ok(fpl::mk_shift(Duration::hours(h), t)))
-                .boxed(),
-            (0.3f64..2.5, inner.clone())
-                .prop_map(|(w, t)| ok(fpl::mk_importance(w, t)))
-                .boxed(),
-            (
-                prop::sample::select(EVENTS.to_vec()),
-                hours(),
-                inner.clone(),
-                inner.clone(),
-            )
-                .prop_map(|(e, a, t, p)| ok(fpl::mk_after(e.to_string(), moment(a), t, p, None)))
-                .boxed(),
-            (
-                prop::sample::select(EVENTS.to_vec()),
-                hours(),
-                inner.clone(),
-                inner.clone(),
-            )
-                .prop_map(|(e, a, t, p)| ok(fpl::mk_recur(e.to_string(), moment(a), t, p)))
-                .boxed(),
-            (1i64..400, hours(), inner.clone())
-                .prop_map(|(p, a, t)| ok(fpl::mk_periodic(Duration::hours(p), moment(a), t)))
-                .boxed(),
-            (
-                inner.clone(),
-                instants(3),
-                prop::collection::vec(inner.clone(), 3),
-            )
-                .prop_map(|(head, ats, ts)| {
-                    ok(mk_piecewise(
-                        head,
-                        ats.iter().zip(ts).map(|(at, t)| (moment(*at), t)).collect(),
-                    ))
-                })
-                .boxed(),
-        ];
-        if windows {
-            arms.push(
-                (1i64..72, prop::sample::select(vec![-4.0, -1.0, 0.0]), inner)
-                    .prop_map(|(w, p, t)| ok(fpl::mk_within(Duration::hours(w), p, t)))
-                    .boxed(),
-            );
-        }
-        prop::strategy::Union::new(arms)
-    })
-    .boxed()
-}
-
-/// Each of `EVENTS` bound or not, and tended at a few grid instants or not.
-fn an_env() -> impl Strategy<Value = Env> {
-    (
-        prop::collection::vec(prop::option::of((any::<bool>(), hours())), 3),
-        prop::collection::vec(prop::collection::btree_set(hours(), 0..4), 3),
-    )
-        .prop_map(|(choices, tended)| {
-            let mut env = Env::new();
-            for ((name, choice), tendings) in EVENTS.iter().zip(choices).zip(tended) {
-                if let Some((completed, at)) = choice {
-                    let at = moment(at);
-                    env.outcomes.insert(
-                        (*name).to_string(),
-                        if completed {
-                            Outcome::Completed(at)
-                        } else {
-                            Outcome::Cancelled(at)
-                        },
-                    );
-                }
-                if !tendings.is_empty() {
-                    env.tended.insert(
-                        (*name).to_string(),
-                        tendings.into_iter().map(moment).collect(),
-                    );
-                }
-            }
-            env
-        })
 }
 
 /// Every node of a term, the root included.
@@ -401,8 +200,8 @@ proptest! {
             let now = moment(h);
             let (before, after) = (fulfillment(&term, now, &env), fulfillment(&normal, now, &env));
             prop_assert!(
-                (before - after).abs() <= 1e-12,
-                "at {now}: {before} became {after}",
+                near(before, after, 1e-12),
+                "at {now}: {before:?} became {after:?}",
             );
         }
     }
@@ -459,8 +258,8 @@ proptest! {
             let now = moment(h);
             let (interpreted, value) = (fulfillment(&term, now, &env), compiled.fulfillment(now));
             prop_assert!(
-                (interpreted - value).abs() <= 1e-9,
-                "at {now}: {interpreted} became {value}",
+                near(interpreted, value, 1e-9),
+                "at {now}: {interpreted:?} became {value:?}",
             );
         }
     }
@@ -521,7 +320,10 @@ proptest! {
             let now = moment(h);
             let (interpreted, value) =
                 (fulfillment(&term, now, &Env::new()), compiled.fulfillment(now));
-            prop_assert!((interpreted - value).abs() <= 1e-9, "at {now}: {interpreted} vs {value}");
+            prop_assert!(
+                near(interpreted, value, 1e-9),
+                "at {now}: {interpreted:?} vs {value:?}"
+            );
         }
     }
 }
@@ -562,7 +364,7 @@ fn readings(
     specs: &BTreeMap<String, Term>,
     env: &Env,
     probes: &[i64],
-) -> Result<Vec<f64>, LinkError> {
+) -> Result<Vec<Option<f64>>, LinkError> {
     let linked = link(term, specs)?;
     Ok(probes
         .iter()
@@ -570,8 +372,8 @@ fn readings(
         .collect())
 }
 
-fn close_enough(left: &[f64], right: &[f64]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| (a - b).abs() <= 1e-12)
+fn close_enough(left: &[Option<f64>], right: &[Option<f64>]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| near(*a, *b, 1e-12))
 }
 
 #[test]
@@ -586,10 +388,7 @@ fn a_reference_to_a_todo_the_specs_do_not_hold_is_unknown() {
     ));
     let refusal = link(&term, &specs).expect_err("zeta is not a todo here");
     assert_eq!(refusal, LinkError::Unknown("zeta".to_owned()));
-    assert_eq!(
-        refusal.to_string(),
-        "Ref(\"zeta\") names no todo with a function"
-    );
+    assert_eq!(refusal.to_string(), "Ref(\"zeta\") names no known todo");
 }
 
 #[test]
@@ -811,8 +610,12 @@ fn a_recurrence_explains_its_last_tending() {
         note("agoHours"),
         fpl::Note::One(fpl::Scalar::Float(44.0 * 24.0))
     );
-    assert!((explanation.value - (0.98 - 0.68 * 44.0 / 60.0)).abs() < 1e-12);
-    assert_eq!(fpl::fulfillment(&closed(&term), day(8, 1), &env), 0.3);
+    assert!(near(
+        explanation.value,
+        Some(0.98 - 0.68 * 44.0 / 60.0),
+        1e-12
+    ));
+    assert_eq!(fpl::fulfillment(&closed(&term), day(8, 1), &env), Some(0.3));
 }
 
 proptest! {
@@ -899,5 +702,200 @@ proptest! {
         );
         let inside = moment(anchor) + Duration::seconds((into * (period * 3600) as f64) as i64);
         prop_assert_eq!(fulfillment(&term, inside, &env), fulfillment(&body, inside, &env));
+    }
+}
+
+// --- §7's empty term: the laws of ∅ ---------------------------------------------
+
+fn absent() -> Term {
+    fpl::mk_absent()
+}
+
+/// Every node of an explanation, the root included.
+fn explained_nodes<'a>(node: &'a fpl::Explanation, out: &mut Vec<&'a fpl::Explanation>) {
+    out.push(node);
+    for child in node.node.children() {
+        explained_nodes(child, out);
+    }
+}
+
+/// `Conj([])` keeps its stored meaning of 0.5, and a conjunction whose every
+/// member is absent is `∅`: the first has no member to be absent.
+#[test]
+fn an_empty_conjunction_is_one_half_and_an_absent_one_is_empty() {
+    let env = Env::new();
+    let conj = |terms| ok(fpl::mk_conj(terms, fpl::PRIORITY_POWER));
+    assert_eq!(fulfillment(&conj(vec![]), moment(0), &env), Some(0.5));
+    assert_eq!(fulfillment(&conj(vec![absent()]), moment(0), &env), None);
+    assert_eq!(fulfillment(&absent(), moment(0), &env), None);
+    assert_eq!(fpl::print_term(&absent()), "Absent()");
+    assert_eq!(fpl::parse_term("Absent()"), Ok(absent()));
+}
+
+/// `Absent` is exact and has no breakpoints: its series is its two window
+/// edges, both `∅`.
+#[test]
+fn absent_is_exact_with_no_breakpoints() {
+    let breaks = prodrome::breaks::breakpoints(&absent());
+    assert!(breaks.exact && breaks.slopes.is_empty() && breaks.jumps.is_empty());
+    let series =
+        prodrome::breaks::series_knots(&closed(&absent()), moment(0), moment(48), |_| Env::new());
+    assert!(series.exact);
+    assert_eq!(
+        series
+            .knots
+            .iter()
+            .map(|knot| knot.value)
+            .collect::<Vec<_>>(),
+        [None, None]
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// `∅` IS THE IDENTITY OF COMPOSITION: `Conj(ts ++ [Absent], p) =
+    /// Conj(ts, p)` whenever some member of `ts` has a value — bit for bit,
+    /// since the mean is over the same numbers — and `∅` with it when none
+    /// does.
+    #[test]
+    fn an_absent_member_changes_no_conjunction(
+        terms in prop::collection::vec(a_term(), 1..4),
+        p in prop::sample::select(vec![-8.0, -4.0, -1.0, 0.0]),
+        env in an_env(),
+        probes in prop::collection::vec(-500i64..500, 8),
+    ) {
+        let with = {
+            let mut terms = terms.clone();
+            terms.push(absent());
+            ok(fpl::mk_conj(terms, p))
+        };
+        let without = ok(fpl::mk_conj(terms, p));
+        for h in probes {
+            let now = moment(h);
+            prop_assert_eq!(fulfillment(&with, now, &env), fulfillment(&without, now, &env));
+        }
+    }
+
+    /// A term with no `Absent` evaluates as it did before `∅` existed: it has
+    /// a value at every instant, in [0, 1] (and `conformance/*.py`, which
+    /// holds none, reads exactly as it did).
+    #[test]
+    fn a_term_without_absent_has_a_value_everywhere(
+        term in a_valued_term(),
+        env in an_env(),
+        probes in prop::collection::vec(-500i64..500, 8),
+    ) {
+        for h in probes {
+            let value = fulfillment(&term, moment(h), &env);
+            prop_assert!(value.is_some_and(|v| (0.0..=1.0).contains(&v)), "{:?}", value);
+        }
+    }
+
+    /// The table of §7, operator by operator: an absent gate or offset is
+    /// none, an absent body or term is `∅`, and every unary operator passes
+    /// `∅` through.
+    #[test]
+    fn absent_composes_as_the_table_says(
+        term in a_term(),
+        env in an_env(),
+        w in 0.3f64..2.5,
+        delta in -0.9f64..0.9,
+        shift in hours(),
+        h in -500i64..500,
+    ) {
+        let now = moment(h);
+        let reads = |t: Term| fulfillment(&t, now, &env);
+        let x = reads(term.clone());
+        prop_assert_eq!(reads(ok(fpl::mk_gate(absent(), term.clone()))), x);
+        prop_assert_eq!(reads(ok(fpl::mk_gate(term.clone(), absent()))), None);
+        prop_assert_eq!(reads(ok(fpl::mk_offset_by(absent(), term.clone()))), x);
+        prop_assert_eq!(reads(ok(fpl::mk_offset_by(term, absent()))), None);
+        for passed in [
+            ok(fpl::mk_offset(delta, absent())),
+            ok(fpl::mk_importance(w, absent())),
+            ok(fpl::mk_shift(Duration::hours(shift), absent())),
+            ok(fpl::mk_within(Duration::hours(12), -1.0, absent())),
+            ok(fpl::mk_periodic(Duration::hours(24), moment(0), absent())),
+        ] {
+            prop_assert_eq!(reads(passed), None);
+        }
+    }
+
+    /// `explain` carries `∅` where a node has no value: the root reads what
+    /// `fulfillment` reads, every `Absent` node is `∅`, and a conjunction
+    /// with a value apportions its shares over the members that have one —
+    /// an absent member's share is 0 and the rest still sum to 1.
+    #[test]
+    fn explain_carries_absent_where_a_node_has_no_value(
+        term in a_term(),
+        env in an_env(),
+        h in -500i64..500,
+    ) {
+        let now = moment(h);
+        let tree = fpl::explained(&closed(&term), now, &env);
+        prop_assert_eq!(tree.value, fulfillment(&term, now, &env));
+        let mut all = vec![];
+        explained_nodes(&tree, &mut all);
+        for node in all {
+            if matches!(*node.node, TermF::Absent) {
+                prop_assert_eq!(node.value, None);
+            }
+            if let (TermF::Conj { terms, .. }, Some(_)) = (&*node.node, node.value) {
+                let Some(fpl::Note::Many(shares)) = node.notes.get("shares") else {
+                    return Err(TestCaseError::fail("a valued conjunction has shares"));
+                };
+                prop_assert_eq!(shares.len(), terms.len());
+                let mut sum = 0.0;
+                for (share, member) in shares.iter().zip(terms) {
+                    let fpl::Scalar::Float(share) = share else {
+                        return Err(TestCaseError::fail("a share is a float"));
+                    };
+                    if member.value.is_none() {
+                        prop_assert_eq!(*share, 0.0);
+                    }
+                    sum += share;
+                }
+                prop_assert!(terms.is_empty() || (sum - 1.0).abs() < 1e-9, "shares sum to {}", sum);
+            }
+            if let (TermF::Conj { .. }, None) = (&*node.node, node.value) {
+                prop_assert!(!node.notes.contains_key("shares") && !node.notes.contains_key("certifies"));
+            }
+        }
+    }
+
+    /// The series carry `∅` where the term has none, and on the EXACT
+    /// fragment — `Absent` among it — the knots are the curve (§9.7): a line
+    /// between two numbers, `∅` between two `∅`s, and a knot pair with one
+    /// absent end is only ever the second that brackets a jump.
+    #[test]
+    fn the_knots_of_an_exact_term_are_its_curve_absent_included(
+        term in an_exact_term(),
+        from in -500i64..0,
+        span in 1i64..500,
+    ) {
+        let term = closed(&term);
+        let series =
+            prodrome::breaks::series_knots(&term, moment(from), moment(from + span), |_| Env::new());
+        prop_assert!(series.exact);
+        for knot in &series.knots {
+            prop_assert_eq!(knot.value, fpl::fulfillment(&term, knot.at, &Env::new()));
+        }
+        for pair in series.knots.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if b.at - a.at <= Duration::seconds(1) {
+                continue;
+            }
+            let middle = a.at + (b.at - a.at) / 2;
+            let real = fpl::fulfillment(&term, middle, &Env::new());
+            match (a.value, b.value) {
+                (Some(x), Some(y)) => {
+                    let real = real.expect("a value between two values");
+                    prop_assert!((x + (y - x) / 2.0 - real).abs() <= 1e-9, "{} vs {}", x + (y - x) / 2.0, real);
+                }
+                (None, None) => prop_assert_eq!(real, None),
+                ends => return Err(TestCaseError::fail(format!("{ends:?} over more than a second"))),
+            }
+        }
     }
 }

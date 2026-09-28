@@ -17,7 +17,7 @@ The one reading it adds is the state a value falls in, for colour.
 | Problem  | below 0.5     | `#e55900` |
 | Watch    | below 0.7     | `#a44554` |
 | Fine     | 0.7 and above | `#379775` |
-| Unpriced | none          | grey      |
+| Unpriced | `∅` or none   | grey      |
 
 Low is urgent: a value says how well things go if nothing changes.
 
@@ -54,9 +54,10 @@ store by the viewer's own `viewer/src/view.ts`.
 | --------- | ----------------------------------------------------------------- | ------------------------------- |
 | `at`      | the instant everything was read at, ISO                           | `entries(..).at`                |
 | `entries` | one row per todo (SPEC §6.7)                                      | `entries(..).entries`           |
+| `order`   | the rows' todo ids in the core's list order                       | `entries(..).order`             |
 | `records` | the records the rows name, by object name                        | `entries(..).records`           |
 | `created` | per todo, its first `Created`'s `at` and its last one's `text`    | `entries(..).created`           |
-| `marks`   | per todo, `ring` (72 hourly values from now) and `bar` (`values`, one per day, and `now`, the index of the present) | `fulfillment`, `series_knots` |
+| `marks`   | per todo, `ring` (72 hourly values from now) and `bar` (`values`, one per day, and `now`, the index of the present); `null` where the todo reads `∅` | `fulfillment`, `series_knots` |
 | `explain` | per todo, the explanation tree (optional)                         | `explain`                       |
 | `history` | per todo, its events: `at`, `kind`, `actor`, `hash` (optional)    | `fold(..).stream`               |
 | `focus`   | the todo a page is about, or `null`                               | the host                        |
@@ -64,8 +65,8 @@ store by the viewer's own `viewer/src/view.ts`.
 ## What it exports
 
 - `roadmap(data, title:, href:, markup:)`: the open items that exist at `at`,
-  most urgent first (ascending value, unpriced last, ties by id, the order
-  `prodrome list` prints), then the closed.
+  in the core's list order (ascending value, then every item with no number,
+  ties by id: the order `prodrome list` prints), then the closed.
 - `item(data, todo, markup:, objects:, back:)`: body, price and state, the
   marks, detail, the spec, the explanation and the history, each event
   linked to its object file.
@@ -73,8 +74,8 @@ store by the viewer's own `viewer/src/view.ts`.
   o'clock, one wedge per sample, with a tick at now.
 - `bar(values, now:, width:, height:)`: one cell per day, the past faded, a
   tick at now.
-- `state-of`, `colour-of`, `percent`, `price`, `explanation`,
-  `by-fulfillment`, and the colours `problem`, `watch`, `fine`, `unpriced`.
+- `state-of`, `colour-of`, `percent`, `price`, `explanation`, `listed`, and
+  the colours `problem`, `watch`, `fine`, `unpriced`.
 
 `markup: true` reads an item's body and detail as Typst markup; the default
 shows them verbatim, because nothing promises a store's text is Typst. In HTML

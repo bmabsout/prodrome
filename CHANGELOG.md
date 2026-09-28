@@ -14,7 +14,45 @@ that roadmap. Typst and GitHub enter the repository only as optional extras
 beside the core; `core/` and `cli/` depend on neither, and no stored byte
 changes.
 
+And `Absent`, the empty term (`docs/design-empty-term.md`): an object with no
+claim on attention is priced by a term whose value is `∅`, so FPL is total
+and an unpriced todo stops being a special case in every reader. A MINOR
+change under this file's rule: no stored object changes, a term without
+`Absent` reads exactly what it read, and the API breaks where a value was an
+`f64`.
+
 ### Added
+
+- **`Absent`, a new leaf of `TermF` (SPEC §7):** `∅` at every instant,
+  printed `Absent()`, built by `fpl::mk_absent`. `∅` is the identity of
+  composition: `Conj` and `Within` mean over what has a value (`∅` when
+  nothing does; `Conj([])` is still 0.5), an absent gate or `OffsetBy` delta
+  is none, and every other operator passes `∅` through. `After`'s and
+  `Recur`'s `pending` may be absent; a cancelled `After` is still 1.0.
+- **A `Ref` to a known todo with no spec links to `Absent` (SPEC §7.2)**,
+  where it was refused; `LinkError::Unknown` is now only an id the store
+  has never seen, and says so. `fold::link_specs(functions, known)` takes the
+  todos the store knows.
+- **One list order (SPEC §6.7):** `view::list_order`, ascending in value,
+  ties by id, then every row with no number, `absent` or not linking, by id.
+  `prodrome list` sorts by it; prodrome-wasm's `entries` answers it as
+  `order`; the Typst package lists by it (`listed`, which replaces
+  `by-fulfillment`) and sorts nothing itself.
+- prodrome-wasm: `fold` answers `functions`, every todo the objects mention
+  with its function or `absent`, which is what `link` binds against; the JSON
+  codec has `{"kind": "absent"}`.
+- `fpl::holds_absent`. The chain compiler writes a cancelled link over a body
+  holding an `Absent` as `Gate(body, Flat(1.0))`, since an offset of `∅` is
+  `∅`; an `Absent`-free body is still `Offset(1.0, body)`.
+- **SPEC law 18** and its evidence: `core/tests/fpl_laws.rs` (an absent
+  member changes no conjunction, a term without `Absent` has a value
+  everywhere, `∅` composes as §7 says, `explain` carries it and gives it no
+  share, an exact term's knots are its curve), whose generators, moved to
+  `core/tests/common/terms.rs`, now draw `Absent` so laws 5, 13 and 14 cover
+  it too; `core/tests/fold_laws.rs` (a `Ref` links to `Absent` for a known
+  todo with no function, and every row reads that link).
+  `conformance/absent/{fpl,series,view}.py` are NEW and SEEDED like the view
+  vectors, by `core/examples/generate_absent_vectors.rs`, run by hand.
 
 - **`typst-wasm/`**, Typst 0.15.1 compiled to WebAssembly
   (`nix build .#prodrome-typst-wasm`), in a cargo workspace of its own so the
@@ -63,6 +101,39 @@ changes.
 - `docs/github-agent.md`: the flow and its trust boundaries.
 - `Price::DEFAULT_START`, `DEFAULT_END` and `DEFAULT_LEAD_UP_DAYS` in
   `prodrome-cli`, so `--deadline` and `/price … --deadline` write one decay.
+
+### Changed (breaking)
+
+- **A value is `Option<f64>`**, `None` being `∅`, so it cannot be read as a
+  number: `fpl::fulfillment`, `Compiled::fulfillment`, `Explanation::value`
+  and `breaks::Knot::value`. prodrome-wasm's `fulfillment` answers
+  `undefined` for `∅`, and a knot or an explanation node `null`.
+- **Every `view::Entry` has a function:** `Priced` is `Price` and
+  `Entry::priced: Option<Priced>` is `Entry::price: Price`, whose `spec` is
+  `Absent` where the todo has no spec and no checklist and whose `value` is
+  `Result<Option<f64>, LinkError>`. `Entry::spec` answers `&Term` and
+  `Entry::value` a number, `∅` or the `LinkError`.
+- On the wire an entry's `value` is a number, `"absent"`, or `null` where it
+  does not link, and its `spec` is always a print. `prodrome show` prints
+  `price absent` and the spec `Absent()`; `prodrome list` shows `∅` in the
+  price column (`—` still marks a function that does not link).
+- The Typst package reads `order` from its data, and draws `"absent"` and
+  `null` values as unpriced; the viewer marks every todo the store knows.
+- The frozen view vectors change in exactly their unpriced rows, which now
+  read `value='absent'` and `spec='Absent()'`.
+
+### Fixed
+
+- `breaks::series_knots` puts a knot a second before a jump that falls
+  exactly on the window's end, as it does for every other jump, instead of
+  drawing a ramp across it. No frozen series moves.
+
+### Unchanged
+
+- **The stored bytes.** `Absent` is a new constructor; a record whose `spec`
+  is `None` reads as `Absent` at the todo, and `flatten` is unchanged, so an
+  old store reads as before except that a `Ref` to an unpriced todo now
+  links. Every reference vector answers what it answered.
 
 ## [0.9.0] - 2026-09-27
 

@@ -242,16 +242,21 @@ the events with `at <= t` in causal order.
    fold(nodes, t, policy)`: `outcome = env_of(confirmed)[todo]`; `claim =
    env_at(events, t, everything-binds)[todo]` where it names a different
    outcome than
-   `outcome`, absent where they agree; `spec = flatten(…)[todo]` and `value`
-   the fulfillment at `t` of `link(spec, flatten(…))` (§7.2) under
-   `confirmed`'s environment, absent together — and where `spec` does not
-   link, `value` is the `LinkError` instead of a number;
+   `outcome`, absent where they agree; `spec = flatten(…)[todo]`, `Absent`
+   (§7) where the todo has none, and `value` the fulfillment at `t` of
+   `link(spec, specs)` (§7.2) under `confirmed`'s environment, where `specs`
+   is `flatten(…)` with `Absent` for every other todo the nodes mention — so
+   `value` is a number, `absent` where it reads `∅`, or, where `spec` does
+   not link, the `LinkError`;
    `content = chosen_of(confirmed, content)[todo]`, the name of the winning
    object and never the record — a consumer that wants the payload looks the
    object up, because what a record MEANS is the host's; `conflicts = conflicts_of(confirmed)[todo]`;
    `stream` is every node whose event names the todo, in causal order. A todo
-   whose events are all dated after `t` is still a row, open and unpriced:
-   `t` asks what is believed, not what exists. `confidence` says whether the
+   whose events are all dated after `t` is still a row, open and `absent`:
+   `t` asks what is believed, not what exists. A LIST of entries is in one
+   order, defined here and by no host: ascending in value, ties by id, then
+   every row with no number, `absent` or not linking, by id.
+   `confidence` says whether the
    answer is the confirmed reading whole: a claim refused, a winning content
    record the policy does not `confirm`, or both. Checked against `conformance/view/*.py` — SEEDED, not
    taken from the reference like the rest of `conformance/`: random logs
@@ -272,48 +277,69 @@ Flat(value) | Decay(start, end, end_date, lead_up, start_date?) | Curve(points)
 | Conj(terms, p) | Offset(delta, a) | Gate(gate, body) | Shift(delta, a)
 | Within(window, p, a) | Importance(w, a) | After(event, anchor, term, pending, needs?)
 | Recur(todo, anchor, term, pending) | Periodic(period, anchor, term)
-| Piecewise(head, pieces) | OffsetBy(delta, term) | Ref(todo)
+| Piecewise(head, pieces) | OffsetBy(delta, term) | Ref(todo) | Absent
 ```
 
-Semantics `⟦t⟧(now, env) ∈ [0, 1]`:
+Semantics `⟦t⟧(now, env) ∈ [0, 1] ∪ {∅}`. `∅` is NO VALUE: a note, a
+reference, a proposal nobody has priced has no claim on attention, and `∅` is
+not a number — an implementation's value type keeps it apart (the reference's
+is `Option<f64>`). It is the identity of composition: it neither raises nor
+lowers anything it is composed with.
+
+- `Absent`: `∅` at every instant. It has no field; it prints `Absent()`.
 
 - `Flat`: `value`. `Decay`: 1.0 before `start_date`; 0.98 before `end_date −
   lead_up`; linear from `start` to `end` across the window; `end` after.
   `Curve`: linear between points, clamped outside.
-- `Conj`: the power mean of the members' values with exponent `p`, each
-  clamped to at least 0.001; `p = 0` is the geometric mean; empty is 0.5.
-  `Offset`: `x(1 − |δ|) + max(0, δ)`. `Gate`: `max(1 − ⟦gate⟧, ⟦body⟧)`.
-  `Shift`: `⟦a⟧(now + δ)`. `Within`: the power mean of 65 samples over
-  `[now, now + window]`. `Importance`: `⟦a⟧^w`.
+- `Conj`: the power mean, with exponent `p`, of the values of the members
+  that have one, each clamped to at least 0.001; `p = 0` is the geometric
+  mean; `∅` when no member has a value; empty is 0.5 (`Conj([])` has no
+  member to be absent, and keeps its stored meaning).
+  `Offset`: `x(1 − |δ|) + max(0, δ)`. `Gate`: `max(1 − ⟦gate⟧, ⟦body⟧)`; an
+  absent gate is no gate, `⟦body⟧`, and an absent body is `∅`.
+  `Shift`: `⟦a⟧(now + δ)`. `Within`: the power mean of those of the 65
+  samples over `[now, now + window]` that have a value, `∅` when none does.
+  `Importance`: `⟦a⟧^w`. `Offset`, `Shift` and `Importance` take `∅` to `∅`.
 - `After`: unbound, `⟦pending⟧(now)`; `Completed(done)`, `⟦term⟧(now − (done
-  − anchor))`; `Cancelled`, 1.0. A binding counts only when `done <= now`.
+  − anchor))`; `Cancelled`, 1.0, whatever `term` reads. A binding counts only
+  when `done <= now`. `pending` may be `Absent`, as `Recur`'s may.
 - `Recur`: with `s = last_tended(env, todo, now)`, the latest tending of
   `todo` at or before `now`: none, `⟦pending⟧(now)`; else `⟦term⟧(now − (s −
   anchor))` — `After`'s slide, from the last pass (§7.3).
 - `Periodic`: `⟦term⟧(anchor + ((now − anchor) mod period))`, the remainder
   Euclidean (non-negative), in microseconds.
-- `Piecewise`: the piece in force, the last with `at <= now`, else the head.
-  `OffsetBy`: `offset(⟦term⟧, ⟦delta⟧)`.
+- `Piecewise`: the piece in force, the last with `at <= now`, else the head
+  — which may be `Absent`: priced from a date, or unpriced after one.
+  `OffsetBy`: `offset(⟦term⟧, ⟦delta⟧)`; an absent delta is no offset,
+  `⟦term⟧`, and an absent term is `∅`. So `checklist(own, n)` with an
+  absent `own` reads as the checklist alone.
 - `Ref(todo)`: no reading of its own. It is a variable, bound by `link`
   (§7.2); the semantics above are defined on CLOSED terms only.
 - **Normal form** (`mk_piecewise`): no pieces means the head; nested pieces
   are spliced; no adjacent equal pieces; instants strictly increasing.
-  `normalize` pushes `Conj`, `Offset`, `Gate`, `Importance` and `OffsetBy`
+  `Absent` is a leaf and `normalize` leaves it where it is. `normalize`
+  pushes `Conj`, `Offset`, `Gate`, `Importance` and `OffsetBy`
   under `Piecewise` over the merged partition, translates instants under
   `Shift`, and leaves `Within`, `After`, `Recur` and `Periodic` in place: a
   window, a lookup and a fold of time onto one cycle do not commute with a
   partition.
 - **Explain** is a decoration, `Cofree TermF (value, notes)`: the term's shape
-  with each node's fulfillment at the moment its parent used it, plus notes
-  (`Conj`: certifies, shares; `Within`: peak instant and share; `After`:
+  with each node's fulfillment at the moment its parent used it — `∅` where
+  the node has none — plus notes (`Conj`: certifies, and shares over the
+  members that have a value, an absent member's 0, both omitted where the
+  conjunction is `∅`; `Within`: peak instant and share over the samples that
+  have a value, omitted where none does, the subterm then explained at `now`;
+  `After`:
   bound; `Recur`: bound — `pending` or `tended` — and, when tended, the last
   tending and the hours since it; `Periodic`: the start of the cycle in
   force; `Piecewise`: since, pieces). A serialization of one is the term's own
   shape carrying those two at every node.
 - **Breakpoints**: the slope changes and jumps of the exact fragment (`Flat`,
-  `Decay`, `Curve`, `Piecewise` of exact parts, `Offset`, `Shift`, constant
-  composites). A series with a knot at each and a second knot before each jump
-  is the curve; other terms are sampled and say so.
+  `Decay`, `Curve`, `Absent`, `Piecewise` of exact parts, `Offset`, `Shift`,
+  constant composites). `Absent` is exact and has none. A series with a knot
+  at each and a second knot before each jump is the curve; a knot is `∅`
+  where the term has no value, and no line is drawn to or from one. Other
+  terms are sampled and say so.
 - A term has ONE serialization and it is §2's literal print. A JavaScript
   boundary may carry a JSON shape of the same term — the reference one is
   `prodrome-wasm`'s `json` module, lowercase kind tags and spans in hours —
@@ -341,8 +367,8 @@ consult one, because the constructors that would have been compiled away.
 **Per link.** With `After(e, anchor, term, pending, needs)` and what the
 snapshot says about `e`:
 
-- ABSENT — `compile(pending)`. `bound` answers `None` at every instant, so the
-  link is its pending branch and nothing else.
+- UNBOUND — `compile(pending)`. `bound` answers `None` at every instant, so
+  the link is its pending branch and nothing else.
 - `Completed(τ)` — `Piecewise(compile(pending), [(τ, Shift(anchor − τ,
   compile(term)))])`. Before τ the link is unbound; from τ the body slides by
   the slippage, and sliding `now` by a constant IS a `Shift`.
@@ -354,7 +380,11 @@ snapshot says about `e`:
 So each link contributes ONE graded offset δ ∈ [0, 1] — its MOOT GRADE, 1
 where the upstream was cancelled and 0 everywhere else — applied with §7's
 corrected form; δ = 0 is elided because `offset(x, 0) = x`, and so is a zero
-`Shift`. The result is `normalize`d, so a chain (A needs B needs C) is ONE
+`Shift`. An offset of `∅` is `∅`, and a cancelled upstream is moot whatever
+the body reads, so a body holding an `Absent` is written `Gate(compile(term),
+Flat(1.0))` instead: `max(1 − x, 1) = 1`, an absent gate is no gate, and the
+dropped demand stays in the tree. The result is `normalize`d, so a chain (A
+needs B needs C) is ONE
 schedule at the root over the merged partition of the links' instants, and not
 three freeze quantifiers the evaluator re-enters at every sample.
 
@@ -411,8 +441,9 @@ from is one schedule a reader can see rather than a nest to re-enter.
 ### 7.2 References and linking
 
 `Ref(todo)` is "the fulfillment of todo `todo`": a subtodo's parent, a group,
-any todo whose demand is composed from other todos'. `todo` obeys `TodoId`'s
-rule and the constructor refuses anything else. It is a LEAF of `TermF` and a
+any todo whose demand is composed from other todos', or an unpriced object
+that serves one. `todo` obeys `TodoId`'s rule and the constructor refuses
+anything else. It is a LEAF of `TermF` and a
 VARIABLE: a term holding one is OPEN, and evaluation — `fulfillment`,
 `explain`, series knots, the compiler — is defined on CLOSED terms only, those
 with no `Ref` anywhere. `Closed` is that type, so evaluating an open term is
@@ -427,10 +458,14 @@ the free monad over `TermF`, with todo ids as its variables. A rebuilt
 `Piecewise` goes back through `mk_piecewise`, so a spec that is a schedule,
 landing in a piece, is spliced like any nested schedule. A closed term is its
 own link, untouched. `specs` is each todo's OWN function; for a store it is
-`flatten`'s (§6.4), so `Ref(x)` means x's whole function — its revisions and
-its lifecycle — and a completed child reads 1.0 from its completion.
+`flatten`'s (§6.4) over every todo the store knows, and `Absent` for a known
+todo with none — a record whose `spec` is `None`, or a todo only ever
+created — so `Ref(x)` means x's whole function, its revisions and its
+lifecycle, a completed child reads 1.0 from its completion, and a reference
+to an unpriced todo links and reads `∅`, which a conjunction passes over.
 
-**Refusals are values.** `LinkError::Unknown(x)` where `specs` holds no `x`.
+**Refusals are values.** `LinkError::Unknown(x)` where `specs` holds no `x`:
+for a store, an id it has never seen.
 `LinkError::Cycle(path)` where the references loop: the substitution keeps the
 path of references it is expanding, and meeting one already on it is the
 cycle, reported with that path, its first todo repeated at the end. So `link`
@@ -438,7 +473,10 @@ is total and never loops. A cycle is refused where it is REACHED: specs that
 loop elsewhere do not stop a term that never names them from linking.
 
 No stored byte moves: `Ref` is a new constructor (§1), and a store without one
-reads exactly what it read before.
+reads exactly what it read before. Nor does `Absent`, a new constructor too: a
+record whose `spec` is `None` reads as `Absent` at the todo, so an old store
+reads as before except that a `Ref` to an unpriced todo, refused before `∅`
+existed, now links.
 
 ### 7.3 Recurrence
 
@@ -499,16 +537,19 @@ since one store holds one record shape; `Standing = Binds | Claims` and
 `Policy`, §5's standing as a parameter — one function of an event, carried by
 value like the payload and for the same reason, since one store reads under one
 policy; `Envelope = Sealed | Woven`;
-`TodoEvent`; `Term` as `Fix TermF`; `Closed` (§7.2), a term with no `Ref`,
-which is what every evaluator takes, and `LinkError = Unknown | Cycle`;
+`TodoEvent`; `Term` as `Fix TermF`, `Absent` among its leaves; a value as
+`[0, 1] ∪ {∅}`, `∅` never a number (`Option`); `Closed` (§7.2), a term with
+no `Ref`, which is what every evaluator takes, and `LinkError = Unknown |
+Cycle`;
 `Env`, the environment, outcomes beside the grow-only tendings (§6.1, §7.3);
 `Explanation = Cofree TermF Annotation`; `Compiled` (§7.1), a term with every
 `After` and `Recur` resolved beside the `Link`s it resolved, whose readers
 take no environment because a compiled term cannot consult one, and
 `ChainError`, whose
 `Cycle` carries the path; `Frontier`, a non-empty ordered set
-of writes; `Folded`; `Breaks`; `Entry` (§6.7), whose price and function are
-absent together and whose `Confidence` is a sum with no "provisional for no
+of writes; `Folded`; `Breaks`; `Entry` (§6.7), whose function is always
+there (`Absent` where the todo has none), whose value is a number, `∅` or a
+`LinkError`, and whose `Confidence` is a sum with no "provisional for no
 reason" inhabitant. Smart constructors validate; records are data; engine
 code never calls a raw constructor.
 
@@ -532,7 +573,8 @@ Against `conformance/*.py` and on generated inputs:
 6. Registers equal the folds on any DAG; conflicts are exactly the registers
    both branches wrote; a merge settles nothing; a descending write settles.
 7. Interpolation between series knots equals evaluation on the exact
-   fragment.
+   fragment: a line between two numbers, `∅` between two `∅`s, and a pair
+   with one absent end only ever the second before a jump.
 8. Fulfillment within 1e-9 of the reference on every vector; hashes, prints,
    linearisations, frontiers and `verify` findings exactly.
 9. **The view is the composition** (§6.7): on any DAG and at any moment,
@@ -591,7 +633,8 @@ substitution and nothing more.
     constructor (law 1). On `core/tests/fpl_laws.rs`'s generators, over
     acyclic specs; and against `conformance/link.py`, written BY HAND from
     these laws — exact linked prints, readings to 1e-9, an unknown todo and a
-    cycle refused.
+    cycle refused. Law 18 says what a reference to an unpriced todo links
+    to.
 
 Laws 15 and 16 are §7.3's: care is a set, and recurrence reads it as of now.
 
@@ -637,6 +680,36 @@ files.
     DAGs, pure and on disk, which also check that the tips cover the store and
     none rests on another; `core/tests/fold_laws.rs`'s two-writer property;
     and `core/tests/dag.rs`.
+
+Law 18 is §7's empty term: `∅` is an identity, and nothing mistakes it for a
+number.
+
+18. **`Absent` is the identity of composition** (§7). (a) `Conj(ts ++
+    [Absent], p) = Conj(ts, p)` whenever some member of `ts` has a value, bit
+    for bit, and `∅` with it when none does; `Conj([])` is 0.5 and
+    `Conj([Absent])` is `∅`. An absent gate or offset is none; an absent
+    body or term, and `Offset`, `Shift`, `Importance`, `Within` or
+    `Periodic` of `Absent`, is `∅`. (b) A term with no `Absent` evaluates
+    exactly as it did before `Absent` existed: a value in [0, 1] at every
+    instant, and every vector of laws 8, 13, 14 and 16 unmoved. (c) Against
+    a store, `link(Ref(x))` is `Absent` where `x` is known and has no
+    function, `x`'s function linked where it has one, and `Unknown(x)` where
+    no event names `x`; every entry's value is its function so linked and
+    read.
+    (d) `explain` and the series carry `∅` where a node has no value — the
+    root reads what `fulfillment` reads, every `Absent` node is `∅`, an
+    absent member's share is 0 — and `Absent` is exact, with no breakpoints,
+    so law 7 holds over it. Laws 5, 13 and 14 are checked over generators
+    that draw `Absent` among their leaves too. On `core/tests/fpl_laws.rs`'s
+    and
+    `core/tests/fold_laws.rs`'s generators; and against
+    `conformance/absent/*.py` — `fpl.py`, `series.py` and `view.py` in the
+    shapes of `conformance/fpl.py`, `conformance/series.py` and
+    `conformance/view/*.py` — SEEDED like the view vectors (§6.7): drawn from
+    those same generators under a fixed seed, and regenerated only by hand,
+    by `core/examples/generate_absent_vectors.rs`. The frozen view vectors
+    (law 9) changed exactly where this law says they must: their unpriced
+    rows now read `value='absent'` and `spec='Absent()'`.
 
 ## 10. Non-goals
 
