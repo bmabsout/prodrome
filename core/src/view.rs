@@ -236,7 +236,12 @@ pub fn entries<P: Payload>(
         for (todo, registers) in confirmed {
             let stream = &prodrome[todo];
             let outcome = registers.outcomes();
-            let claimed = Registers::read(stream, Some(now), &Everything).outcomes();
+            // The readings differ only where the policy refuses a write.
+            let claimed = if stream.iter().all(|s| policy.standing(&s.event).binds()) {
+                outcome.clone()
+            } else {
+                Registers::read(stream, Some(now), &Everything).outcomes()
+            };
             let disputed = kinds(&claimed) != kinds(&outcome);
             let provisional_content = registers
                 .content
