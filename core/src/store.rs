@@ -229,6 +229,9 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// FALLIBLE, because it reads every object it has not already verified: a
     /// store holding a file that does not verify has no honest answer to "what
     /// are its heads", since the file it cannot read might name any of them.
+    /// The refusal does not guess, and it does not leave the store stuck
+    /// either: a file failing its hash is named, with the
+    /// [`EventStore::quarantine`] that sets it aside.
     /// Empty for an empty store. The parents come from the handle's index, so
     /// a steady store costs a directory listing.
     pub fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
@@ -593,6 +596,13 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// hashes bytes and not semantics, so that a future printer change cannot
     /// false-alarm the whole store as tampered.
     pub fn load(&self, digest: &Hash) -> Result<Envelope<P>, ProdromeError> {
+        let object = decode(digest, &self.raw(digest)?)?;
+        self.remember(digest, &object);
+        Ok(object)
+    }
+
+    /// One object file's bytes, unchecked.
+    fn raw(&self, digest: &Hash) -> Result<Vec<u8>, ProdromeError> {
         let path = self.object_path(digest);
         if !path.exists() {
             return Err(ProdromeError::Store(format!(
@@ -600,10 +610,55 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
                 digest.as_str()
             )));
         }
-        let raw = fs::read(&path).map_err(|e| Self::io(&path, e))?;
-        let object = decode(digest, &raw)?;
-        self.remember(digest, &object);
-        Ok(object)
+        fs::read(&path).map_err(|e| Self::io(&path, e))
+    }
+
+    fn quarantine_dir(&self) -> PathBuf {
+        self.root.join("quarantine")
+    }
+
+    fn quarantined_path(&self, digest: &Hash) -> PathBuf {
+        self.quarantine_dir()
+            .join(format!("{}.py", digest.as_str()))
+    }
+
+    /// SET ASIDE AN OBJECT FILE THAT FAILS ITS HASH: move it from `objects/`
+    /// to `quarantine/`, so the store answers again. Answers where it went.
+    ///
+    /// A file whose bytes are not the hash of its name has no honest reading,
+    /// and [`EventStore::tips`] refuses to guess one — so one damaged file
+    /// would stop every write. Moving it out makes the store what it holds
+    /// without it: the tips derive, an append writes, and `verify` still says
+    /// what is missing, as the receipt for the quarantined file. Bringing the
+    /// object back from a replica (an `adopt`, or a copy of its file) is the
+    /// repair; the move only stops the damage from spreading to every reader.
+    ///
+    /// ⚠️ What that answer is, stated: the tips of what the store HOLDS. The
+    /// set-aside object's parents are named by nothing readable, so they may
+    /// be tips again, and the next append weaves them in beside the rest — a
+    /// parent that is also an ancestor, which reads the same once the object
+    /// is back.
+    ///
+    /// ONLY A FILE THAT FAILS ITS HASH. One that hashes to its name is that
+    /// object, whatever it holds — one this reader cannot parse may be a newer
+    /// writer's — and setting it aside would be hiding it, so that is refused.
+    /// Moved under the store's lock, and both directories synced after.
+    pub fn quarantine(&self, digest: &Hash) -> Result<PathBuf, ProdromeError> {
+        let _locked = self.lock()?;
+        let path = self.object_path(digest);
+        if rehash(digest, &self.raw(digest)?).is_ok() {
+            return Err(ProdromeError::Store(format!(
+                "object {} hashes to its name: there is nothing to quarantine",
+                digest.as_str()
+            )));
+        }
+        let aside = self.quarantine_dir();
+        fs::create_dir_all(&aside).map_err(|e| Self::io(&aside, e))?;
+        let to = self.quarantined_path(digest);
+        fs::rename(&path, &to).map_err(|e| Self::io(&path, e))?;
+        sync_dir(&aside)?;
+        sync_dir(&self.objects_dir())?;
+        Ok(to)
     }
 
     /// Everything `digest` transitively rests on — STRICTLY: an object is not
@@ -788,8 +843,37 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             )
         }));
         problems.extend(self.leftovers());
+        problems.extend(self.quarantined());
         problems.extend(self.graph_problems(&objects));
         problems
+    }
+
+    /// THE RECEIPT FOR EVERY QUARANTINED FILE. [`EventStore::quarantine`]
+    /// made the store answer; it did not make it whole. Until the object is
+    /// back from a replica the store lacks it, and whatever rests on it rests
+    /// on nothing here — which this one finding says, in place of a "chain
+    /// broke" for each object naming it.
+    fn quarantined(&self) -> Vec<String> {
+        let dir = self.quarantine_dir();
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => return vec![Self::io(&dir, error).to_string()],
+        };
+        let mut files: Vec<String> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        files
+            .into_iter()
+            .map(|file| {
+                format!(
+                    "quarantine/{file} failed its hash and was set aside (SPEC §3): restore the \
+                     object from a replica, then delete this file"
+                )
+            })
+            .collect()
     }
 
     /// `HEAD` and `refs/`, which a store written before 0.9 carries and
@@ -841,8 +925,9 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
 
     /// The graph the READABLE objects make: every parent one of them names
     /// that the store cannot give back (absent, or failing its own check —
-    /// which `object_problems` has already said once about the file itself),
-    /// then, only if there is none, a cycle, and the dating rule.
+    /// which `object_problems` has already said once about the file itself)
+    /// and that is not in quarantine, whose receipt already says it; then,
+    /// only if no parent is missing at all, a cycle, and the dating rule.
     fn graph_problems(&self, names: &[Hash]) -> Vec<String> {
         let objects: BTreeMap<Hash, Envelope<P>> = names
             .iter()
@@ -852,21 +937,24 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             })
             .collect();
         let named: BTreeSet<Hash> = objects.values().flat_map(parents_of).collect();
-        let breaks: Vec<String> = named
+        let missing: Vec<&Hash> = named
             .iter()
             .filter(|parent| !objects.contains_key(*parent))
+            .collect();
+        if missing.is_empty() {
+            return match linearise(&objects) {
+                Ok(order) => dating_problems(&order, &objects, &self.policy),
+                Err(error) => vec![error.to_string()],
+            };
+        }
+        missing
+            .into_iter()
+            .filter(|parent| !self.quarantined_path(parent).exists())
             .filter_map(|parent| {
                 let error = self.load(parent).err()?;
                 Some(format!("chain broke at {}: {error}", parent.as_str()))
             })
-            .collect();
-        if !breaks.is_empty() {
-            return breaks;
-        }
-        match linearise(&objects) {
-            Ok(order) => dating_problems(&order, &objects, &self.policy),
-            Err(error) => vec![error.to_string()],
-        }
+            .collect()
     }
 }
 
@@ -931,17 +1019,31 @@ fn dating_problems<P: Payload>(
     problems
 }
 
+/// A stored object's bytes, reverified and parsed.
 fn decode<P: Payload>(digest: &Hash, raw: &[u8]) -> Result<Envelope<P>, ProdromeError> {
-    let recomputed = hex(&Sha256::digest(raw));
-    if recomputed != digest.as_str() {
-        return Err(ProdromeError::Store(format!(
-            "object {} hashes to {recomputed} — tampered or corrupt",
-            digest.as_str()
-        )));
-    }
+    rehash(digest, raw)?;
     let text = std::str::from_utf8(raw)
         .map_err(|_| ProdromeError::Store(format!("object {} is not UTF-8", digest.as_str())))?;
     crate::event::parse_envelope(text)
+}
+
+/// Do these bytes hash to the name they are stored under?
+///
+/// The refusal NAMES THE WAY OUT. Every read that meets such a file refuses
+/// rather than guess what it held — [`EventStore::tips`] among them, and so
+/// every append — which leaves a store with one damaged file stuck until
+/// somebody sets that file aside; the message says how.
+fn rehash(digest: &Hash, raw: &[u8]) -> Result<(), ProdromeError> {
+    let recomputed = hex(&Sha256::digest(raw));
+    if recomputed == digest.as_str() {
+        Ok(())
+    } else {
+        Err(ProdromeError::Store(format!(
+            "object {name} hashes to {recomputed} — tampered or corrupt: `prodrome quarantine \
+             {name}` (`EventStore::quarantine`) sets it aside so the store answers again",
+            name = digest.as_str()
+        )))
+    }
 }
 
 /// A temp file's name: sixteen random hex digits and `.tmp`, which is never
@@ -1336,7 +1438,9 @@ mod tests {
                     digest.as_str()
                 ),
                 format!(
-                    "chain broke at {digest}: object {digest} hashes to {} — tampered or corrupt",
+                    "chain broke at {digest}: object {digest} hashes to {} — tampered or \
+                     corrupt: `prodrome quarantine {digest}` (`EventStore::quarantine`) sets it \
+                     aside so the store answers again",
                     hex(&Sha256::digest(fs::read(&path).expect("reads"))),
                     digest = digest.as_str()
                 ),
@@ -1607,6 +1711,94 @@ mod tests {
             prop_assert_eq!(tips.expect("the tips derive"), [tip].into_iter().collect::<BTreeSet<_>>());
             prop_assert_eq!(read.expect("the store reads"), 2);
         }
+    }
+
+    /// ONE BAD OBJECT DOES NOT STOP EVERYTHING. A chain of three whose middle
+    /// file is damaged: a fresh handle's `tips` refuses, naming the object and
+    /// the command that sets it aside, and so does every append. Once it is
+    /// quarantined the store answers again — the tips derive, the damaged
+    /// object's parent among them, and an append weaves them — and after that
+    /// append as before it, `verify` is clean but for the receipt,
+    /// which stands in for the "chain broke" the tip resting on it would be.
+    /// A healthy object is not quarantined: that would be hiding it.
+    #[test]
+    fn after_quarantine_the_store_answers_and_verify_holds_the_receipt() {
+        let store = Store::new(scratch("quarantine"), roster());
+        let first = store
+            .append(
+                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let middle = store
+            .append(
+                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let last = store
+            .append(
+                mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("appends");
+        let path = store.object_path(&middle);
+        let text = fs::read_to_string(&path).expect("reads");
+        fs::write(&path, text.replace("alpha", "omega")).expect("damages");
+
+        let fresh = Store::new(store.root(), roster());
+        let refusal = fresh.tips().expect_err("no honest tips").to_string();
+        assert!(refusal.contains(middle.as_str()), "{refusal}");
+        assert!(
+            refusal.contains(&format!("`prodrome quarantine {}`", middle.as_str())),
+            "{refusal}"
+        );
+        assert!(fresh
+            .append(
+                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
+                None
+            )
+            .is_err());
+        assert!(fresh.quarantine(&first).is_err(), "a healthy object stays");
+
+        let aside = fresh.quarantine(&middle).expect("sets it aside");
+        assert_eq!(
+            aside,
+            store
+                .root()
+                .join("quarantine")
+                .join(format!("{}.py", middle.as_str()))
+        );
+        assert!(!path.exists());
+        // Nothing the store can read names `first` any more, so it is a tip
+        // beside `last`: the tips of what the store holds, exactly.
+        assert_eq!(
+            tips(&fresh),
+            [first.clone(), last.clone()].into_iter().collect()
+        );
+        let receipt = format!(
+            "quarantine/{}.py failed its hash and was set aside (SPEC §3): restore the object \
+             from a replica, then delete this file",
+            middle.as_str()
+        );
+        assert_eq!(fresh.verify(), vec![receipt.clone()]);
+        let next = fresh
+            .append(
+                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
+                None,
+            )
+            .expect("the store writes again");
+        assert_eq!(tips(&fresh), [next.clone()].into_iter().collect());
+        let mut both = vec![first, last];
+        both.sort();
+        assert_eq!(parents_of(&fresh.load(&next).expect("loads")), both);
+        assert_eq!(fresh.verify(), vec![receipt]);
+
+        // The repair: the object back from a replica, the receipt deleted.
+        fs::write(&path, text).expect("restores");
+        fs::remove_dir_all(store.root().join("quarantine")).expect("deletes the receipt");
+        assert_eq!(fresh.verify(), Vec::<String>::new());
+        let _ = fs::remove_dir_all(store.root());
     }
 
     #[test]
