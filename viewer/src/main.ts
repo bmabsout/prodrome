@@ -91,11 +91,20 @@ function percent(value: Entry["value"]): string {
   return `${Math.round(value * 100)}%`;
 }
 
-/** Before Typst has arrived, or if it never does: the list as plain HTML, in the core's order. */
+/**
+ * Before Typst has arrived, or if it never does: the list as plain HTML, the
+ * rows `prodrome list` prints (open, and created by now) in the core's order.
+ */
 function plain(view: View): HTMLElement {
   const list = document.createElement("ol");
   const rows = new Map(view.entries.map((e) => [e.todo, e]));
-  const open = view.order.map((todo) => rows.get(todo) as Entry).filter((e) => e.state === "open");
+  const existed = (todo: string) => {
+    const first = view.created[todo];
+    return first !== undefined && first.at <= view.at;
+  };
+  const open = view.order
+    .map((todo) => rows.get(todo) as Entry)
+    .filter((e) => e.state === "open" && existed(e.todo));
   for (const entry of open) {
     const li = document.createElement("li");
     const a = Object.assign(document.createElement("a"), { href: `#/todo/${entry.todo}` });
