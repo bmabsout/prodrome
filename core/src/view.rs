@@ -37,7 +37,8 @@
 //! - no spec and no checklist means NO FUNCTION (§6.4), and the row's
 //!   function is then `Absent`, whose value is `∅` — `None` in
 //!   [`Price::value`], never a number. Absence is not zero: a todo the chain
-//!   has no price for is not a todo worth nothing.
+//!   has no price for is not a todo worth nothing, and a list puts it after
+//!   every priced one ([`list_order`]).
 //! - no binding means OPEN, which is an absent `outcome` and not a third
 //!   constructor beside `Completed` and `Cancelled`.
 //! - no content record means the chain holds events about this todo and no
@@ -57,6 +58,7 @@
 //! todo, and `t` is the moment BELIEF is asked about, not a filter on what
 //! exists.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::event::{Hash, TodoEvent, TodoId};
@@ -219,6 +221,20 @@ impl Entry {
             claimed => lowered(claimed),
         }
     }
+}
+
+/// §6.7's LIST ORDER, stated once so no host decides it: most urgent first —
+/// ascending in value, ties by id — then every row with no number, `absent`
+/// or not linking, by id.
+pub fn list_order(a: &Entry, b: &Entry) -> Ordering {
+    let number = |entry: &Entry| entry.value().ok().flatten();
+    match (number(a), number(b)) {
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+    .then_with(|| a.todo.cmp(&b.todo))
 }
 
 /// `state`'s and `claimed`'s shared spelling: `"open"`, `"completed"`,
@@ -592,6 +608,27 @@ mod tests {
             group.linked().map(|closed| fpl::print_term(closed.term())),
             Some("Conj(terms=(Flat(value=0.25), Absent(), Absent()), p=-1.0)".to_owned())
         );
+    }
+
+    #[test]
+    fn a_list_puts_every_row_with_no_number_after_the_priced_ones_by_id() {
+        let nodes = chain(vec![
+            authored("delta", 1, "bassel", Some(mk_flat(0.75).expect("valid"))),
+            authored("gamma", 1, "bassel", None),
+            authored("beta", 1, "bassel", Some(mk_flat(0.25).expect("valid"))),
+            authored(
+                "alpha",
+                1,
+                "bassel",
+                Some(fpl::mk_ref("ghost".to_owned()).expect("valid")),
+            ),
+            authored("epsilon", 1, "bassel", Some(mk_flat(0.25).expect("valid"))),
+        ]);
+        let mut rows = entries(&nodes, at(9), &roster()).expect("folds");
+        rows.sort_by(list_order);
+        let order: Vec<&str> = rows.iter().map(|row| row.todo.as_str()).collect();
+        // Ascending in value, ties by id; then `absent` and the unlinked, by id.
+        assert_eq!(order, ["beta", "epsilon", "delta", "alpha", "gamma"]);
     }
 
     #[test]

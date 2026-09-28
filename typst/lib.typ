@@ -12,6 +12,7 @@
 //
 //   (at: "2026-09-27T12:00:00",   the instant everything was read at
 //    entries: (..),               prodrome-wasm `entries(..).entries`
+//    order: (..),                 prodrome-wasm `entries(..).order`
 //    records: (..),               prodrome-wasm `entries(..).records`
 //    marks: ("<todo>": (ring: (72 values), bar: (values: (30), now: 10))),
 //    explain: ("<todo>": tree),   prodrome-wasm `explain`, optional
@@ -158,11 +159,10 @@
 
 #let _marks(data, todo) = data.at("marks", default: (:)).at(todo, default: none)
 
-/// Most urgent first: ascending in value, the unpriced last, ties by id — the
-/// order `prodrome list` prints.
-#let by-fulfillment(entries) = entries
-  .sorted(key: e => e.todo)
-  .sorted(key: e => if e.value == none { 2.0 } else { e.value })
+/// The rows in the core's list order (SPEC §6.7), which `prodrome list`
+/// prints too: most urgent first, then every row with no number, by id. The
+/// order is the core's, so this package never sorts by value itself.
+#let listed(data) = data.order.map(todo => data.entries.find(e => e.todo == todo))
 
 #let _ring-of(data, todo, size: 2.4em) = {
   let marks = _marks(data, todo)
@@ -187,7 +187,7 @@
   href: todo => "#/todo/" + todo,
   markup: false,
 ) = {
-  let open = by-fulfillment(data.entries.filter(e => e.state == "open" and _existed(data, e)))
+  let open = listed(data).filter(e => e.state == "open" and _existed(data, e))
   let closed = data.entries.filter(e => e.state != "open").sorted(key: e => e.todo)
 
   heading(level: 1, title)

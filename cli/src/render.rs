@@ -6,7 +6,7 @@
 use prodrome::event::TodoId;
 use prodrome::fpl::print_term;
 use prodrome::registers::Kind;
-use prodrome::view::{Confidence, Entry, Provisional};
+use prodrome::view::{list_order, Confidence, Entry, Provisional};
 
 use crate::price::iso;
 use crate::Reading;
@@ -57,7 +57,8 @@ fn under(untrusted: &[String]) -> String {
     }
 }
 
-/// The open todos at the reading's instant, most urgent first.
+/// The open todos at the reading's instant, in §6.7's list order: most
+/// urgent first, and the rows with no number after them.
 ///
 /// OPEN AND ALREADY CREATED. `view::entries` answers for every todo the DAG
 /// has ever mentioned, the future's included, because that is what a §6.7 row
@@ -69,13 +70,7 @@ pub fn list(reading: &Reading) -> String {
         .iter()
         .filter(|entry| entry.outcome.is_none() && reading.existed(&entry.todo))
         .collect();
-    let number = |entry: &Entry| entry.value().ok().flatten();
-    rows.sort_by(|a, b| match (number(a), number(b)) {
-        (Some(x), Some(y)) => x.total_cmp(&y).then_with(|| a.todo.cmp(&b.todo)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.todo.cmp(&b.todo),
-    });
+    rows.sort_by(|a, b| list_order(a, b));
 
     let mut out = vec![format!(
         "{} open at {} — {}",
