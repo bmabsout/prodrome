@@ -95,7 +95,6 @@
   _instant(iso).display("[month repr:short] [day padding:none], [year], [hour]:[minute]")
 }
 
-#let _looks-like-instant(value) = type(value) == str and value.match(regex("^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}.*)?$")) != none
 
 // --- target-agnostic pieces --------------------------------------------------
 
@@ -308,39 +307,115 @@
 
 // --- one item ----------------------------------------------------------------
 
-#let _children = ("terms", "term", "gate", "body", "delta", "pending")
+/// An instant in a sentence, where the year goes without saying: "Sep 29,
+/// 17:00".
+#let _short(iso) = _instant(iso).display("[month repr:short] [day padding:none], [hour]:[minute]")
 
-#let _note(value) = if _looks-like-instant(value) { when(value) } else if type(value) == str { value } else {
-  repr(value)
+/// A span of hours in words: whole days as days, two days or more as about so
+/// many days, anything shorter as hours.
+#let _span(hours) = {
+  let h = calc.abs(hours)
+  let unit(n, one) = str(n) + " " + one + if n == 1 { "" } else { "s" }
+  if h > 0 and calc.rem(h, 24) == 0 { unit(int(h / 24), "day") } else if h >= 48 {
+    "about " + unit(int(calc.round(h / 24)), "day")
+  } else if calc.fract(h) == 0 { unit(int(h), "hour") } else {
+    str(calc.round(h, digits: 1)) + " hours"
+  }
 }
 
-/// An explanation tree (prodrome-wasm `explain`), each node read the way it
-/// prices: its value and its kind ("70%, flat"), its notes, and its parts
-/// beneath it. A decoration of the term, never a second reading of it. A
-/// node's `null` is always `∅`: every node of a term that explains at all is
-/// linked.
-#let explanation(node) = {
-  let notes = node
-    .pairs()
-    .filter(((key, _)) => key not in ("kind", "value") and key not in _children)
-  [#price(node.value), #node.kind]
-  if notes.len() > 0 {
-    [ — ]
-    notes.map(((key, value)) => [#emph(key): #_note(value)]).join([, ])
-  }
-  let parts = ()
-  for key in _children {
-    if key in node {
-      let child = node.at(key)
-      if type(child) == array {
-        parts += child.map(c => (key, c))
-      } else {
-        parts.push((key, child))
-      }
-    }
-  }
+/// How a power mean with exponent `p` weighs its members.
+#let _mean(p) = if p == 1 { "the average" } else if p == 0 { "the geometric mean" } else if p < 1 {
+  "a mean held down by the weakest"
+} else { "a mean lifted by the strongest" }
+
+/// What a node of the explanation says, in words, after its value: every kind
+/// of term (SPEC §7) and the notes `explain` gives it. No field's name is
+/// shown.
+#let _says(node) = {
+  let kind = node.kind
+  if kind == "flat" [flat] else if kind == "decay" {
+    [falling from #percent(node.start) to #percent(node.end) by #_short(node.endDate), over #_span(node.leadUpHours)]
+    if "startDate" in node [; 100% before #_short(node.startDate)]
+  } else if kind == "curve" {
+    let (first, last) = (node.points.first(), node.points.last())
+    if node.points.len() == 1 [a curve held at #percent(first.value)] else [
+      along a curve from #percent(first.value) on #_short(first.at) to #percent(last.value) on #_short(last.at)#if node.points.len() == 3 [, by way of one other date] else if node.points.len() > 3 [, by way of #(node.points.len() - 2) other dates]
+    ]
+  } else if kind == "conj" {
+    let n = node.terms.len()
+    if n == 0 [no parts, so neither urgent nor settled] else [
+      #_mean(node.p) of #n #if n == 1 [part] else [parts]#if "certifies" in node [, so no part is below #percent(node.certifies)]
+    ]
+  } else if kind == "offset" {
+    if node.delta > 0 [pulled #percent(node.delta) of the way up to 100%] else if node.delta < 0 [
+      pulled #percent(-node.delta) of the way down to 0%
+    ] else [its part, unchanged]
+  } else if kind == "gate" [its own price, counted only as far as its gate is met] else if kind == "shift" {
+    if node.deltaHours > 0 [as its part will read in #_span(node.deltaHours)] else if node.deltaHours < 0 [
+      as its part read #_span(node.deltaHours) earlier
+    ] else [its part, unshifted]
+  } else if kind == "within" [
+    #_mean(node.p) over the next #_span(node.windowHours)#if "peakAt" in node [, weighed most at #_short(node.peakAt)]
+  ] else if kind == "importance" {
+    if node.w > 1 [its part made more urgent, to the power #node.w] else if node.w < 1 [
+      its part made less urgent, to the power #node.w
+    ] else [its part, at its own weight]
+  } else if kind == "after" {
+    if node.bound == "pending" [
+      waiting on #raw(node.event)#if "needsHours" in node [, which needs #_span(node.needsHours) once it is done]
+    ] else if node.bound == "completed" [since #raw(node.event) was done, planned for #_short(node.anchor)] else [
+      #raw(node.event) was cancelled, so this no longer waits on it
+    ]
+  } else if kind == "recur" {
+    if node.bound == "pending" [a recurring #raw(node.todo), not done yet] else [
+      a recurring #raw(node.todo), last done #_short(node.tended), #_span(node.agoHours) ago
+    ]
+  } else if kind == "periodic" [
+    repeating every #_span(node.periodHours)\; this cycle began #_short(node.cycleStart)
+  ] else if kind == "piecewise" {
+    let prices = node.pieces + 1
+    if node.since == "" [the first of #prices dated prices] else [
+      the price set on #_short(node.since), #if prices == 2 [one of two dated prices] else [one of #prices dated prices]
+    ]
+  } else if kind == "offsetBy" [its own price, offset by another] else if kind == "ref" [
+    as #raw(node.todo) is priced
+  ] else if kind == "absent" [no claim on attention]
+}
+
+/// A node's parts, each with what it is to its parent.
+#let _parts(node) = {
+  let kind = node.kind
+  if "terms" in node {
+    let shares = node.at("shares", default: none)
+    node.terms.enumerate().map(((i, part)) => (
+      [part #(i + 1)#if shares != none [, #percent(shares.at(i)) of the weight]:],
+      part,
+    ))
+  } else if kind == "gate" {
+    (([gated on:], node.gate), ([its own:], node.body))
+  } else if kind == "offsetBy" {
+    (([its own:], node.term), ([offset by:], node.delta))
+  } else if kind == "after" {
+    (([once done:], node.term), ([until then:], node.pending))
+  } else if kind == "recur" {
+    (([after each pass:], node.term), ([until the first:], node.pending))
+  } else if kind == "piecewise" {
+    (([in force:], node.term),)
+  } else if "term" in node {
+    (([its part:], node.term),)
+  } else { () }
+}
+
+/// An explanation tree (prodrome-wasm `explain`) in words: each node's value
+/// and what it says ("42% now, falling from 55% to 5% by Sep 29, 17:00, over
+/// 3 days"), its parts beneath it. A decoration of the term, never a second
+/// reading of it. A node's `null` is always `∅`. `now` marks the root: a part
+/// is read at the instant its parent used it, which need not be now.
+#let explanation(node, now: true) = {
+  [#price(node.value)#if now [ now], #_says(node)]
+  let parts = _parts(node)
   if parts.len() > 0 {
-    list(..parts.map(((key, child)) => [#emph(key) #explanation(child)]))
+    list(..parts.map(((label, part)) => [#emph(label) #explanation(part, now: false)]))
   }
 }
 

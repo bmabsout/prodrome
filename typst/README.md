@@ -78,7 +78,8 @@ store by the viewer's own `viewer/src/view.ts`.
   in the core's list order (ascending value, then every item with no number,
   ties by id: the order `prodrome list` prints), then the closed.
 - `item(data, todo, markup:, objects:, back:)`: body, price and state, the
-  thirty days, detail, the price as the explanation reads it ("70%, flat"),
+  thirty days, detail, the price in words ("42% now, falling from 55% to 5%
+  by Sep 29, 17:00, over 3 days") with the explanation's parts beneath it,
   and the history, each event dated and linked to its object file.
 - `pie(value, size:)`: the value's share of a disc from twelve o'clock
   clockwise, in `colour(value)` on a faint track, with a thin outline.
@@ -88,7 +89,9 @@ store by the viewer's own `viewer/src/view.ts`.
   either side, and now.
 - `fulfillment`, `colour`, `state-of`, `percent`, `price` (a pie and the
   percentage, or "unpriced"), `when` (an instant as a reader says it),
-  `explanation`, `listed`, and the colours `unpriced` and `ink`.
+  `explanation` (a tree of prices in words, every kind of term said with
+  percentages, spans and dates and never a field's name), `listed`, and the
+  colours `unpriced` and `ink`.
 
 `markup: true` reads an item's body and detail as Typst markup; the default
 shows them verbatim, because nothing promises a store's text is Typst. In HTML
