@@ -21,6 +21,10 @@ change under this file's rule: no stored object changes, a term without
 `Absent` reads exactly what it read, and the API breaks where a value was an
 `f64`.
 
+And the object store is durable and its fsck honest, which are PATCH fixes
+under this file's rule: no stored byte changes, and a healthy store reads and
+verifies exactly as it did.
+
 ### Added
 
 - **`Absent`, a new leaf of `TermF` (SPEC §7):** `∅` at every instant,
@@ -131,6 +135,12 @@ change under this file's rule: no stored object changes, a term without
 
 ### Fixed
 
+- **`verify` sees everything in `objects/` (SPEC §3).** It looked at `.py`
+  files only, so a temp an interrupted write left, or any other stray, was
+  never reported. Every entry that is not `<name>.py` for a well-formed name
+  is now a finding, by name; the reads pass over such entries rather than
+  refusing a `.py` whose stem is not a name. Law: `verify_names_every_stray`
+  in `core/src/store.rs`.
 - `breaks::series_knots` puts a knot a second before a jump that falls
   exactly on the window's end, as it does for every other jump, instead of
   drawing a ramp across it. No frozen series moves.

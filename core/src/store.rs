@@ -169,6 +169,14 @@ pub struct EventStore<P, Pol = Untrusted> {
     parents: Arc<Mutex<BTreeMap<Hash, Vec<Hash>>>>,
 }
 
+/// `objects/`, read once: the entries named as objects, and every other
+/// entry's file name.
+#[derive(Debug, Default)]
+struct Listing {
+    objects: Vec<Hash>,
+    garbage: Vec<String>,
+}
+
 impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     pub fn new(root: impl Into<PathBuf>, policy: Pol) -> EventStore<P, Pol> {
         EventStore {
@@ -238,32 +246,38 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     }
 
     /// The name of every object file, in no particular order — nothing that
-    /// reads it depends on one (SPEC §9.17). A `.py` file whose stem is not an
-    /// object name is refused: the store is a set of NAMED objects, and a file
-    /// that is not one is a store somebody else has written in. A store with
-    /// no `objects/` yet holds nothing.
+    /// reads it depends on one (SPEC §9.17). A store with no `objects/` yet
+    /// holds nothing.
     fn names(&self) -> Result<Vec<Hash>, ProdromeError> {
+        Ok(self.listing()?.objects)
+    }
+
+    /// What `objects/` holds, SPLIT BY NAME: an entry named `<name>.py` for a
+    /// well-formed object name is an object, and every other entry is not one
+    /// — a temp an interrupted write left, or a stray somebody put there.
+    ///
+    /// The reads take the objects and pass over the rest, so a crash that left
+    /// a temp stops no read and no write; `verify` reports the rest, every
+    /// entry of it, so nothing in the directory goes unsaid.
+    fn listing(&self) -> Result<Listing, ProdromeError> {
         let dir = self.objects_dir();
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Listing::default())
+            }
             Err(error) => return Err(Self::io(&dir, error)),
         };
-        let mut names: Vec<Hash> = Vec::new();
+        let mut listing = Listing::default();
         for entry in entries {
             let file = entry.map_err(|e| Self::io(&dir, e))?.file_name();
-            let file = file.to_string_lossy();
-            let Some(stem) = file.strip_suffix(".py") else {
-                continue;
-            };
-            names.push(Hash::new(stem).map_err(|_| {
-                ProdromeError::Store(format!(
-                    "{} is not named by an object hash",
-                    dir.join(&*file).display()
-                ))
-            })?);
+            let file = file.to_string_lossy().into_owned();
+            match file.strip_suffix(".py").map(Hash::new) {
+                Some(Ok(name)) => listing.objects.push(name),
+                _ => listing.garbage.push(file),
+            }
         }
-        Ok(names)
+        Ok(listing)
     }
 
     /// EVERY OBJECT THE STORE HOLDS, by name, each REVERIFIED — the one read
@@ -710,19 +724,35 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// and cannot parse — the constructor is the boundary); every parent named
     /// exists; the objects go into one order without a cycle; no event the
     /// policy does not CONFIRM is dated behind anything it rests on; and no
-    /// `HEAD` or `refs/` is left over from before the tips were derived.
+    /// `HEAD` or `refs/` is left over from before the tips were derived; and
+    /// every entry of `objects/` is an object — anything else there, a temp an
+    /// interrupted write left or a stray, is reported by name as garbage.
     ///
     /// NO UNREACHABLE OBJECT AND NO STALE HEAD, and not because they are
     /// forgiven: they cannot be stated any more. Every object is a tip or
     /// beneath one, and a tip is by definition something nothing rests on.
     pub fn verify(&self) -> Vec<String> {
-        let files = self.object_files();
+        let Listing {
+            mut objects,
+            mut garbage,
+        } = match self.listing() {
+            Ok(listing) => listing,
+            Err(error) => return vec![error.to_string()],
+        };
+        objects.sort();
+        garbage.sort();
         let mut problems: Vec<String> = Vec::new();
-        for path in &files {
-            problems.extend(self.object_problems(path));
+        for name in &objects {
+            problems.extend(self.object_problems(name));
         }
+        problems.extend(garbage.iter().map(|file| {
+            format!(
+                "objects/{file} is not an object: a temp an interrupted write left, or a stray \
+                 (SPEC §3); delete it"
+            )
+        }));
         problems.extend(self.leftovers());
-        problems.extend(self.graph_problems(&files));
+        problems.extend(self.graph_problems(&objects));
         problems
     }
 
@@ -749,27 +779,14 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         problems
     }
 
-    fn object_files(&self) -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = match fs::read_dir(self.objects_dir()) {
-            Ok(entries) => entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "py"))
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        files.sort();
-        files
-    }
-
     /// One object's fsck findings: byte-hash against the filename, then
     /// parseability. A malformed envelope is caught HERE, by the parser,
     /// because the `mk_*` constructors are the parse boundary — a `Woven` with
     /// one parent cannot be built, so it cannot be read back either, and the
     /// finding names the rule it broke.
-    fn object_problems(&self, path: &Path) -> Vec<String> {
-        let stem = stem_of(path);
-        let Ok(raw) = fs::read(path) else {
+    fn object_problems(&self, name: &Hash) -> Vec<String> {
+        let stem = name.as_str();
+        let Ok(raw) = fs::read(self.object_path(name)) else {
             return vec![format!("object {stem} could not be read")];
         };
         if hex(&Sha256::digest(&raw)) != stem {
@@ -790,13 +807,12 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// that the store cannot give back (absent, or failing its own check —
     /// which `object_problems` has already said once about the file itself),
     /// then, only if there is none, a cycle, and the dating rule.
-    fn graph_problems(&self, files: &[PathBuf]) -> Vec<String> {
-        let objects: BTreeMap<Hash, Envelope<P>> = files
+    fn graph_problems(&self, names: &[Hash]) -> Vec<String> {
+        let objects: BTreeMap<Hash, Envelope<P>> = names
             .iter()
-            .filter_map(|path| {
-                let name = Hash::new(stem_of(path)).ok()?;
-                let object = self.load(&name).ok()?;
-                Some((name, object))
+            .filter_map(|name| {
+                let object = self.load(name).ok()?;
+                Some((name.clone(), object))
             })
             .collect();
         let named: BTreeSet<Hash> = objects.values().flat_map(parents_of).collect();
@@ -892,12 +908,6 @@ fn decode<P: Payload>(digest: &Hash, raw: &[u8]) -> Result<Envelope<P>, Prodrome
     crate::event::parse_envelope(text)
 }
 
-fn stem_of(path: &Path) -> String {
-    path.file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -908,6 +918,7 @@ mod tests {
     use crate::event::{mk_completed, mk_created, mk_reopened, Actor};
     use crate::literal::Datetime;
     use crate::reference::Todo;
+    use proptest::prelude::*;
 
     /// The store these tests drive. The payload is the reference one because
     /// a store has to hold SOME record shape; nothing below reads a field of
@@ -1428,6 +1439,64 @@ mod tests {
         assert_eq!(store.verify(), Vec::<String>::new());
         assert_eq!(store.events().expect("reads").len(), 2);
         let _ = fs::remove_dir_all(store.root());
+    }
+
+    /// An entry of `objects/` that could be taken for an object and is not
+    /// one: a `.tmp`, a name one character short or in capitals, a `.py` of
+    /// anything, a file with no suffix. Drawn and then filtered, so a draw
+    /// that happens to be a well-formed object name is not a stray.
+    fn a_stray() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[0-9a-f]{64}\\.tmp",
+            "[0-9a-f]{63}\\.py",
+            "[0-9A-F]{64}\\.py",
+            "[a-z0-9_.-]{1,12}\\.py",
+            "[a-zA-Z0-9_-]{1,70}",
+        ]
+        .prop_filter("an object name is not a stray", |file| {
+            file.strip_suffix(".py")
+                .map(Hash::new)
+                .is_none_or(|name| name.is_err())
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// VERIFY NAMES EVERY STRAY, and the reads pass over them. Whatever
+        /// lands in `objects/` beside a healthy store's objects, `verify`
+        /// reports each such entry once, by name, in name order, and nothing
+        /// else; the tips and the objects read exactly as they did.
+        #[test]
+        fn verify_names_every_stray(strays in prop::collection::btree_set(a_stray(), 1..6)) {
+            let store = Store::new(scratch("strays"), roster());
+            store
+                .append(mk_created("alpha", at(1), "bassel", "", "").expect("valid"), None)
+                .expect("appends");
+            let tip = store
+                .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"), None)
+                .expect("appends");
+            for file in &strays {
+                fs::write(store.objects_dir().join(file), "stray").expect("writes a stray");
+            }
+            let found = store.verify();
+            let expected: Vec<String> = strays
+                .iter()
+                .map(|file| {
+                    format!(
+                        "objects/{file} is not an object: a temp an interrupted write left, or a \
+                         stray (SPEC §3); delete it"
+                    )
+                })
+                .collect();
+            let fresh = Store::new(store.root(), roster());
+            let tips = fresh.tips();
+            let read = fresh.read_dag_named().map(|dag| dag.len());
+            let _ = fs::remove_dir_all(store.root());
+            prop_assert_eq!(found, expected);
+            prop_assert_eq!(tips.expect("the tips derive"), [tip].into_iter().collect::<BTreeSet<_>>());
+            prop_assert_eq!(read.expect("the store reads"), 2);
+        }
     }
 
     #[test]
