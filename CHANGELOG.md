@@ -61,13 +61,19 @@ change under this file's rule: no stored object changes, a term without
   `highlight`, `complete`, `hover` and `add_font`; every offset is UTF-16.
   The module is 22.0 MB, 6.3 MB with brotli.
 - **`typst/`**, the `prodrome-typst` package: the roadmap list ordered by
-  fulfillment, an item's page, the ring (the next 72 hours) and the bar (30
-  days, the past faded, a tick at now), coloured Problem below 0.5, Watch
-  below 0.7, else Fine. It reads the core's JSON and computes nothing about
-  fulfillment. `checks.prodrome-typst` compiles its examples to PDF and HTML.
+  fulfillment, an item's page, and two marks: a value's pie beside its
+  percentage, and a todo's thirty days (fifteen back, fifteen ahead) as one
+  thick line, the past faded, in a 0–100% frame. Every value is drawn in
+  `colour(v)`, a sample of one continuous OKLCH gradient from red to green;
+  Problem, Watch and Fine are words only. Instants read as dates, and an item's
+  price as its explanation reads it ("70%, flat"). It reads the core's JSON
+  and computes nothing about fulfillment. `checks.prodrome-typst` compiles
+  its examples to PDF and HTML, and its laws (`tests/laws.typ`).
 - **`viewer/`**, the static web app (`nix build .#prodrome-viewer`), with
   routes `#/` and `#/todo/<id>`, a Typst editor demo on the item page, and a
-  service worker that caches the shell per build and the objects forever.
+  service worker that caches the shell per build and the objects forever. It
+  never scrolls sideways at a phone's width, and its smoke test checks the
+  list against `prodrome list`'s order at 420px.
   `viewer/assemble.sh` puts any store's objects beside it.
 - **`.github/workflows/pages.yml`** deploys it on pushes to `main`, by hand,
   and after `roadmap-data`'s `verify` succeeds on a push (`workflow_run`: a
