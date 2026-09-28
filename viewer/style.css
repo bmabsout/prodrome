@@ -39,7 +39,8 @@ h1, h2, h3 { line-height: 1.2; }
 .typst th { font-weight: 400; color: var(--muted); font-size: .8rem; }
 /* Typst sizes an SVG inline, in em; a narrow screen shrinks it, keeping its shape. */
 .typst svg { vertical-align: middle; max-width: 100%; height: auto !important; }
-.roadmap { overflow-x: auto; }
+.typst h1, .typst td, .crumbs { overflow-wrap: anywhere; }
+.roadmap, .history { overflow-x: auto; }
 .roadmap td:first-child { width: 1%; white-space: nowrap; }
 .summary, .crumbs, .facts { color: var(--muted); }
 .facts { margin: .5rem 0 1rem; }
@@ -48,11 +49,14 @@ h1, h2, h3 { line-height: 1.2; }
 .price svg { vertical-align: -.1em; max-width: none; }
 .price.unpriced { color: var(--unpriced); font-size: .85em; font-style: italic; }
 .explanation ul { margin: .2rem 0; }
+.history td:first-child { white-space: nowrap; }
 .typst pre { overflow-x: auto; white-space: pre-wrap; }
 .note { color: var(--muted); font-size: .85rem; }
 
 @media (max-width: 36rem) {
   body { font-size: 17px; }
+  .history td, .history th { padding: .3rem .35rem; font-size: .85rem; }
+  .history td:first-child { white-space: normal; }
 }
 
 /* The editor demo: a transparent textarea over its highlighted twin. */
