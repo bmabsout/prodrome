@@ -66,6 +66,8 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
 mod json;
+#[cfg(test)]
+mod snapshot;
 mod wire;
 
 use wire::{
