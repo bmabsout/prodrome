@@ -290,7 +290,9 @@
           };
           # The Typst package compiles its examples with the typst the
           # pinned nixpkgs ships — 0.15.1, the version typst-wasm pins — to
-          # PDF and to HTML, so a layout that breaks either target fails here.
+          # PDF and to HTML, so a layout that breaks either target fails here,
+          # and compiles its laws (`tests/laws.typ`), which fail the compile
+          # when an assert does not hold.
           prodrome-typst = pkgs.runCommand "prodrome-typst-check"
             {
               nativeBuildInputs = [ pkgs.typst ];
@@ -299,12 +301,15 @@
             mkdir -p pkgs/local/prodrome-typst
             cp -r "$src" pkgs/local/prodrome-typst/0.1.0
             chmod -R u+w pkgs
-            cd pkgs/local/prodrome-typst/0.1.0/examples
+            cd pkgs/local/prodrome-typst/0.1.0
+            typst compile --package-path "$NIX_BUILD_TOP/pkgs" tests/laws.typ "$NIX_BUILD_TOP/laws.pdf"
+            cd examples
             for doc in roadmap item; do
               typst compile --package-path "$NIX_BUILD_TOP/pkgs" "$doc.typ" "$doc.pdf"
               typst compile --package-path "$NIX_BUILD_TOP/pkgs" --features html --format html "$doc.typ" "$doc.html"
             done
             grep -q 'href="#/todo/ship-the-viewer"' roadmap.html
+            grep -q '<strong>the viewer</strong>' roadmap.html
             grep -q '<svg' item.html
             touch $out
           '';
