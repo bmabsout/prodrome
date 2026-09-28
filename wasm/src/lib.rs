@@ -55,9 +55,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use prodrome::chain::Link;
 use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent, TodoId};
-use prodrome::fpl::{datetime_of, instant_of, iso, print_term, total_seconds, Delta, Instant};
+use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Instant};
 use prodrome::literal::Datetime;
 use prodrome::registers;
 use prodrome::store::{linearise, tips_of};
@@ -830,41 +829,6 @@ pub fn explain(term: &str, now: &str, env: &str) -> Result<String, JsError> {
     printed(&crate::json::explain(&term, now, &env))
 }
 
-/// One resolved link, as the boundary carries it: spans in hours, instants as
-/// ISO, exactly like every other span and instant this module writes.
-fn json_link(link: &Link) -> Value {
-    let hours = |span: Delta| Value::from(total_seconds(span) / 3600.0);
-    let mut fields = vec![
-        ("event", Value::String(link.event().to_owned())),
-        ("grade", Value::from(link.grade())),
-    ];
-    match link {
-        Link::Pending { .. } => fields.push(("bound", Value::String("pending".to_owned()))),
-        Link::Completed {
-            at,
-            slip,
-            needs,
-            ready,
-            ..
-        } => {
-            fields.push(("bound", Value::String("completed".to_owned())));
-            fields.push(("at", Value::String(iso(*at))));
-            fields.push(("slipHours", hours(*slip)));
-            if let Some(needs) = needs {
-                fields.push(("needsHours", hours(*needs)));
-            }
-            if let Some(ready) = ready {
-                fields.push(("readyAt", Value::String(iso(*ready))));
-            }
-        }
-        Link::Moot { at, .. } => {
-            fields.push(("bound", Value::String("cancelled".to_owned())));
-            fields.push(("at", Value::String(iso(*at))));
-        }
-    }
-    object(fields)
-}
-
 /// §7.1 — a term with every `After` resolved against a snapshot, so a page
 /// that redraws a curve stops paying for a lookup per node per sample.
 ///
@@ -886,7 +850,13 @@ pub fn compile(term: &str, env: &str) -> Result<String, JsError> {
         ("term", Value::String(print_term(compiled.term().term()))),
         (
             "links",
-            Value::Array(compiled.links().iter().map(json_link).collect()),
+            Value::Array(
+                compiled
+                    .links()
+                    .iter()
+                    .map(|link| json::scalars_json(&scalars(&link.fields())))
+                    .collect(),
+            ),
         ),
     ]))
 }

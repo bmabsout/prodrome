@@ -31,7 +31,6 @@ use std::marker::PhantomData;
 
 use sha2::{Digest, Sha256};
 
-use crate::fpl::TERM_SIGNATURES;
 use crate::literal::{
     parse_literal, print_literal, Datetime, ProdromeError, Signature, Table, Value, Vocabulary,
 };
@@ -39,6 +38,7 @@ use crate::payload::{
     as_string, datetime_field, record_signature, required, string_field, string_or_empty,
     tuple_field, Payload,
 };
+use crate::term::schema::signatures;
 use crate::term::Term;
 
 // --- the names, as types ----------------------------------------------------
@@ -559,9 +559,7 @@ impl<P: Payload> Default for EventVocabulary<P> {
 
 impl<P: Payload> Vocabulary for EventVocabulary<P> {
     fn signature(&self, name: &str) -> Option<Signature<'_>> {
-        // §7's half is `fpl`'s, imported rather than restated: the layer that
-        // knows what a `Conj` MEANS is the one that declares its fields.
-        if let Some(signature) = Table(TERM_SIGNATURES).find(name) {
+        if let Some(signature) = signatures().signature(name) {
             return Some(signature);
         }
         if let Some(signature) = Table(EVENT_SIGNATURES).find(name) {
