@@ -6,6 +6,10 @@ module names. The reference is his PULER (`TypeSystem.hs`): base functors with
 recursion schemes, `Semigroup` instances that are the semilattice, laws in
 instances rather than prose.
 
+A file is its main type: one concept per file, the file named for it, the
+type declared first after the imports. The layout below names each file by
+the type it opens with.
+
 ## Where the weight is
 
 Production code is about 11.6k lines (core 8.2k, wasm 1.8k, cli 0.9k, github
