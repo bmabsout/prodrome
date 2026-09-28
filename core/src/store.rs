@@ -17,13 +17,17 @@
 //! - a load REVERIFIES, hashing the STORED BYTES against the filename before
 //!   parsing — tamper-evidence on read — and never a reprint→rehash, which
 //!   would couple every old object's validity to the current printer;
-//! - a write is content-addressed and idempotent, through a temp file and a
-//!   rename, so the object appearing under its name IS the append: there is no
-//!   second file to move after it, and no crash leaves a store half-written.
+//! - a write is content-addressed and idempotent, through a randomly named
+//!   temp file synced before it is renamed, so the object appearing under its
+//!   name IS the append: there is no second file to move after it, and no
+//!   crash leaves a store half-written or an object empty.
 
 use std::cmp::Reverse;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
+use std::hash::{BuildHasher, Hasher};
+use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -513,19 +517,51 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         }
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
-        for (name, raw) in &taken {
-            self.place_bytes(name, raw)?;
-        }
-        Ok(())
+        self.place(taken.iter().map(|(name, raw)| (name, raw.as_slice())))
     }
 
-    /// Bytes onto disk under their name, through a temp file and a rename, so
-    /// a reader never sees a half-written object even though the name it
-    /// would read it under is the hash of the whole.
-    fn place_bytes(&self, digest: &Hash, bytes: &[u8]) -> Result<(), ProdromeError> {
-        let temp = self.objects_dir().join(format!("{}.tmp", digest.as_str()));
-        fs::write(&temp, bytes).map_err(|e| Self::io(&temp, e))?;
-        fs::rename(&temp, self.object_path(digest)).map_err(|e| Self::io(&temp, e))
+    /// Objects onto disk under their names, in the order given, DURABLY: each
+    /// is [`EventStore::stage`]d and renamed over its name, and the directory
+    /// is synced once when all of them are, so a batch — one adoption, one
+    /// append — costs one directory sync and not one per object.
+    ///
+    /// The file is synced BEFORE its rename, which is the order that matters:
+    /// a rename can reach the disk before the bytes it names, and a power loss
+    /// between the two would leave a zero-length file under a name that
+    /// promises content. Synced first, a crash anywhere leaves either no
+    /// object or the whole one, and at worst a temp that `verify` reports.
+    fn place<'a>(
+        &self,
+        objects: impl IntoIterator<Item = (&'a Hash, &'a [u8])>,
+    ) -> Result<(), ProdromeError> {
+        for (digest, bytes) in objects {
+            let temp = self.stage(bytes)?;
+            fs::rename(&temp, self.object_path(digest)).map_err(|e| Self::io(&temp, e))?;
+        }
+        sync_dir(&self.objects_dir())
+    }
+
+    /// Bytes into a fresh temp file in `objects/`, synced to disk: the first
+    /// half of a placement, and all a crash before the rename leaves behind.
+    ///
+    /// The name is RANDOM and the file is created EXCLUSIVELY, never a fixed
+    /// `<name>.tmp`: two writers placing the same object would otherwise
+    /// write into one temp together, and one of them rename the other's half.
+    /// A temp is not named like an object, so no read takes it for one.
+    fn stage(&self, bytes: &[u8]) -> Result<PathBuf, ProdromeError> {
+        loop {
+            let temp = self.objects_dir().join(temp_name());
+            match File::options().write(true).create_new(true).open(&temp) {
+                Ok(mut file) => {
+                    file.write_all(bytes)
+                        .and_then(|()| file.sync_all())
+                        .map_err(|e| Self::io(&temp, e))?;
+                    return Ok(temp);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(Self::io(&temp, error)),
+            }
+        }
     }
 
     /// One object onto disk, content-addressed and idempotent: identical bytes
@@ -547,7 +583,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             }
             return Ok(digest);
         }
-        self.place_bytes(&digest, text.as_bytes())?;
+        self.place([(&digest, text.as_bytes())])?;
         self.remember(&digest, object);
         Ok(digest)
     }
@@ -906,6 +942,25 @@ fn decode<P: Payload>(digest: &Hash, raw: &[u8]) -> Result<Envelope<P>, Prodrome
     let text = std::str::from_utf8(raw)
         .map_err(|_| ProdromeError::Store(format!("object {} is not UTF-8", digest.as_str())))?;
     crate::event::parse_envelope(text)
+}
+
+/// A temp file's name: sixteen random hex digits and `.tmp`, which is never
+/// `<name>.py`. The randomness is the standard library's per-process hash
+/// keys, advanced on every draw, so no dependency is taken for it; the
+/// exclusive create in [`EventStore::stage`] is what makes a clash harmless.
+fn temp_name() -> String {
+    format!("{:016x}.tmp", RandomState::new().build_hasher().finish())
+}
+
+/// Sync a directory, so the renames into it are on disk and not only in the
+/// page cache.
+fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
+    File::open(dir)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|error| ProdromeError::Io {
+            path: dir.display().to_string(),
+            message: error.to_string(),
+        })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1439,6 +1494,61 @@ mod tests {
         assert_eq!(store.verify(), Vec::<String>::new());
         assert_eq!(store.events().expect("reads").len(), 2);
         let _ = fs::remove_dir_all(store.root());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// A CRASH BETWEEN WRITE AND RENAME LEAVES NO OBJECT, only a temp that
+        /// `verify` reports. A chain of `crash` events is written, and the
+        /// next object's placement stops after its temp is written and synced
+        /// and before the rename — the crash. The store is then exactly the
+        /// chain: the tips derive from it, the object the crash interrupted is
+        /// not there under any name, and `verify`'s one finding is the temp,
+        /// by name.
+        #[test]
+        fn a_crash_before_the_rename_leaves_only_a_temp(
+            crash in 0usize..5
+        ) {
+            let store = Store::new(scratch("crash"), roster());
+            let mut written: Vec<Hash> = Vec::new();
+            for day in 0..crash {
+                let day = u32::try_from(day).expect("a few days") + 1;
+                written.push(
+                    store
+                        .append(mk_reopened("alpha", at(day), "bassel", "").expect("valid"), None)
+                        .expect("appends"),
+                );
+            }
+            let day = u32::try_from(crash).expect("a few days") + 1;
+            let next: Envelope<Todo> = mk_sealed(
+                written.last().cloned(),
+                mk_reopened("alpha", at(day), "bassel", "").expect("valid"),
+            );
+            fs::create_dir_all(store.objects_dir()).expect("creates objects/");
+            let temp = store
+                .stage(crate::event::canonical_envelope(&next).as_bytes())
+                .expect("stages");
+            let file = temp.file_name().expect("a name").to_string_lossy().into_owned();
+
+            let fresh = Store::new(store.root(), roster());
+            let tips = fresh.tips();
+            let landed = store.object_path(&seal_hash(&next)).exists();
+            let found = store.verify();
+            let _ = fs::remove_dir_all(store.root());
+            prop_assert_eq!(
+                tips.expect("the tips derive"),
+                written.last().cloned().into_iter().collect::<BTreeSet<_>>()
+            );
+            prop_assert!(!landed, "the interrupted object is not in the store");
+            prop_assert_eq!(
+                found,
+                vec![format!(
+                    "objects/{file} is not an object: a temp an interrupted write left, or a \
+                     stray (SPEC §3); delete it"
+                )]
+            );
+        }
     }
 
     /// An entry of `objects/` that could be taken for an object and is not

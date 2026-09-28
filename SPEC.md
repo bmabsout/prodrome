@@ -84,6 +84,13 @@ since this grammar has tuples and no mapping.
 - An object's **name** is `sha256(utf8(print(envelope)))` in lowercase hex.
   The file `objects/<name>.py` holds exactly that print, and a loader
   re-hashes the bytes before parsing them.
+- **A write is durable.** The print goes to a randomly named temp file in
+  `objects/`, created exclusively (never a fixed `<name>.tmp`, which two
+  writers of one object would share), and is synced to disk before it is
+  renamed to `<name>.py`; the directory is synced once after a batch of
+  placements (one append, one adoption). So a crash leaves either no object
+  or the whole one, never an empty file under a name that promises content,
+  and at worst a temp that `verify` reports.
 - **Tips are derived.** `tips()` is the set of objects no object names as a
   parent (as a `Sealed`'s `prev` or among a `Woven`'s parents): a function of
   the object set alone, in any order it is listed. A store on disk is its
