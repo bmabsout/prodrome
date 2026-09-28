@@ -425,8 +425,6 @@ dependencies = [
  "chrono",
  "clap",
  "prodrome-core",
- "proptest",
- "serde_json",
  "thiserror",
 ]
 
@@ -440,6 +438,17 @@ dependencies = [
  "sha2",
  "thiserror",
  "unicode-general-category",
+]
+
+[[package]]
+name = "prodrome-github"
+version = "0.9.0"
+dependencies = [
+ "clap",
+ "prodrome-cli",
+ "prodrome-core",
+ "proptest",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Commit what `prodrome github` appended to a checkout of roadmap-data, and
+# Commit what `prodrome-github` appended to a checkout of roadmap-data, and
 # push it. Used by mirror.yml and price.yml; run from that checkout.
 #
 #   roadmap-push.sh MESSAGE

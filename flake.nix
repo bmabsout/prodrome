@@ -38,6 +38,7 @@
             ./Cargo.lock
             ./cli
             ./core
+            ./github
             ./wasm
             ./conformance
           ];
@@ -146,10 +147,25 @@
             mainProgram = "prodrome";
           };
         };
+
+        # THE GITHUB MIRROR (`nix build .#prodrome-github`), an integration kept
+        # apart from the core and its CLI. Also a check: this builds `github/`
+        # and runs its fixture tests and laws.
+        prodrome-github = pkgs.rustPlatform.buildRustPackage {
+          pname = "prodrome-github";
+          inherit version src;
+          cargoLock.lockFile = ./Cargo.lock;
+          buildAndTestSubdir = "github";
+          meta = {
+            description = "Mirror GitHub issues into a Prodrome store";
+            license = with lib.licenses; [ mit asl20 ];
+            mainProgram = "prodrome-github";
+          };
+        };
       in
       {
         packages = {
-          inherit prodrome-cli prodrome-wasm;
+          inherit prodrome-cli prodrome-github prodrome-wasm;
           default = prodrome-cli;
         };
 
@@ -170,7 +186,7 @@
               doCheck = false;
             };
           };
-          inherit prodrome-cli prodrome-wasm;
+          inherit prodrome-cli prodrome-github prodrome-wasm;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's

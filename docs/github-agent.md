@@ -8,19 +8,19 @@ branch. Two workflows keep GitHub issues and that store in step:
   and records the suggestion as a *claim*: something the store keeps and
   shows, but does not believe until a maintainer says so.
 
-Both run one command, `prodrome github`, which does all the deciding. The
+Both run one command, `prodrome-github`, which does all the deciding. The
 workflows only fetch, run it, and push.
 
 ## The flow
 
 ```
-issue opened ──► mirror.yml ──► prodrome github ──► roadmap-data: gh-N at 80%
+issue opened ──► mirror.yml ──► prodrome-github ──► roadmap-data: gh-N at 80%
      │                                               + one welcome comment
      │
      └────────► price.yml
                   propose (Claude, read-only, no tools)
                      │ reply.md
-                  record (no model) ──► prodrome github --proposal
+                  record (no model) ──► prodrome-github --proposal
                                         ──► roadmap-data: pricing-bot's claim
                                         + the reply, posted as a comment
 
@@ -127,7 +127,7 @@ has two tips, which its next append joins.
 
 ## Determinism
 
-`prodrome github` reads no clock and no network. Every instant it writes
+`prodrome-github` reads no clock and no network. Every instant it writes
 comes from the payload (`created_at`, `updated_at`, `closed_at`, the comment's
 `created_at`), so the same delivery always means the same events, and an
 event the store already holds is not appended again. Re-running a workflow,
@@ -137,7 +137,7 @@ Two refusals depend on the store — `/price ref` to an item not yet mirrored,
 and `/price accept` before any suggestion exists — and a later replay of such
 a delivery applies once what it names exists. The laws are stated over the
 deliveries that were applied, and pinned as property tests in
-`cli/tests/github.rs`:
+`github/tests/github.rs`:
 
 - replaying what was applied appends nothing, and a fresh store given those
   deliveries twice is identical, file for file, to one given them once;

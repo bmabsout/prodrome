@@ -1,6 +1,6 @@
 # THE ISSUE MIRROR. Every issue on this repository is an item on the roadmap:
 # `gh-<number>` in the store on the `roadmap-data` branch. This workflow turns
-# one GitHub event into the events it means with `prodrome github` — opened,
+# one GitHub event into the events it means with `prodrome-github` — opened,
 # retitled, closed, reopened, and a maintainer's `/price` comment — and pushes
 # them to that branch. docs/github-agent.md explains the flow and its trust
 # boundaries.
@@ -57,12 +57,13 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
       - run: nix build ./code#prodrome-cli -o result-cli --print-build-logs
+      - run: nix build ./code#prodrome-github -o result-github --print-build-logs
 
       - name: Apply the event
         id: apply
         run: |
           set +e
-          ./result-cli/bin/prodrome github "$GITHUB_EVENT_PATH" --store data/roadmap \
+          ./result-github/bin/prodrome-github "$GITHUB_EVENT_PATH" --store data/roadmap \
             > applied.txt 2> refused.txt
           status=$?
           set -e
@@ -85,7 +86,7 @@ jobs:
             echo "That \`/price\` was not recorded:"
             echo
             echo '```'
-            sed 's/^prodrome: //' refused.txt
+            sed 's/^prodrome-github: //' refused.txt
             echo '```'
             echo
             echo "The grammar: \`/price 40\`, \`/price 30 --deadline 2026-10-15\`," \

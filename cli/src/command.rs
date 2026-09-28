@@ -119,20 +119,6 @@ pub enum Command {
     /// Join every head into one `Woven` carrying no event — what settles a
     /// store two branches both appended to.
     Weave,
-
-    /// Apply one GitHub webhook delivery (`issues` or `issue_comment`) to the
-    /// store: an issue becomes item `gh-<number>`, and a maintainer's `/price`
-    /// comment reprices it. Deterministic and offline, and a delivery already
-    /// applied appends nothing.
-    Github {
-        /// The payload, as a workflow finds it at `$GITHUB_EVENT_PATH`.
-        #[arg(value_name = "PAYLOAD.json")]
-        payload: PathBuf,
-        /// The pricing step's reply: record its `/price` line as a proposal
-        /// by `pricing-bot`, a claim, instead of mirroring the delivery.
-        #[arg(long, value_name = "FILE")]
-        proposal: Option<PathBuf>,
-    },
 }
 
 /// The three fields every write shares beyond the verb's own.

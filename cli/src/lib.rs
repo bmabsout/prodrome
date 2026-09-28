@@ -15,7 +15,6 @@
 #![forbid(unsafe_code)]
 
 pub mod command;
-pub mod github;
 pub mod price;
 pub mod render;
 
@@ -53,7 +52,8 @@ pub enum Error {
 }
 
 impl Error {
-    pub(crate) fn usage(message: impl Into<String>) -> Error {
+    /// A refusal of the input, in the words it gives.
+    pub fn usage(message: impl Into<String>) -> Error {
         Error::Usage(message.into())
     }
 }
@@ -69,7 +69,8 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn said(text: impl Into<String>) -> Outcome {
+    /// An answer: `text`, and a verdict that passed.
+    pub fn said(text: impl Into<String>) -> Outcome {
         Outcome {
             text: text.into(),
             ok: true,
@@ -324,10 +325,6 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
             // be the author of.
             let digest = store.merge(None, None)?;
             Ok(Outcome::said(digest.as_str()))
-        }
-
-        Command::Github { payload, proposal } => {
-            github::apply(&store, payload, proposal.as_deref())
         }
     }
 }

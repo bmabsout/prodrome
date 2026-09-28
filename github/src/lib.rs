@@ -1,4 +1,4 @@
-//! `prodrome github` — one GitHub webhook delivery, as the events it means.
+//! `prodrome-github`: one GitHub webhook delivery, as the events it means.
 //!
 //! THE MIRROR IS A FUNCTION OF THE PAYLOAD AND THE STORE, AND OF NOTHING ELSE.
 //! Every instant written here is read off the payload (`created_at`,
@@ -32,8 +32,8 @@ use prodrome::literal::{Datetime, ProdromeError};
 use prodrome::reference::{mk_authored, mk_source, Todo};
 use serde_json::Value;
 
-use crate::command::Price as PriceArgs;
-use crate::{price, Error, Outcome, Store};
+use prodrome_cli::command::Price as PriceArgs;
+use prodrome_cli::{price, store_root, Error, Outcome, Store};
 
 /// The actor every mirrored fact is written as.
 pub const MIRROR: &str = "github-mirror";
@@ -707,8 +707,39 @@ pub fn plan(
     }))
 }
 
-/// `prodrome github`: read the payload (and the reply, for a proposal), and
-/// apply it.
+/// `prodrome-github PAYLOAD.json [--proposal FILE] [--store DIR]`.
+#[derive(Debug, clap::Parser)]
+#[command(name = "prodrome-github", version, about)]
+pub struct Cli {
+    /// The payload, as a workflow finds it at `$GITHUB_EVENT_PATH`.
+    #[arg(value_name = "PAYLOAD.json")]
+    pub payload: std::path::PathBuf,
+    /// The pricing step's reply: record its `/price` line as a proposal by
+    /// `pricing-bot`, a claim, instead of mirroring the delivery.
+    #[arg(long, value_name = "FILE")]
+    pub proposal: Option<std::path::PathBuf>,
+    /// The store, as `prodrome --store` names it: `./roadmap` when that
+    /// directory exists, and the current directory otherwise.
+    #[arg(long, value_name = "DIR")]
+    pub store: Option<std::path::PathBuf>,
+}
+
+/// Apply one GitHub webhook delivery (`issues` or `issue_comment`) to the
+/// store: an issue becomes item `gh-<number>`, and a maintainer's `/price`
+/// comment reprices it. Deterministic and offline, and a delivery already
+/// applied appends nothing.
+///
+/// # Errors
+/// A payload or reply that does not parse, and the store's own refusals.
+pub fn run(cli: &Cli) -> Result<Outcome, Error> {
+    let store = Store::new(
+        store_root(cli.store.as_deref()),
+        prodrome::policy::Untrusted::none(),
+    );
+    apply(&store, &cli.payload, cli.proposal.as_deref())
+}
+
+/// Read the payload (and the reply, for a proposal), and apply it.
 pub fn apply(store: &Store, payload: &Path, proposal: Option<&Path>) -> Result<Outcome, Error> {
     let delivery = delivery_of(&read_json(payload)?)?;
     let reply = proposal.map(read_text).transpose()?;

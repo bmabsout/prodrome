@@ -1,4 +1,4 @@
-//! `prodrome github`, driven with the fixture payloads in
+//! `prodrome-github`, driven with the fixture payloads in
 //! `tests/fixtures/github/` and with generated deliveries for its two laws.
 //!
 //! The fixtures are trimmed copies of what GitHub sends: every field the
@@ -15,10 +15,10 @@ use proptest::prelude::*;
 use prodrome::event::Actor;
 use prodrome::policy::Untrusted;
 use prodrome_cli::command::Cli;
-use prodrome_cli::github::{
+use prodrome_cli::{read, run, Outcome, Store};
+use prodrome_github::{
     apply_delivery, instant_of, Action, Comment, Delivery, Issue, Standing, BOT, MIRROR,
 };
-use prodrome_cli::{read, run, Outcome, Store};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -41,12 +41,22 @@ fn fixture(name: &str) -> String {
         .to_string()
 }
 
+/// `prodrome …`, or `prodrome-github …` when the first word is `github`.
 fn prodrome(root: &Path, args: &[&str]) -> Result<Outcome, prodrome_cli::Error> {
-    let mut argv: Vec<String> = vec!["prodrome".to_owned()];
-    argv.extend(args.iter().map(|arg| (*arg).to_owned()));
-    argv.push("--store".to_owned());
-    argv.push(root.display().to_string());
-    run(&Cli::try_parse_from(argv).expect("the arguments parse"))
+    let store = ["--store".to_owned(), root.display().to_string()];
+    let words = |program: &str, rest: &[&str]| -> Vec<String> {
+        std::iter::once(program.to_owned())
+            .chain(rest.iter().map(|arg| (*arg).to_owned()))
+            .chain(store.iter().cloned())
+            .collect()
+    };
+    match args.split_first() {
+        Some((&"github", rest)) => prodrome_github::run(
+            &prodrome_github::Cli::try_parse_from(words("prodrome-github", rest))
+                .expect("the arguments parse"),
+        ),
+        _ => run(&Cli::try_parse_from(words("prodrome", args)).expect("the arguments parse")),
+    }
 }
 
 fn said(root: &Path, args: &[&str]) -> String {
