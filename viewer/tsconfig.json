@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": false,
+    "baseUrl": ".",
+    "paths": {
+      "prodrome-wasm": ["./vendor/prodrome/prodrome"],
+      "typst-wasm": ["./vendor/typst/typst"]
+    }
+  },
+  "files": ["src/main.ts", "src/modules.d.ts"]
+}
