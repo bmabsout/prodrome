@@ -17,7 +17,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::vectors::{each, field, integer, moment, strings, text, text_at, vectors};
-use prodrome::event::{canonical, parse_envelope, Actor, Envelope, TodoEvent};
+use prodrome::event::{canonical, parse_envelope, Actor, TodoEvent};
 use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env};
 use prodrome::fpl::{instant_of, iso, print_term};
 use prodrome::literal::{print_literal, Datetime, Value};
@@ -37,10 +37,10 @@ fn events_of(log: &Value) -> Vec<Event> {
         .iter()
         .map(|item| {
             let object = format!("Sealed(prev='', event={})", text(item));
-            match parse_envelope::<Todo>(&object).unwrap_or_else(|e| panic!("seed {seed}: {e}")) {
-                Envelope::Sealed { event, .. } => event,
-                Envelope::Woven { .. } => unreachable!("the wrapper is a Sealed"),
-            }
+            parse_envelope::<Todo>(&object)
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"))
+                .into_event()
+                .expect("a Sealed carries its event")
         })
         .collect()
 }

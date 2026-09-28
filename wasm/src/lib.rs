@@ -154,12 +154,8 @@ impl Row {
         self.hash == self.computed
     }
 
-    /// What the envelope SAYS about itself — the same four fields
-    /// `json_link` puts on the wire, read here out of the object's own
-    /// bytes rather than out of the server's summary of them. A merge is
-    /// structure and not a fact about a todo, so its `todo`, `actor` and `at`
-    /// stay "" and its `kind` is the envelope's own name; nothing is invented
-    /// to fill them.
+    /// The four fields `json_link` puts on the wire, read from the object's own
+    /// bytes; an object with no event leaves them "" and is kinded by its name.
     fn describe(&mut self, envelope: &Object) {
         self.parents = parents_of(envelope);
         match envelope.event() {
@@ -169,7 +165,7 @@ impl Row {
                 self.actor = event.actor().as_str().to_owned();
                 self.at = iso(instant_of(event.at()));
             }
-            None => self.kind = "Woven".to_owned(),
+            None => self.kind = envelope.name().to_owned(),
         }
     }
 
