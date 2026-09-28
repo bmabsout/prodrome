@@ -46,7 +46,9 @@ on the scale in the branch's `PRICING.md`. A pricing bot (Claude) suggests a
 price on every new issue; its suggestion is stored as a CLAIM by
 `pricing-bot`, shown beside the item and binding nothing until a maintainer
 replies `/price accept`. The workflows are `.github/workflows/mirror.yml` and
-`price.yml`, over one deterministic, offline verb, `prodrome github`;
+`price.yml`, over one deterministic, offline binary, `prodrome-github`. It lives in its
+own crate, `github/`: an optional integration, like the viewer, and nothing
+in `core/` or `cli/` knows GitHub.
 [`docs/github-agent.md`](docs/github-agent.md) explains the flow and where
 trust stops.
 
@@ -292,6 +294,8 @@ cli/          prodrome-cli: the `prodrome` binary — the verbs, over that paylo
               and the reference policy, and the only clock in the workspace
 wasm/         prodrome-wasm: the core compiled for the browser, built with that
               payload, plus `json`, the term codec the JavaScript side reads
+github/       prodrome-github: an optional integration, apart from the core — the
+              `prodrome-github` binary that mirrors GitHub issues into a store
 conformance/  the vectors, as literals of the grammar in SPEC §2
 docs/         how the repository runs its own roadmap: the issue mirror
 .github/      CI, and the two workflows that mirror and price issues

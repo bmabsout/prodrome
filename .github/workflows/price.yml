@@ -152,13 +152,14 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
       - run: nix build ./code#prodrome-cli -o result-cli --print-build-logs
+      - run: nix build ./code#prodrome-github -o result-github --print-build-logs
 
       # The same grammar as a maintainer's /price, and `accept` refused: a
       # reply that says anything else records nothing and fails this step.
       - name: Record the claim
         id: claim
         run: |
-          ./result-cli/bin/prodrome github "$GITHUB_EVENT_PATH" --proposal reply.md \
+          ./result-github/bin/prodrome-github "$GITHUB_EVENT_PATH" --proposal reply.md \
             --store data/roadmap
           ./result-cli/bin/prodrome verify --store data/roadmap
       - name: Push to roadmap-data

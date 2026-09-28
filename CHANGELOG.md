@@ -10,7 +10,8 @@ constructor's fields never change, in any release.
 
 ### Added
 
-- **`prodrome github PAYLOAD.json`**: one GitHub webhook delivery, `issues` or
+- **`prodrome-github PAYLOAD.json`**, in its own crate `github/`, apart from
+  the core and its CLI: one GitHub webhook delivery, `issues` or
   `issue_comment`, applied to a store. An opened issue becomes item
   `gh-<number>` (a `Created` and a record with the title as its body, the
   issue's URL as its `source.message_id`, category `issue` and a flat 80%); a
