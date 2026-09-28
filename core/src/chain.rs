@@ -21,13 +21,14 @@
 //! every evaluation afterwards pays none.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 
 use thiserror::Error;
 
 use crate::fpl::{
-    self, iso, piecewise, total_seconds, Closed, Delta, Env, Explanation, Instant, Note, Outcome,
-    Scalar,
+    self, piecewise, scalars, Closed, Delta, Env, Explanation, Instant, Note, Outcome, Scalar,
 };
+use crate::term::schema::{Fields, Slot};
 use crate::term::{normalize, Term, TermF};
 use crate::topo::Topo;
 
@@ -109,35 +110,29 @@ impl Link {
         }
     }
 
-    /// This link as one map of scalars — the shape [`Compiled::notes`] carries
-    /// it in, keyed the way §7's own notes are keyed.
-    fn scalars(&self) -> BTreeMap<String, Scalar> {
-        let mut m = BTreeMap::new();
-        m.insert("event".to_owned(), Scalar::Text(self.event().to_owned()));
-        m.insert("bound".to_owned(), Scalar::Text(self.bound().to_owned()));
-        m.insert("grade".to_owned(), Scalar::Float(self.grade()));
-        if let Some(at) = self.at() {
-            m.insert("at".to_owned(), Scalar::Text(iso(at)));
-        }
-        if let Link::Completed {
-            slip, needs, ready, ..
-        } = self
-        {
-            m.insert(
-                "slipHours".to_owned(),
-                Scalar::Float(total_seconds(*slip) / 3600.0),
-            );
-            if let Some(needs) = needs {
-                m.insert(
-                    "needsHours".to_owned(),
-                    Scalar::Float(total_seconds(*needs) / 3600.0),
-                );
+    /// The link's fields, which the chain notes and the wasm wire render.
+    pub fn fields(&self) -> Fields<Infallible> {
+        let (slip, needs, ready) = match self {
+            Link::Completed {
+                slip, needs, ready, ..
+            } => (
+                Slot::Span(*slip),
+                needs.map_or(Slot::Nothing, Slot::Span),
+                ready.map_or(Slot::Nothing, Slot::At),
+            ),
+            Link::Pending { .. } | Link::Moot { .. } => {
+                (Slot::Nothing, Slot::Nothing, Slot::Nothing)
             }
-            if let Some(ready) = ready {
-                m.insert("readyAt".to_owned(), Scalar::Text(iso(*ready)));
-            }
-        }
-        m
+        };
+        vec![
+            ("event", Slot::Text(self.event().to_owned())),
+            ("bound", Slot::Text(self.bound().to_owned())),
+            ("grade", Slot::Real(self.grade())),
+            ("at", self.at().map_or(Slot::Nothing, Slot::At)),
+            ("slip", slip),
+            ("needs", needs),
+            ("ready_at", ready),
+        ]
     }
 }
 
@@ -211,7 +206,12 @@ impl Compiled {
         }
         notes.insert(
             "links".to_owned(),
-            Note::Maps(self.links.iter().map(Link::scalars).collect()),
+            Note::Maps(
+                self.links
+                    .iter()
+                    .map(|link| scalars(&link.fields()))
+                    .collect(),
+            ),
         );
         let moot: Vec<Scalar> = self
             .moot()

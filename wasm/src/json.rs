@@ -1,8 +1,10 @@
 //! §7 as JSON, rendered from the term schema: lowercase kind tags, ISO
 //! instants and spans in hours, frozen by `conformance/term-json.json`.
 
+use std::collections::BTreeMap;
+
 use prodrome::fpl::{
-    delta_from_hours, explained, iso, parse_iso, total_seconds, Closed, Delta, Env, Explanation,
+    delta_from_hours, explained, parse_iso, scalar, wire_key, Closed, Delta, Env, Explanation,
     FplError, Instant, Note, Scalar,
 };
 use prodrome::term::schema::{build, fields, Field, FieldSource, Fields, Slot};
@@ -22,33 +24,8 @@ fn note_json(n: &Note) -> Value {
     match n {
         Note::One(s) => scalar_json(s),
         Note::Many(xs) => Value::Array(xs.iter().map(scalar_json).collect()),
-        Note::Maps(ms) => Value::Array(
-            ms.iter()
-                .map(|m| {
-                    Value::Object(m.iter().map(|(k, v)| (k.clone(), scalar_json(v))).collect())
-                })
-                .collect(),
-        ),
+        Note::Maps(ms) => Value::Array(ms.iter().map(scalars_json).collect()),
     }
-}
-
-/// A field's JSON key: camelCase, a span suffixed `Hours`.
-fn key(name: &str, span: bool) -> String {
-    let mut words = name.split('_');
-    let mut key = words.next().unwrap_or_default().to_owned();
-    for word in words {
-        let mut chars = word.chars();
-        key.extend(chars.next().map(|c| c.to_ascii_uppercase()));
-        key.push_str(chars.as_str());
-    }
-    if span {
-        key.push_str("Hours");
-    }
-    key
-}
-
-fn hours(span: Delta) -> f64 {
-    total_seconds(span) / 3600.0
 }
 
 /// `to_json`'s shape with each node's `value` (`null` for `∅`) and notes, its
@@ -90,29 +67,34 @@ pub fn to_json(term: &Term) -> Value {
     Value::Object(out)
 }
 
-/// Every field present, an unset optional or an empty text omitted.
+/// Every field, its leaves as their notes are; an unset optional or empty text omitted.
 fn object(fields: Fields<&Term>) -> Map<String, Value> {
     fields
         .into_iter()
         .filter_map(|(name, slot)| {
-            let key = key(name, matches!(slot, Slot::Span(_)));
+            let key = wire_key(name, matches!(slot, Slot::Span(_)));
             let value = match slot {
-                Slot::Real(x) => Value::from(x),
-                Slot::At(t) => Value::String(iso(t)),
-                Slot::Span(d) => Value::from(hours(d)),
-                Slot::Text(text) if text.is_empty() => return None,
-                Slot::Text(text) => Value::String(text),
-                Slot::Nothing => return None,
                 Slot::Child(term) => to_json(term),
                 Slot::Children(terms) => terms.into_iter().map(to_json).collect(),
                 Slot::Rows(_, rows) => rows
                     .into_iter()
                     .map(|row| Value::Object(object(row)))
                     .collect(),
+                leaf => scalar_json(&scalar(&leaf)?),
             };
             Some((key, value))
         })
         .collect()
+}
+
+/// A map of scalars as a JSON object.
+pub fn scalars_json(scalars: &BTreeMap<String, Scalar>) -> Value {
+    Value::Object(
+        scalars
+            .iter()
+            .map(|(k, v)| (k.clone(), scalar_json(v)))
+            .collect(),
+    )
 }
 
 pub fn from_json(d: &Value) -> Result<Term, FplError> {
@@ -137,7 +119,7 @@ impl<'a> JsonSource<'a> {
         span: bool,
         decode: impl FnOnce(&'a Value) -> Option<T>,
     ) -> Field<T> {
-        let key = key(name, span);
+        let key = wire_key(name, span);
         Field::new(
             name,
             match self.0.get(&key) {

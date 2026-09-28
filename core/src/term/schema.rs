@@ -27,6 +27,16 @@ pub enum Slot<A> {
 
 pub type Fields<A> = Vec<(&'static str, Slot<A>)>;
 
+impl<A> Slot<A> {
+    pub fn holds_term(&self) -> bool {
+        match self {
+            Slot::Child(_) | Slot::Children(_) => true,
+            Slot::Rows(_, rows) => rows.iter().flatten().any(|(_, slot)| slot.holds_term()),
+            _ => false,
+        }
+    }
+}
+
 /// The constructor's name and its fields, in declared order.
 pub fn fields<A>(layer: &TermF<A>) -> (&'static str, Fields<&A>) {
     use Slot::*;
