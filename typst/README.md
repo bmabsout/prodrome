@@ -42,7 +42,8 @@ $ typst compile --package-path pkgs typst/examples/roadmap.typ
 $ typst compile --package-path pkgs --features html --format html typst/examples/item.typ
 ```
 
-`nix flake check` does the same (`checks.prodrome-typst`).
+`nix flake check` does the same (`checks.prodrome-typst`), and compiles
+`tests/laws.typ`, whose asserts are the package's laws.
 
 ## The data
 
@@ -68,13 +69,14 @@ store by the viewer's own `viewer/src/view.ts`.
   in the core's list order (ascending value, then every item with no number,
   ties by id: the order `prodrome list` prints), then the closed.
 - `item(data, todo, markup:, objects:, back:)`: body, price and state, the
-  marks, detail, the spec, the explanation and the history, each event
-  linked to its object file.
+  marks, detail, the price as the explanation reads it ("70%, flat"), and the
+  history, each event dated and linked to its object file.
 - `ring(values, size:, thickness:)`: the next hours clockwise from twelve
   o'clock, one wedge per sample, with a tick at now.
 - `bar(values, now:, width:, height:)`: one cell per day, the past faded, a
   tick at now.
-- `state-of`, `colour-of`, `percent`, `price`, `explanation`, `listed`, and
+- `state-of`, `colour-of`, `percent`, `price`, `when` (an instant as a reader
+  says it), `explanation`, `listed`, and
   the colours `problem`, `watch`, `fine`, `unpriced`.
 
 `markup: true` reads an item's body and detail as Typst markup; the default

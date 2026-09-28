@@ -60,6 +60,33 @@
   str(int(calc.round(value * 100))) + "%"
 }
 
+// --- instants ----------------------------------------------------------------
+
+/// A naive instant's digits (`YYYY-MM-DD`, then `THH:MM:SS` or ` HH:MM:SS`
+/// and any fraction) as a datetime; the fraction is dropped.
+#let _instant(iso) = if iso.len() == 10 {
+  datetime(year: int(iso.slice(0, 4)), month: int(iso.slice(5, 7)), day: int(iso.slice(8, 10)))
+} else {
+  datetime(
+    year: int(iso.slice(0, 4)),
+    month: int(iso.slice(5, 7)),
+    day: int(iso.slice(8, 10)),
+    hour: int(iso.slice(11, 13)),
+    minute: int(iso.slice(14, 16)),
+    second: int(iso.slice(17, 19)),
+  )
+}
+
+/// An instant as a reader says it: "Sep 27, 2026, 12:00", or "Sep 27, 2026"
+/// for a date alone.
+#let when(iso) = if iso.len() == 10 {
+  _instant(iso).display("[month repr:short] [day padding:none], [year]")
+} else {
+  _instant(iso).display("[month repr:short] [day padding:none], [year], [hour]:[minute]")
+}
+
+#let _looks-like-instant(value) = type(value) == str and value.match(regex("^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}.*)?$")) != none
+
 // --- target-agnostic pieces --------------------------------------------------
 
 /// Drawn content: itself on a page, an inline SVG in HTML.
@@ -194,7 +221,7 @@
   let closed = data.entries.filter(e => e.state != "open").sorted(key: e => e.todo)
 
   heading(level: 1, title)
-  _div("summary", [#open.len() open at #raw(data.at) — most urgent first.])
+  _div("summary", [#open.len() open on #when(data.at) — most urgent first.])
 
   _div("roadmap", table(
     columns: 4,
@@ -212,7 +239,7 @@
   if closed.len() > 0 {
     heading(level: 2)[Closed]
     list(..closed.map(e => [
-      #link(href(e.todo), raw(e.todo)) — #e.state #if e.at != "" [since #e.at]
+      #link(href(e.todo), raw(e.todo)) — #e.state #if e.at != "" [since #when(e.at)]
     ]))
   }
 }
@@ -221,17 +248,20 @@
 
 #let _children = ("terms", "term", "gate", "body", "delta", "pending")
 
-#let _note(value) = if type(value) == str { value } else { repr(value) }
+#let _note(value) = if _looks-like-instant(value) { when(value) } else if type(value) == str { value } else {
+  repr(value)
+}
 
-/// An explanation tree (prodrome-wasm `explain`): each node's kind and value,
-/// its notes, and its parts beneath it. A decoration of the term, never a
-/// second reading of it. A node's `null` is always `∅`: every node of a term
-/// that explains at all is linked.
+/// An explanation tree (prodrome-wasm `explain`), each node read the way it
+/// prices: its value and its kind ("70%, flat"), its notes, and its parts
+/// beneath it. A decoration of the term, never a second reading of it. A
+/// node's `null` is always `∅`: every node of a term that explains at all is
+/// linked.
 #let explanation(node) = {
   let notes = node
     .pairs()
     .filter(((key, _)) => key not in ("kind", "value") and key not in _children)
-  [#raw(node.kind) #price(if node.value == none { "absent" } else { node.value })]
+  [#price(if node.value == none { "absent" } else { node.value }), #node.kind]
   if notes.len() > 0 {
     [ — ]
     notes.map(((key, value)) => [#emph(key): #_note(value)]).join([, ])
@@ -252,8 +282,8 @@
   }
 }
 
-/// One todo's page: its body, its price and marks, its detail, the spec that
-/// prices it and why it is worth what it is, and its history. `objects` is
+/// One todo's page: its body, its price and marks, its detail, why it is
+/// worth what it is, and its history. `objects` is
 /// where an object's file is linked (`objects/<hash>.py` on the site).
 #let item(
   data,
@@ -283,22 +313,17 @@
     #price(entry.value) · #state-of(entry.value) · #entry.state
     #if entry.claimed != "" [ · claimed #entry.claimed]
     #if entry.unconfirmed [ · unconfirmed]
-    #if entry.at not in (none, "") [ · since #entry.at]
+    #if entry.at not in (none, "") [ · since #when(entry.at)]
   ])
 
   let detail = _field(record, "detail")
   if detail != "" { _div("detail", _text(detail, markup)) }
 
   heading(level: 2)[Price]
-  raw(entry.spec, block: true, lang: "python")
+  let tree = data.at("explain", default: (:)).at(todo, default: none)
+  if tree != none { _div("explanation", explanation(tree)) }
   if entry.value == "absent" [Absent: this item has no value, which is not a zero.]
   if entry.unlinked != none [Not priced: #entry.unlinked]
-
-  let tree = data.at("explain", default: (:)).at(todo, default: none)
-  if tree != none {
-    heading(level: 2)[Explanation]
-    _div("explanation", explanation(tree))
-  }
 
   let events = data.at("history", default: (:)).at(todo, default: ())
   if events.len() > 0 {
@@ -308,7 +333,7 @@
       table.header([When], [Event], [By], [Object]),
       ..events
         .map(e => (
-          e.at,
+          when(e.at),
           e.kind,
           e.actor,
           link(objects + e.hash + ".py", raw(e.hash.slice(0, 12))),
