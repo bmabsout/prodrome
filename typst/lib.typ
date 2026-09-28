@@ -225,12 +225,13 @@
 
 /// An explanation tree (prodrome-wasm `explain`): each node's kind and value,
 /// its notes, and its parts beneath it. A decoration of the term, never a
-/// second reading of it.
+/// second reading of it. A node's `null` is always `∅`: every node of a term
+/// that explains at all is linked.
 #let explanation(node) = {
   let notes = node
     .pairs()
     .filter(((key, _)) => key not in ("kind", "value") and key not in _children)
-  [#raw(node.kind) #price(node.value)]
+  [#raw(node.kind) #price(if node.value == none { "absent" } else { node.value })]
   if notes.len() > 0 {
     [ — ]
     notes.map(((key, value)) => [#emph(key): #_note(value)]).join([, ])
