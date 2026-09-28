@@ -158,6 +158,10 @@ verifies exactly as it did.
   reports a receipt for the quarantined file until the object is restored.
   Test: `after_quarantine_the_store_answers_and_verify_holds_the_receipt` in
   `core/src/store.rs`, and `prodrome-cli`'s verbs.
+- **Git must not rewrite object bytes (SPEC §3, README).** A store under git
+  needs `objects/** -text -diff` in its `.gitattributes`, or a line-ending
+  conversion leaves files that no longer hash to their names; documented,
+  and added to this repository's own `.gitattributes`.
 - `breaks::series_knots` puts a knot a second before a jump that falls
   exactly on the window's end, as it does for every other jump, instead of
   drawing a ramp across it. No frozen series moves.
