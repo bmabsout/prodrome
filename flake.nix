@@ -309,6 +309,7 @@
               typst compile --package-path "$NIX_BUILD_TOP/pkgs" --features html --format html "$doc.typ" "$doc.html"
             done
             grep -q 'href="#/todo/ship-the-viewer"' roadmap.html
+            grep -q '<strong>the viewer</strong>' roadmap.html
             grep -q '<svg' item.html
             touch $out
           '';
