@@ -30,10 +30,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
 use prodrome::fold::{Binding, Env};
-use prodrome::fpl::{self, Closed, Instant, Outcome, Term};
+use prodrome::fpl::{self, Closed, Instant, Outcome};
 use prodrome::literal;
 use prodrome::payload::Payload;
 use prodrome::policy::Untrusted;
+use prodrome::term::Term;
 use prodrome::view::Entry;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};

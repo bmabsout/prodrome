@@ -63,11 +63,12 @@ use std::collections::BTreeMap;
 
 use crate::event::{Hash, TodoEvent, TodoId};
 use crate::fold::{self, Binding};
-use crate::fpl::{self, LinkError, Term};
+use crate::fpl::{self, LinkError};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
 use crate::registers::{self, Kind, Node};
+use crate::term::Term;
 
 /// A todo's price at a moment: §6.4's function and that function's value
 /// there. Every row has one: a todo with no function is priced by `Absent`

@@ -14,9 +14,10 @@ mod common;
 
 use common::vectors::{each, field, integer, moment, text_at, vectors};
 use prodrome::fpl::{
-    explained, fulfillment, instant_of, normalize, parse_term, print_term, Closed, Env, Outcome,
+    explained, fulfillment, instant_of, parse_term, print_term, Closed, Env, Outcome,
 };
 use prodrome::literal::Value;
+use prodrome::term::normalize;
 
 fn env_of(bounds: &[Value]) -> Env {
     Env {

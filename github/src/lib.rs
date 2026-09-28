@@ -27,9 +27,10 @@ use std::path::Path;
 use prodrome::event::{
     canonical, mk_completed, mk_created, mk_reopened, mk_spec_revised, TodoEvent, TodoId,
 };
-use prodrome::fpl::{self, datetime_of, mk_ref, Term};
+use prodrome::fpl::{self, datetime_of, mk_ref};
 use prodrome::literal::{Datetime, ProdromeError};
 use prodrome::reference::{mk_authored, mk_source, Todo};
+use prodrome::term::Term;
 use serde_json::Value;
 
 use prodrome_cli::command::Price as PriceArgs;

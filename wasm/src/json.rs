@@ -23,9 +23,10 @@
 use prodrome::fpl::{
     delta_from_hours, explained, iso, mk_absent, mk_after, mk_conj, mk_curve, mk_decay, mk_flat,
     mk_gate, mk_importance, mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref,
-    mk_shift, mk_within, parse_iso, total_seconds, Closed, CurvePoint, Env, Explanation, FplError,
-    Instant, Note, Scalar, Term, TermF, PRIORITY_POWER,
+    mk_shift, mk_within, parse_iso, total_seconds, Closed, Env, Explanation, FplError, Instant,
+    Note, Scalar, PRIORITY_POWER,
 };
+use prodrome::term::{CurvePoint, Term, TermF};
 use serde_json::{Map, Value};
 
 /// The core's own refusal, spelled here because `fpl::err` is private to it —

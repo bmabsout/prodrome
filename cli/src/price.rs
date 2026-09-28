@@ -1,10 +1,9 @@
 //! The command line's two shapes of price, as §7 terms, and the one place an
 //! instant is read.
 
-use prodrome::fpl::{
-    self, datetime_of, delta_from_hours, instant_of, mk_decay, mk_flat, Instant, Term,
-};
+use prodrome::fpl::{self, datetime_of, delta_from_hours, instant_of, mk_decay, mk_flat, Instant};
 use prodrome::literal::Datetime;
+use prodrome::term::Term;
 
 use crate::command::Price;
 use crate::Error;
@@ -87,7 +86,8 @@ pub fn iso(at: Datetime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prodrome::fpl::{print_term, Closed, Env, Instant, Term};
+    use prodrome::fpl::{print_term, Closed, Env, Instant};
+    use prodrome::term::Term;
 
     fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
         prodrome::fpl::fulfillment(&Closed::of(term.clone()).expect("no Ref"), now, env)

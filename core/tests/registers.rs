@@ -242,7 +242,7 @@ fn on_every_dag_the_registers_are_the_folds() {
 }
 
 fn printed(
-    specs: &BTreeMap<prodrome::event::TodoId, prodrome::fpl::Term>,
+    specs: &BTreeMap<prodrome::event::TodoId, prodrome::term::Term>,
 ) -> BTreeMap<String, String> {
     specs
         .iter()

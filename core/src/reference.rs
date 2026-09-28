@@ -19,12 +19,12 @@
 //! interprets them.
 
 use crate::event::{mk_record, newtype_str, Name, TodoEvent};
-use crate::fpl::Term;
 use crate::literal::{Call, Datetime, ProdromeError, Value};
 use crate::payload::{
     bool_field, datetime_field, expect_call, spec_field, string_field, string_or_empty, strings,
     tuple_field, tuple_or_empty, Payload,
 };
+use crate::term::Term;
 
 newtype_str! {
     /// Typst MARKUP source — the inside of a `[..]` block. A different type

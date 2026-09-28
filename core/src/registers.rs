@@ -30,10 +30,11 @@ use std::sync::Arc;
 
 use crate::event::{Authored, Envelope, Hash, TodoEvent, TodoId};
 use crate::fold::{Binding, Env};
-use crate::fpl::{self, Instant, Term};
+use crate::fpl::{self, Instant};
 use crate::literal::Datetime;
 use crate::payload::Payload;
 use crate::policy::Policy;
+use crate::term::Term;
 
 /// A set of small non-negative integers as a bitmap.
 ///
