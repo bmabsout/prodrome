@@ -10,10 +10,8 @@
   --muted: #666;
   --rule: #ddd;
   --paper: #fdfcf9;
-  --problem: #e55900;
-  --watch: #a44554;
-  --fine: #379775;
   --unpriced: #9b9b9b;
+  --error: #c0392b;
   color-scheme: light;
 }
 
@@ -39,23 +37,21 @@ h1, h2, h3 { line-height: 1.2; }
 .typst table { border-collapse: collapse; width: 100%; }
 .typst th, .typst td { text-align: left; vertical-align: middle; padding: .35rem .5rem; border-bottom: 1px solid var(--rule); }
 .typst th { font-weight: 400; color: var(--muted); font-size: .8rem; }
-.typst svg { vertical-align: middle; }
+/* Typst sizes an SVG inline, in em; a narrow screen shrinks it, keeping its shape. */
+.typst svg { vertical-align: middle; max-width: 100%; height: auto !important; }
 .roadmap { overflow-x: auto; }
+.roadmap td:first-child { width: 1%; white-space: nowrap; }
 .summary, .crumbs, .facts { color: var(--muted); }
 .facts { margin: .5rem 0 1rem; }
-.marks { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
-.price { font-weight: 700; }
-.price.problem { color: var(--problem); }
-.price.watch { color: var(--watch); }
-.price.fine { color: var(--fine); }
-.price.unpriced { color: var(--unpriced); }
+.marks { margin: 0 0 1rem; }
+.price { white-space: nowrap; }
+.price svg { vertical-align: -.1em; max-width: none; }
+.price.unpriced { color: var(--unpriced); font-size: .85em; font-style: italic; }
 .explanation ul { margin: .2rem 0; }
 .typst pre { overflow-x: auto; white-space: pre-wrap; }
 .note { color: var(--muted); font-size: .85rem; }
 
-/* On a phone the bar column is the first to go; the ring stays. */
 @media (max-width: 36rem) {
-  .roadmap th:nth-child(4), .roadmap td:nth-child(4) { display: none; }
   body { font-size: 17px; }
 }
 
@@ -75,7 +71,7 @@ h1, h2, h3 { line-height: 1.2; }
 .editor .completions .detail { color: var(--muted); }
 .editor .hover { min-height: 1.4em; color: var(--muted); font-size: .8rem; white-space: pre-wrap; }
 .editor .problems { margin: .2rem 0; padding-left: 1.2rem; font-size: .8rem; white-space: pre-wrap; }
-.editor .problems .error { color: var(--problem); }
+.editor .problems .error { color: var(--error); }
 .editor .problems .warning { color: var(--muted); }
 .editor .preview { border: 1px dashed var(--rule); padding: .5rem 1rem; }
 .editor .preview.stale { opacity: .5; }
@@ -92,4 +88,4 @@ h1, h2, h3 { line-height: 1.2; }
 .typ-label, .typ-ref, .typ-link { color: #1d5d8c; text-decoration: underline; }
 .typ-punct, .typ-op, .typ-math-delim, .typ-math-op { color: #555; }
 .typ-pol { color: #444; }
-.typ-error { color: var(--problem); text-decoration: wavy underline; }
+.typ-error { color: var(--error); text-decoration: wavy underline; }

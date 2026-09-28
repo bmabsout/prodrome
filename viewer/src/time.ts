@@ -8,7 +8,7 @@
 /** Milliseconds, reading a naive instant's digits as UTC. */
 export type Naive = number & { readonly naive: unique symbol };
 
-export const HOUR = 3_600_000;
+const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
 
 export function naive(iso: string): Naive {

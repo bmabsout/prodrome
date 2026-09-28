@@ -1,12 +1,14 @@
 // A headless smoke test of a built site: the list and one item, in Chromium.
 //
-//   node viewer/test/smoke.mjs SITE TODO [SHOTS]
+//   node viewer/test/smoke.mjs SITE TODO [SHOTS] [LIST]
 //
 // SITE is `viewer/assemble.sh`'s output. Serves it on a local port under
-// /prodrome/ (the path GitHub Pages uses), opens `#/`, waits for Typst to
-// have typeset it, checks the list, opens `#/todo/TODO`, checks the item page
-// and the editor (highlighting, completion, live preview), and fails on any
-// page error. Needs Playwright (`npm i -g playwright`, or NODE_PATH at one);
+// /prodrome/ (the path GitHub Pages uses), opens `#/` at a phone's width,
+// waits for Typst to have typeset it, checks the list, opens `#/todo/TODO`,
+// checks the item page and the editor (highlighting, completion, live
+// preview), and fails on any page error or on a page that scrolls sideways.
+// LIST, if given, is `prodrome list`'s output on the same store: the list
+// must name the same todos in the same order. Needs Playwright (`npm i -g playwright`, or NODE_PATH at one);
 // not part of `nix flake check`, which has no browser.
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
@@ -16,7 +18,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
-const [site, todo, shots] = process.argv.slice(2);
+const [site, todo, shots, listed] = process.argv.slice(2);
 if (!site || !todo) {
   console.error("usage: smoke.mjs SITE TODO [SHOTS]");
   process.exit(2);
@@ -51,12 +53,14 @@ const check = (ok, what) => {
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM ?? undefined,
 });
-const page = await browser.newPage({ viewport: { width: 900, height: 1200 } });
+const WIDTH = 420;
+const page = await browser.newPage({ viewport: { width: WIDTH, height: 900 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 
 const typeset = () => page.waitForSelector('body[data-state="typeset"]', { timeout: 120_000 });
+const sideways = () => page.evaluate(() => document.documentElement.scrollWidth);
 
 let start = Date.now();
 await page.goto(`${base}#/`);
@@ -67,7 +71,14 @@ check(rows > 0, `the list has ${rows} rows (first render ${listMs} ms)`);
 check((await page.locator(".roadmap svg").count()) > 0, "the list draws its marks as SVG");
 const hrefs = await page.locator(".roadmap a").evaluateAll((as) => as.map((a) => a.getAttribute("href")));
 check(hrefs.every((h) => /^#\/todo\/.+/.test(h)), "every item links to #/todo/<id>");
-console.log(`     status: ${await page.locator("#status").textContent()}`);
+if (listed) {
+  const cli = (await readFile(listed, "utf8")).split("\n").slice(1).filter(Boolean).map((line) => line.split(/\s+/)[1]);
+  const shown = hrefs.map((h) => decodeURIComponent(h.slice("#/todo/".length))).slice(0, rows);
+  check(JSON.stringify(shown) === JSON.stringify(cli), `the list is in prodrome list's order (${cli.length} rows)`);
+}
+check((await sideways()) <= WIDTH, `the list does not scroll sideways at ${WIDTH}px`);
+const status = await page.locator("#status").textContent();
+check(!/ ms|\dT\d/.test(status), `the status line reads as a date, with no timings: ${status}`);
 if (shots) await page.screenshot({ path: `${shots}/list.png`, fullPage: true });
 
 start = Date.now();
@@ -76,10 +87,13 @@ await page.goto(`${base}#/todo/${encodeURIComponent(todo)}`);
 await typeset();
 const itemMs = Date.now() - start;
 check((await page.locator(".typst h1, .typst h2").first().textContent()).length > 0, `the item page has a heading (${itemMs} ms)`);
-check((await page.locator(".marks svg").count()) === 2, "the item page draws the ring and the bar");
+check((await page.locator(".marks svg").count()) === 1, "the item page draws its thirty days");
+check((await page.locator(".facts .price svg").count()) === 1, "the item page draws its price's pie");
+check(!/\d{2}:\d{2}:\d{2}/.test(await page.locator(".typst").first().textContent()), "no instant is shown as raw ISO");
+check((await sideways()) <= WIDTH, `the item page does not scroll sideways at ${WIDTH}px`);
 check(await page.locator(".editor textarea").isVisible(), "the editor is on the item page");
 check((await page.locator(".editor .shade span").count()) > 0, "the editor's source is highlighted");
-check((await page.locator(".editor .preview svg").count()) > 0, "the editor's preview typeset the ring");
+check((await page.locator(".editor .preview svg").count()) > 0, "the editor's preview typeset the marks");
 
 const area = page.locator(".editor textarea");
 await area.click();

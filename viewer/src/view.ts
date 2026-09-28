@@ -5,11 +5,11 @@
 // `entries` composes the rows (SPEC §6.7), `fold` gives each todo's function
 // and the environment, `link` closes a function over the others, and
 // `fulfillment`, `series_knots` and `explain` read it. What this file adds is
-// WHICH instants to ask about — the 72 hours of the ring and the 30 days of
-// the bar — and the shape `typst/lib.typ` reads. A value is a number or `∅`
+// WHICH instants to ask about — the thirty days of the trace, fifteen back
+// and fifteen ahead — and the shape `typst/lib.typ` reads. A value is a number or `∅`
 // (`null`): a term with no value at an instant, never read as a number.
 
-import { DAY, HOUR, iso, naive, plus, type Naive } from "./time";
+import { DAY, iso, naive, plus, type Naive } from "./time";
 
 /** The part of prodrome-wasm this reads — the glue module satisfies it. */
 export interface Core {
@@ -54,11 +54,14 @@ export interface Marker {
   hash: string;
 }
 
+/**
+ * A todo's trace: `values` evenly spaced from `back` days before now to
+ * `ahead` days after it, both ends included, one of them at now.
+ */
 export interface Marks {
-  /** Fulfillment at now and each hour after, `RING_HOURS` of them. */
-  ring: Reading[];
-  /** One value per day; the cells before `now` are the past. */
-  bar: { values: Reading[]; now: number };
+  back: number;
+  ahead: number;
+  values: Reading[];
 }
 
 /** What `typst/lib.typ` reads — see typst/README.md. */
@@ -77,9 +80,10 @@ export interface View {
   focus: string | null;
 }
 
-export const RING_HOURS = 72;
-export const BAR_DAYS = 30;
-export const BAR_PAST = 10;
+export const BACK_DAYS = 15;
+export const AHEAD_DAYS = 15;
+/** Samples a day: every six hours, so a day's shape shows and now is one of them. */
+export const PER_DAY = 4;
 
 interface Fold {
   env: unknown;
@@ -123,19 +127,15 @@ function between(knots: [Naive, Reading][], at: Naive): Reading {
  */
 function marksOf(core: Core, closed: string, now: Naive, env: string, history: string): Marks {
   const at = (when: Naive): Reading => core.fulfillment(closed, iso(when), env) ?? null;
-  const ring: Reading[] = [];
-  for (let h = 0; h < RING_HOURS; h++) {
-    ring.push(at(plus(now, h * HOUR)));
-  }
-  const from = plus(now, -BAR_PAST * DAY);
+  const from = plus(now, -BACK_DAYS * DAY);
   const past = JSON.parse(core.series_knots(closed, iso(from), iso(now), history)) as Knots;
   const knots = past.knots.map(([when, v]) => [naive(when), v] as [Naive, Reading]);
   const values: Reading[] = [];
-  for (let d = 0; d < BAR_DAYS; d++) {
-    const middle = plus(from, d * DAY + DAY / 2);
-    values.push(d < BAR_PAST ? between(knots, middle) : at(middle));
+  for (let i = -BACK_DAYS * PER_DAY; i <= AHEAD_DAYS * PER_DAY; i++) {
+    const when = plus(now, (i * DAY) / PER_DAY);
+    values.push(i < 0 ? between(knots, when) : at(when));
   }
-  return { ring, bar: { values, now: BAR_PAST } };
+  return { back: BACK_DAYS, ahead: AHEAD_DAYS, values };
 }
 
 /**
