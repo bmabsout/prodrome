@@ -95,6 +95,8 @@ pub const VECTORS: Table = Table(&[
     // --- what a case is made of ---------------------------------------------
     // One todo's outcome: §6.1's environment as a tuple instead of a map.
     ("Bound", &["todo", "kind", "at"]),
+    // An open candidate of a todo whose state is in conflict.
+    ("Open", &["todo"]),
     // One todo's term, as its canonical print — `specs` and `flatten`.
     ("Spec", &["todo", "term"]),
     // One todo's winning record, as its canonical print.

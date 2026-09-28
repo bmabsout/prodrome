@@ -1,73 +1,30 @@
 //! §6.7 — the entry: one todo as the folds see it at a moment.
 //!
-//! See ../../SPEC.md; the composition this module names is the one
-//! the reference's `entries_of` performed before this module existed; its
-//! answers were the differential this module was built against.
+//! See ../../SPEC.md and Draft A. Not a fifth fold: every field is a
+//! projection of the todo's [`Registers`] or §7's evaluator over them, composed
+//! once here so every consumer performs it once.
 //!
-//! THIS IS NOT A FIFTH FOLD. Every number and every name below comes out of
-//! §6's folds and §7's evaluator, called in one order and written down:
+//! TWO READINGS. The CONFIRMED one, under the host's [`Policy`], prices and is
+//! what a reader is told; the CLAIMED one, under [`Everything`], exists only to
+//! name what a writer claimed and the policy did not bind ([`Entry::claim`]).
 //!
-//! | field       | where it comes from                                        |
-//! | ----------- | ---------------------------------------------------------- |
-//! | `outcome`   | `env_of(registers::fold(nodes, t, policy))`                 |
-//! | `claim`     | `fold::env_at(events, t, Everything)`, where it DISAGREES   |
-//! | `spec`      | `fold::flatten(events, t, policy)`, `Absent` where none     |
-//! | `value`     | `fulfillment(link(spec, link_specs(all)), t, env(confirmed))`
-//! | `content`   | `registers::chosen_of(confirmed, Kind::Content)`            |
-//! | `conflicts` | `registers::conflicts_of(confirmed)`                        |
-//! | `stream`    | the nodes whose event names this todo, in causal order      |
+//! A CONFLICT IS ITS CANDIDATES. Nothing picks a winner: the outcome and the
+//! content are candidate sets, and the function is `Least` over the worlds, so
+//! a conflict prices as its most urgent candidate.
 //!
-//! It lives in the Prodrome because every word of it is the Prodrome's own —
-//! there is no notion here of a page, a briefing or a phone — and because the
-//! server and a browser's offline fold must be the SAME reading of
-//! it. A composition written twice is two compositions, and two
-//! compositions drift; the law in §9 says this one equals the folds it
-//! names, on random DAGs.
-//!
-//! WHY TWO READINGS. The CONFIRMED one — under the host's [`Policy`] — is what
-//! prices and what a reader is told; the CLAIMED one is taken under
-//! [`Everything`], where every event binds, and exists only to name what a
-//! writer has CLAIMED and has not bound. Both stay in the core: a store that
-//! kept only the filtered reading could not show a claim at all. The gap
-//! between them is a value ([`Entry::claim`]) rather than something implicit —
-//! displayed, never applied.
-//!
-//! ABSENCE. Three of them, and each is a type rather than a sentinel:
-//!
-//! - no spec and no checklist means NO FUNCTION (§6.4), and the row's
-//!   function is then `Absent`, whose value is `∅` — `None` in
-//!   [`Price::value`], never a number. Absence is not zero: a todo the chain
-//!   has no price for is not a todo worth nothing, and a list puts it after
-//!   every priced one ([`list_order`]).
-//! - no binding means OPEN, which is an absent `outcome` and not a third
-//!   constructor beside `Completed` and `Cancelled`.
-//! - no content record means the chain holds events about this todo and no
-//!   `Authored` among them, which happens and is not an error.
-//!
-//! AN ENTRY CARRIES A NAME, NOT A RECORD. `content` is the [`Hash`] of the
-//! object whose write the content register shows; a consumer holding the
-//! objects looks it up. The Prodrome does not know what a
-//! body is for, and a whole todo body reprinted per entry per request was
-//! measured at 1.7 ms of a 12 ms fold (`registers::chosen_of`).
-//!
-//! EVERY TODO EVER MENTIONED, INCLUDING THE FUTURE'S. The rows are one per
-//! todo any event in `nodes` names — not one per todo known by `t`. An event
-//! dated after `t` still puts its todo on the list, open and unpriced, and its
-//! object still appears in that todo's `stream`. That is the reference's
-//! reading and it is the honest one: the stream is the chain's record of a
-//! todo, and `t` is the moment BELIEF is asked about, not a filter on what
-//! exists.
+//! EVERY TODO EVER MENTIONED. A row per todo any node names, whatever `t` is:
+//! `t` asks what is believed, not what exists.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::event::{Hash, TodoEvent, TodoId};
-use crate::fold::{self, Binding};
-use crate::fpl::{self, LinkError};
+use crate::event::{Hash, TodoId};
+use crate::fold::{self, Kind, Registers};
+use crate::fpl::{self, Candidates, Env, LinkError, Outcome};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
-use crate::registers::{self, Kind, Node};
+use crate::registers::{self, Genesis, Node};
 use crate::term::Term;
 
 /// A todo's price at a moment: §6.4's function and that function's value
@@ -77,7 +34,7 @@ use crate::term::Term;
 pub struct Price {
     /// The todo's fulfillment FUNCTION over all of time — its revisions and
     /// its lifecycle as pieces of one term. Not the authored spec of the
-    /// moment; `specs_at` is that. Open: its `Ref`s are other todos'. `Absent`
+    /// moment; `fold::specs` is that. Open: its `Ref`s are other todos'. `Absent`
     /// where the todo has no spec and no checklist.
     pub spec: Term,
     /// `spec`, linked against every todo's function, at the moment the entry
@@ -146,31 +103,23 @@ impl Confidence {
 /// One todo, as the folds see it at a moment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
+    pub genesis: Genesis,
     pub todo: TodoId,
-    /// The CONFIRMED binding; `None` is open.
-    pub outcome: Option<Binding>,
-    /// What every writer's events would bind and the confirmed reading refused
-    /// — `None` when the two agree. It is DISPLAYED, never applied.
-    ///
-    /// Two bindings of the same KIND at different instants do not disagree:
-    /// what a claiming event can say is that a todo is over, and an instant on
-    /// a binding the confirmed reading already made is not a claim about
-    /// anything a reader acts on. That is the reference's rule
-    /// (`view._entry`'s `disputed`, which compares the two outcomes' kinds).
-    pub claim: Option<Binding>,
+    /// The CONFIRMED candidate bindings, `None` for open: one member unless
+    /// the state is in conflict.
+    pub outcome: Candidates,
+    /// The CLAIMED candidates, where their kinds differ from the confirmed
+    /// ones. DISPLAYED, never applied.
+    pub claim: Option<Candidates>,
     pub confidence: Confidence,
     /// §6.4's function and its value here (see [`Price`]).
     pub price: Price,
-    /// The NAME of the object whose write the content register shows.
-    pub content: Option<Hash>,
-    /// The registers of this todo with more than one live write — a DAG's
-    /// concurrent writes that no later write has settled — each named by the
-    /// object that made it. Empty on a chain. The projections chose one of
-    /// them (the linearisation's last) to price and to show; this is that
-    /// choice made visible, so a human settles it with the next write.
+    /// The NAMES of the candidate content records, sorted.
+    pub content: Vec<Hash>,
+    /// The registers of this todo with more than one live write, each named by
+    /// the writes a human settles with the next one.
     pub conflicts: BTreeMap<Kind, Vec<Hash>>,
-    /// Every object whose event names this todo, in causal order. Merges carry
-    /// no event and are not on any todo's timeline.
+    /// Every object whose event names this todo, in causal order.
     pub stream: Vec<Hash>,
 }
 
@@ -195,38 +144,42 @@ impl Entry {
         self.price.value.as_ref().err()
     }
 
-    /// The lifecycle as the WIRE spells it: the outcome's constructor name
-    /// lowercased, `"open"` for no binding.
-    ///
-    /// A rendering, in the same category as [`fpl::iso`] and `print_term` and
-    /// for the same reason: the alternative is each binding rendering it, and
-    /// two spellings of one string is exactly the drift this module exists to
-    /// remove. It decides nothing — [`Entry::outcome`] is the value.
-    pub fn state(&self) -> &'static str {
-        lowered(self.outcome)
+    pub fn is_open(&self) -> bool {
+        self.outcome == Candidates::from([None])
     }
 
-    /// The confirmed binding's instant as CPython's `isoformat(" ")` — the
-    /// spelling `json_entry` shipped — and `""` for an open todo, which
-    /// is absence and not an instant.
+    /// The lifecycle as the WIRE spells it: each candidate's constructor name
+    /// lowercased, `"open"` for none, joined by `|` under a conflict. A
+    /// rendering; [`Entry::outcome`] is the value.
+    pub fn state(&self) -> String {
+        lowered(&self.outcome)
+    }
+
+    /// The bound candidates' instants as CPython's `isoformat(" ")`, `""` for
+    /// an open todo.
     pub fn at(&self) -> String {
-        self.outcome.map_or_else(String::new, |binding| {
-            fpl::iso(binding.at()).replace('T', " ")
-        })
+        let instants: Vec<String> = self
+            .outcome
+            .iter()
+            .flatten()
+            .map(|binding| fpl::iso(binding.at()).replace('T', " "))
+            .collect();
+        instants.join("|")
     }
 
-    /// The CLAIMED state, `""` where the two folds agree.
-    pub fn claimed(&self) -> &'static str {
-        match self.claim {
-            None => "",
-            claimed => lowered(claimed),
+    /// The CLAIMED state, `""` where the two readings agree and, as the wire
+    /// always spelt it, where the claim is only that the todo is open.
+    pub fn claimed(&self) -> String {
+        match &self.claim {
+            Some(claim) if *claim != Candidates::from([None]) => lowered(claim),
+            _ => String::new(),
         }
     }
 }
 
 /// §6.7's LIST ORDER, stated once so no host decides it: most urgent first —
-/// ascending in value, ties by id — then every row with no number, `absent`
-/// or not linking, by id.
+/// ascending in value, ties by (genesis, id) — then every row with no number,
+/// `absent` or not linking, by (genesis, id).
 pub fn list_order(a: &Entry, b: &Entry) -> Ordering {
     let number = |entry: &Entry| entry.value().ok().flatten();
     match (number(a), number(b)) {
@@ -235,165 +188,104 @@ pub fn list_order(a: &Entry, b: &Entry) -> Ordering {
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
-    .then_with(|| a.todo.cmp(&b.todo))
+    .then_with(|| (&a.genesis, &a.todo).cmp(&(&b.genesis, &b.todo)))
 }
 
-/// `state`'s and `claimed`'s shared spelling: `"open"`, `"completed"`,
-/// `"cancelled"`.
-fn lowered(binding: Option<Binding>) -> &'static str {
-    match binding {
-        None => "open",
-        Some(Binding::Completed(_)) => "completed",
-        Some(Binding::Cancelled(_)) => "cancelled",
-    }
+/// `state`'s and `claimed`'s shared spelling.
+fn lowered(candidates: &Candidates) -> String {
+    let names: Vec<&str> = candidates
+        .iter()
+        .map(|binding| match binding {
+            None => "open",
+            Some(Outcome::Completed(_)) => "completed",
+            Some(Outcome::Cancelled(_)) => "cancelled",
+        })
+        .collect();
+    names.join("|")
 }
 
-/// §6.7 — every todo the DAG has ever mentioned, as the folds see it at `t`.
+/// §6.7 — every todo the DAG has ever mentioned, as the folds see it at `t`,
+/// per genesis and by todo id.
 ///
-/// `nodes` is the DAG in the linearisation's order (parents first), which is
-/// what [`registers::nodes_of`] hands over and what every fold here reads;
-/// `policy` is §5's standing, the host's. The rows are sorted by todo id.
-///
-/// The composition, spelled once so the law can say "this equals that":
-///
-/// 1. `confirmed = registers::fold(nodes, Some(t), policy)`;
-/// 2. `outcome = env_of(confirmed)[todo]`;
-///    `claim = env_at(events, t, Everything)[todo]` where the two outcomes
-///    name different kinds;
-/// 3. `spec = flatten(events of nodes, t, policy)[todo]`, `Absent` where it
-///    has none, and `value` is `fulfillment(link(spec, link_specs(flatten(…),
-///    todos)), t, evaluation_env(env_of(confirmed)))` — every `Ref` bound to
-///    that todo's own function, `Absent` for a known todo with none, and the
-///    CONFIRMED environment, because a claim does not price; a `LinkError` in
-///    place of the reading where the spec does not link;
-/// 4. `content = chosen_of(confirmed, Kind::Content)[todo]`,
-///    `conflicts = conflicts_of(confirmed)[todo]`;
-/// 5. `confidence` is `Confidence::of(claim.is_some(),
-///    !policy.confirms(the winning content record))`.
-///
-/// ONE REGISTER FOLD, NOT TWO. The claimed side is asked exactly one question —
-/// what would every writer's events bind — and that question is §6.1's, which
-/// [`fold::env_at`] answers from the linearisation. §9.6 says the two agree on
-/// any DAG (`env_of(fold(nodes, …)) == env_at(events, …)`), so this is the
-/// same value; what it is not is the ancestry bitsets and the frontier
-/// arithmetic, which exist to make CONFLICTS visible, and a claim's conflicts
-/// are not shown. The confirmed side keeps the registers because it IS asked
-/// for conflicts, and for the object each content register chose. Measured on
-/// the live chain (565 objects, 2026-09-07): 1.5 ms against 0.3 ms.
-///
-/// Returns a `Result` because [`fold::flatten`] does: a fold over stored data
-/// answers with a value, never with an abort.
+/// Per todo: `outcome` is the confirmed state's candidates; `claim` the
+/// claimed ones where their kinds differ; `spec` is `flatten`'s function,
+/// `Absent` where none, and `value` its fulfillment at `t`, linked against its
+/// prodrome's functions under the CONFIRMED environment; `content` the
+/// candidate records' names; `conflicts` every register with two writes; and
+/// `confidence` whether a claim was refused or a candidate record is one the
+/// policy does not confirm.
 pub fn entries<P: Payload>(
     nodes: &[Node<P>],
     t: Datetime,
     policy: &impl Policy<P>,
 ) -> Result<Vec<Entry>, ProdromeError> {
-    let confirmed = registers::fold(nodes, Some(t), policy);
-    let believed = registers::env_of(&confirmed);
-    let content = registers::chosen_of(&confirmed, Kind::Content);
-    let mut conflicts = registers::conflicts_of(&confirmed);
-
-    let events: Vec<TodoEvent<P>> = nodes.iter().filter_map(|node| node.event.clone()).collect();
-    let claims = fold::env_at(&events, t, &Everything);
-    let specs = fold::flatten(&events, t, policy)?;
-    // ONE conversion of the environment for the whole list: §7's `Env` is
-    // keyed by event NAME and the fold's by `TodoId`, and converting per todo
-    // would rebuild it once per row.
-    let env = fold::evaluation_env(&believed);
+    let state = registers::fold(nodes);
     let now = fpl::instant_of(t);
-
-    // Which objects wrote about which todo, in the order the DAG handed them
-    // over — and, with it, WHICH TODOS THERE ARE. No filter on `t` and none on
-    // standing: a todo exists on this list because the chain mentions it.
-    let mut streams: BTreeMap<TodoId, Vec<Hash>> = BTreeMap::new();
-    for node in nodes {
-        if let Some(event) = &node.event {
-            streams
-                .entry(event.todo().clone())
-                .or_default()
-                .push(node.name.clone());
+    let mut out = Vec::new();
+    for (genesis, prodrome) in state.prodromes() {
+        let confirmed: Vec<(&TodoId, Registers<P>)> = prodrome
+            .iter()
+            .map(|(todo, stream)| (todo, Registers::read(stream, Some(now), policy)))
+            .collect();
+        let mut env = Env::new();
+        for (todo, registers) in &confirmed {
+            registers.bind(todo, &mut env);
         }
-    }
-    let linkable = fold::link_specs(&specs, streams.keys());
-
-    // The content records the policy does not CONFIRM, by object name — the
-    // second half of `confidence`, and the one question here that standing
-    // alone does not answer: such a record binds (the folds took it) and is
-    // still its writer's. Read off the events the nodes carry rather than off a
-    // re-lookup, because `content` names an object and this is what that
-    // object said.
-    let mut unconfirmed_content: BTreeMap<&Hash, bool> = BTreeMap::new();
-    for node in nodes {
-        if let Some(event @ TodoEvent::Authored(_)) = &node.event {
-            unconfirmed_content.insert(&node.name, !policy.confirms(event));
+        let functions = fold::flatten(prodrome, now, policy)?;
+        let linkable = fold::link_specs(&functions, prodrome.keys());
+        for (todo, registers) in confirmed {
+            let stream = &prodrome[todo];
+            let outcome = registers.outcomes();
+            let claimed = Registers::read(stream, Some(now), &Everything).outcomes();
+            let disputed = kinds(&claimed) != kinds(&outcome);
+            let provisional_content = registers
+                .content
+                .candidates()
+                .iter()
+                .any(|stamp| !policy.confirms(&stamp.event));
+            let spec = functions.get(todo).cloned().unwrap_or_else(fpl::mk_absent);
+            let linked = fpl::link(&spec, &linkable);
+            out.push(Entry {
+                genesis: genesis.clone(),
+                todo: todo.clone(),
+                claim: disputed.then_some(claimed),
+                confidence: Confidence::of(disputed, provisional_content),
+                outcome,
+                price: Price {
+                    value: linked
+                        .as_ref()
+                        .map(|closed| fpl::fulfillment(closed, now, &env))
+                        .map_err(Clone::clone),
+                    linked,
+                    spec,
+                },
+                content: registers
+                    .content
+                    .candidates()
+                    .iter()
+                    .map(|stamp| stamp.name.clone())
+                    .collect(),
+                conflicts: registers.conflicts(),
+                stream: stream.iter().map(|stamp| stamp.name.clone()).collect(),
+            });
         }
-    }
-
-    let mut out = Vec::with_capacity(streams.len());
-    for (todo, stream) in streams {
-        let outcome = believed.outcomes.get(&todo).copied();
-        let claimed = claims.outcomes.get(&todo).copied();
-        let disputed = kind_of(claimed) != kind_of(outcome);
-        let written = content.get(&todo).cloned();
-        let provisional_content = written
-            .as_ref()
-            .and_then(|name| unconfirmed_content.get(name))
-            .copied()
-            .unwrap_or(false);
-        let spec = specs.get(&todo).cloned().unwrap_or_else(fpl::mk_absent);
-        let linked = fpl::link(&spec, &linkable);
-        let price = Price {
-            value: linked
-                .as_ref()
-                .map(|closed| fpl::fulfillment(closed, now, &env))
-                .map_err(Clone::clone),
-            linked,
-            spec,
-        };
-        out.push(Entry {
-            claim: if disputed { claimed } else { None },
-            confidence: Confidence::of(disputed, provisional_content),
-            outcome,
-            price,
-            content: written,
-            conflicts: conflicts
-                .remove(&todo)
-                .map(|by_kind| {
-                    by_kind
-                        .into_iter()
-                        .map(|(kind, frontier)| {
-                            (
-                                kind,
-                                frontier
-                                    .writes()
-                                    .iter()
-                                    .map(|write| write.at.clone())
-                                    .collect(),
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            stream,
-            todo,
-        });
     }
     Ok(out)
 }
 
-/// The outcome's constructor name, or `"open"` for no binding — the three
-/// values `disputed` compares. `None` is a value here and not a missing one:
-/// a claiming `Reopened` the confirmed reading refuses is a claim that the
-/// todo is OPEN, and comparing `Option`s would have made that the same as
-/// having nothing to say.
-fn kind_of(binding: Option<Binding>) -> &'static str {
-    binding.map_or("open", Binding::kind)
+/// The candidates' constructor names, `"open"` for none: the instants alone
+/// do not dispute a binding.
+fn kinds(candidates: &Candidates) -> BTreeSet<&'static str> {
+    candidates
+        .iter()
+        .map(|binding| binding.as_ref().map_or("open", Outcome::kind))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_sealed, seal_hash, Actor};
+    use crate::event::{mk_completed, mk_sealed, seal_hash, Actor, TodoEvent};
     use crate::fpl::mk_flat;
     use crate::policy::Untrusted;
     use crate::reference::{mk_authored, Todo};
@@ -452,10 +344,11 @@ mod tests {
             panic!("one todo")
         };
         assert_eq!(
-            entry.outcome, None,
+            entry.outcome,
+            Candidates::from([None]),
             "the confirmed reading refuses the claim"
         );
-        assert!(matches!(entry.claim, Some(Binding::Completed(_))));
+        assert_eq!(entry.claimed(), "completed");
         assert_eq!(
             entry.confidence,
             Confidence::Provisional(Provisional::Claimed),
@@ -482,8 +375,8 @@ mod tests {
             Confidence::Provisional(Provisional::Content)
         );
         assert_eq!(
-            entry.content.as_ref(),
-            Some(&nodes[0].name),
+            entry.content,
+            [nodes[0].name.clone()],
             "the name of the winning record, not the record"
         );
         assert_eq!(
@@ -507,9 +400,9 @@ mod tests {
             panic!("one todo")
         };
         assert_eq!(entry.confidence, Confidence::Confirmed);
-        assert_eq!(entry.outcome, None);
+        assert!(entry.is_open());
         assert_eq!(entry.value(), Ok(None), "the chain knows no price yet");
-        assert_eq!(entry.content, None, "and no record yet");
+        assert!(entry.content.is_empty(), "and no record yet");
         assert_eq!(entry.stream.len(), 1, "the object is still its stream");
     }
 
@@ -525,7 +418,7 @@ mod tests {
         };
         assert_eq!(
             entry.outcome,
-            Some(Binding::Completed(fpl::instant_of(at(3))))
+            Candidates::from([Some(Outcome::Completed(fpl::instant_of(at(3))))])
         );
         assert_eq!(entry.claim, None, "the two folds agree");
         assert_eq!(entry.confidence, Confidence::Confirmed);

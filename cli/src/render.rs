@@ -4,8 +4,8 @@
 //! thing that writes to a stream, so a test drives a verb and reads its answer.
 
 use prodrome::event::TodoId;
+use prodrome::fold::Kind;
 use prodrome::fpl::print_term;
-use prodrome::registers::Kind;
 use prodrome::view::{list_order, Confidence, Entry, Provisional};
 
 use crate::price::iso;
@@ -68,7 +68,7 @@ pub fn list(reading: &Reading) -> String {
     let mut rows: Vec<&Entry> = reading
         .entries
         .iter()
-        .filter(|entry| entry.outcome.is_none() && reading.existed(&entry.todo))
+        .filter(|entry| entry.is_open() && reading.existed(&entry.todo))
         .collect();
     rows.sort_by(|a, b| list_order(a, b));
 
@@ -129,9 +129,10 @@ pub fn show(reading: &Reading, todo: &TodoId) -> Option<String> {
         "content",
         entry
             .content
-            .as_ref()
+            .iter()
             .map(|hash| hash.as_str())
-            .unwrap_or(""),
+            .collect::<Vec<_>>()
+            .join(" "),
     );
     for (kind, names) in &entry.conflicts {
         field(

@@ -29,8 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
-use prodrome::fold::{Binding, Env};
-use prodrome::fpl::{self, Candidates, Closed, Instant, Outcome};
+use prodrome::fpl::{self, Candidates, Closed, Env, Instant, Outcome};
 use prodrome::literal;
 use prodrome::payload::Payload;
 use prodrome::policy::Untrusted;
@@ -276,7 +275,7 @@ impl History {
 /// to [`crate::fulfillment`] without rewriting anything. [`json_entry`]'s `state`/`at` is a RENDERING of this
 /// (lowercased, `isoformat(" ")`), which `Entry::state`/`Entry::at` perform in
 /// the core so that both bindings spell it one way.
-pub fn json_binding(binding: Binding) -> Value {
+pub fn json_binding(binding: Outcome) -> Value {
     json!({ "kind": binding.kind(), "at": fpl::iso(binding.at()) })
 }
 
@@ -287,23 +286,52 @@ pub fn json_env(env: &Env) -> Value {
         "outcomes": Value::Object(
             env.outcomes
                 .iter()
-                .map(|(todo, binding)| (todo.as_str().to_owned(), json_binding(*binding)))
+                .map(|(todo, candidates)| (todo.clone(), json_outcome(candidates)))
                 .collect(),
         ),
         "tended": json_tended(&env.tended),
     })
 }
 
+/// One binding as [`json_binding`], a conflict as the array of its
+/// candidates with `null` for an open one.
+fn json_outcome(candidates: &Candidates) -> Value {
+    match candidates.iter().collect::<Vec<_>>()[..] {
+        [Some(binding)] => json_binding(*binding),
+        ref many => Value::Array(
+            many.iter()
+                .map(|binding| binding.map_or(Value::Null, json_binding))
+                .collect(),
+        ),
+    }
+}
+
 /// Per todo, its tendings as ISO instants, ascending.
-pub fn json_tended(tended: &BTreeMap<TodoId, BTreeSet<Instant>>) -> Value {
+pub fn json_tended(tended: &BTreeMap<String, BTreeSet<Instant>>) -> Value {
     Value::Object(
         tended
             .iter()
             .map(|(todo, tendings)| {
                 (
-                    todo.as_str().to_owned(),
+                    todo.clone(),
                     strings(tendings.iter().map(|at| fpl::iso(*at))),
                 )
+            })
+            .collect(),
+    )
+}
+
+/// Per todo, its one candidate as `one` renders it, or the array of them
+/// under a conflict.
+pub fn json_candidates<T>(map: &BTreeMap<TodoId, Vec<T>>, one: impl Fn(&T) -> Value) -> Value {
+    Value::Object(
+        map.iter()
+            .map(|(todo, candidates)| {
+                let value = match &candidates[..] {
+                    [only] => one(only),
+                    many => Value::Array(many.iter().map(&one).collect()),
+                };
+                (todo.as_str().to_owned(), value)
             })
             .collect(),
     )
@@ -391,15 +419,6 @@ pub fn json_record<P: Payload>(record: &Authored<P>) -> Value {
     Value::Object(out)
 }
 
-pub fn json_content<P: Payload>(content: &BTreeMap<TodoId, Authored<P>>) -> Value {
-    Value::Object(
-        content
-            .iter()
-            .map(|(todo, record)| (todo.as_str().to_owned(), json_record(record)))
-            .collect(),
-    )
-}
-
 /// One §6.7 entry, in the shape the reference's row carried and the
 /// wire still carries — one row, one reading, on every host.
 ///
@@ -436,7 +455,11 @@ pub fn json_entry(entry: &Entry) -> Value {
                 })
                 .collect(),
         ),
-        "content": entry.content.as_ref().map(Hash::as_str),
+        "content": match &entry.content[..] {
+            [] => Value::Null,
+            [one] => json!(one.as_str()),
+            many => strings(many.iter().map(|name| name.as_str().to_owned())),
+        },
         "spec": fpl::print_term(entry.spec()),
         "stream": strings(entry.stream.iter().map(|name| name.as_str().to_owned())),
     })
@@ -470,10 +493,9 @@ pub fn strings(items: impl IntoIterator<Item = String>) -> Value {
 mod tests {
     use super::*;
     use prodrome::event::Hash;
-    use prodrome::fold::Binding;
+    use prodrome::fold::Kind;
     use prodrome::fpl::{instant_of, mk_flat};
     use prodrome::literal::Datetime;
-    use prodrome::registers::Kind;
     use prodrome::view::{Confidence, Price, Provisional};
 
     fn at(day: u32) -> Datetime {
@@ -493,8 +515,9 @@ mod tests {
     #[test]
     fn an_entry_crosses_as_the_eleven_keys_the_page_reads() {
         let entry = Entry {
+            genesis: None,
             todo: TodoId::new("alpha").expect("valid"),
-            outcome: Some(Binding::Completed(instant_of(at(3)))),
+            outcome: [Some(Outcome::Completed(instant_of(at(3))))].into(),
             claim: None,
             confidence: Confidence::Provisional(Provisional::Content),
             price: Price {
@@ -502,7 +525,7 @@ mod tests {
                 value: Ok(Some(0.25)),
                 linked: Ok(fpl::Closed::of(mk_flat(0.25).expect("valid")).expect("closed")),
             },
-            content: Some(name('a')),
+            content: vec![name('a')],
             conflicts: [(Kind::State, vec![name('b'), name('c')])]
                 .into_iter()
                 .collect(),
@@ -532,16 +555,17 @@ mod tests {
     #[test]
     fn an_open_unpriced_todo_crosses_as_absences_and_not_as_zeroes() {
         let entry = Entry {
+            genesis: None,
             todo: TodoId::new("beta").expect("valid"),
-            outcome: None,
-            claim: Some(Binding::Cancelled(instant_of(at(5)))),
+            outcome: [None].into(),
+            claim: Some([Some(Outcome::Cancelled(instant_of(at(5))))].into()),
             confidence: Confidence::Provisional(Provisional::Claimed),
             price: Price {
                 spec: fpl::mk_absent(),
                 value: Ok(None),
                 linked: Ok(fpl::Closed::of(fpl::mk_absent()).expect("closed")),
             },
-            content: None,
+            content: vec![],
             conflicts: BTreeMap::new(),
             stream: vec![],
         };
@@ -596,11 +620,11 @@ mod tests {
     #[test]
     fn the_environment_crosses_with_its_tendings() {
         let mut env = Env::new();
-        let todo = TodoId::new("brush").expect("valid");
-        env.outcomes
-            .insert(todo.clone(), Binding::Completed(instant_of(at(2))));
-        env.tended
-            .insert(todo, [instant_of(at(1)), instant_of(at(10))].into());
+        env.bind("brush", Outcome::Completed(instant_of(at(2))));
+        env.tended.insert(
+            "brush".to_owned(),
+            [instant_of(at(1)), instant_of(at(10))].into(),
+        );
         let json = json_env(&env);
         assert_eq!(
             json,
@@ -610,7 +634,7 @@ mod tests {
             })
         );
         let back = parse_env(&json.to_string()).expect("the shape fold emits");
-        assert_eq!(back, prodrome::fold::evaluation_env(&env));
+        assert_eq!(back, env);
 
         let recur = parse_closed(
             "term",
@@ -655,6 +679,41 @@ mod tests {
         assert!(History::parse(r#"{"a": []}"#).is_err());
     }
 
+    /// A conflict crosses as its candidates: the state joined by `|`, the
+    /// records' names and the environment's outcome as arrays, `null` open.
+    #[test]
+    fn a_conflict_crosses_as_its_candidates() {
+        let candidates: Candidates = [None, Some(Outcome::Completed(instant_of(at(3))))].into();
+        let mut env = Env::new();
+        env.outcomes.insert("alpha".to_owned(), candidates.clone());
+        let json = json_env(&env);
+        assert_eq!(
+            json["outcomes"]["alpha"],
+            json!([Value::Null, {"kind": "Completed", "at": "2026-09-03T12:00:00"}])
+        );
+        assert_eq!(parse_env(&json.to_string()).expect("round-trips"), env);
+
+        let entry = Entry {
+            genesis: None,
+            todo: TodoId::new("alpha").expect("valid"),
+            outcome: candidates,
+            claim: None,
+            confidence: Confidence::Confirmed,
+            price: Price {
+                spec: fpl::mk_absent(),
+                value: Ok(None),
+                linked: Ok(fpl::Closed::of(fpl::mk_absent()).expect("closed")),
+            },
+            content: vec![name('a'), name('b')],
+            conflicts: BTreeMap::new(),
+            stream: vec![],
+        };
+        let json = json_entry(&entry);
+        assert_eq!(json["state"], "open|completed");
+        assert_eq!(json["at"], "2026-09-03 12:00:00");
+        assert_eq!(json["content"], json!(["a".repeat(64), "b".repeat(64)]));
+    }
+
     #[test]
     fn an_open_term_is_refused_where_a_closed_one_is_read() {
         let refusal = parse_closed("term", r#"{"kind": "ref", "todo": "a"}"#);
@@ -669,8 +728,9 @@ mod tests {
     #[test]
     fn an_unlinked_entry_crosses_with_its_reason() {
         let entry = Entry {
+            genesis: None,
             todo: TodoId::new("alpha").expect("valid"),
-            outcome: None,
+            outcome: [None].into(),
             claim: None,
             confidence: Confidence::Confirmed,
             price: Price {
@@ -678,7 +738,7 @@ mod tests {
                 value: Err(fpl::LinkError::Unknown("ghost".to_owned())),
                 linked: Err(fpl::LinkError::Unknown("ghost".to_owned())),
             },
-            content: None,
+            content: vec![],
             conflicts: BTreeMap::new(),
             stream: vec![],
         };

@@ -17,10 +17,10 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::vectors::{each, field, integer, moment, strings, text, text_at, vectors};
+use common::{authored_at, env_at, flatten, specs_at};
 use prodrome::event::{canonical, parse_envelope, Actor, TodoEvent};
-use prodrome::fold::{authored_at, env_at, flatten, history, specs_at, Binding, Env};
-use prodrome::fpl::{instant_of, iso, print_term};
-use prodrome::literal::{print_literal, Datetime, Value};
+use prodrome::fpl::{instant_of, iso, print_term, Env, Outcome};
+use prodrome::literal::{print_literal, Value};
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 
@@ -52,11 +52,11 @@ type Outcomes = BTreeMap<String, (String, String)>;
 fn outcomes(env: &Env) -> Outcomes {
     env.outcomes
         .iter()
-        .map(|(todo, binding)| {
-            (
-                todo.as_str().to_owned(),
-                (binding.kind().to_owned(), iso(binding.at())),
-            )
+        .map(|(todo, candidates)| {
+            let [Some(binding)] = candidates.iter().collect::<Vec<_>>()[..] else {
+                panic!("a chain has one candidate per register")
+            };
+            (todo.clone(), (binding.kind().to_owned(), iso(binding.at())))
         })
         .collect()
 }
@@ -159,15 +159,12 @@ fn every_log_folds_to_the_references_env_specs_content_flatten_and_history() {
             .filter(|text| text.starts_with("Piecewise("))
             .count();
 
-        // §9.4: the history is the environment as a function of time, and at
-        // this moment it IS the environment.
-        let past = history(&events, &untrusted);
+        // §9.4: the history at this moment IS the environment.
         assert_eq!(
-            outcomes(&past.at(t)),
+            outcomes(&env),
             frozen_outcomes(log, "history_at"),
             "seed {seed}: history"
         );
-        assert_eq!(past.at(t), env, "seed {seed}: history.at == env_at");
     }
     // The corpus exercises what it is for. A zero here would mean the vectors
     // stopped covering a case and this file went quietly green.
@@ -176,9 +173,8 @@ fn every_log_folds_to_the_references_env_specs_content_flatten_and_history() {
     assert!(resolved > 0, "some todos are resolved at the moment asked");
 }
 
-/// The one ordering (§6): every fold reads `chronological`, so an event dated
-/// after the moment is invisible to all five — and the print of an event is
-/// what the reference memoises for the same reason, so it is checked here too.
+/// An event dated after the moment is invisible to every fold — and the print
+/// of an event is what the reference memoises, so it is checked here too.
 #[test]
 fn a_later_event_is_invisible_and_every_event_prints_as_the_reference_wrote_it() {
     let mut dropped = 0;
@@ -190,12 +186,10 @@ fn a_later_event_is_invisible_and_every_event_prints_as_the_reference_wrote_it()
         }
         let t = moment(field(log, "at"));
         let untrusted = policy(log);
-        let known: Vec<&Event> = prodrome::fold::chronological(&events, t).collect();
-        assert!(known.len() <= events.len());
-        dropped += events.len() - known.len();
+        let only_known: Vec<Event> = events.iter().filter(|e| e.at() <= t).cloned().collect();
+        dropped += events.len() - only_known.len();
         // Folding only what was known by `t` is the same as folding everything
-        // and letting `chronological` do the dropping.
-        let only_known: Vec<Event> = known.into_iter().cloned().collect();
+        // and letting the moment do the dropping.
         assert_eq!(
             env_at(&only_known, t, &untrusted),
             env_at(&events, t, &untrusted),
@@ -206,38 +200,6 @@ fn a_later_event_is_invisible_and_every_event_prints_as_the_reference_wrote_it()
         dropped > 0,
         "the vectors hold events dated after their moment"
     );
-}
-
-/// §9.4 across the whole corpus, at instants the generator never asked about:
-/// `history.at(t)` is `env_at(·, t)` for every `t`, not only for the one the
-/// vector pinned.
-#[test]
-fn history_equals_env_at_at_every_instant_a_log_mentions() {
-    let logs = logs();
-    let mut asked = 0;
-    for log in &logs {
-        let seed = integer(field(log, "seed"));
-        let events = events_of(log);
-        let untrusted = policy(log);
-        let past = history(&events, &untrusted);
-        // Every instant the log names, plus the moment the vector pinned: the
-        // transitions are where the two could differ, so they are what to ask.
-        let instants: BTreeSet<Datetime> = events
-            .iter()
-            .map(TodoEvent::at)
-            .chain(std::iter::once(moment(field(log, "at"))))
-            .collect();
-        for t in instants {
-            assert_eq!(
-                past.at(t),
-                env_at(&events, t, &untrusted),
-                "seed {seed}: at {}",
-                iso(instant_of(t))
-            );
-            asked += 1;
-        }
-    }
-    assert!(asked > logs.len(), "more instants than logs");
 }
 
 /// SPEC §9.1 ON THE GENERIC PATH. The vectors' record prints were taken with
@@ -266,7 +228,7 @@ fn every_record_print_round_trips_byte_for_byte_under_the_reference_payload() {
     );
 }
 
-/// The `Binding` ADT is not a boolean: a completion and a cancellation are
+/// The `Outcome` ADT is not a boolean: a completion and a cancellation are
 /// different facts, and the vectors hold both.
 #[test]
 fn the_corpus_holds_both_outcomes() {
@@ -274,10 +236,10 @@ fn the_corpus_holds_both_outcomes() {
     for log in &logs() {
         let events = events_of(log);
         let env = env_at(&events, moment(field(log, "at")), &policy(log));
-        for binding in env.outcomes.values() {
+        for binding in env.outcomes.values().flatten().flatten() {
             kinds.insert(match binding {
-                Binding::Completed(_) => "Completed",
-                Binding::Cancelled(_) => "Cancelled",
+                Outcome::Completed(_) => "Completed",
+                Outcome::Cancelled(_) => "Cancelled",
             });
         }
     }

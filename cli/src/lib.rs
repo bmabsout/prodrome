@@ -25,12 +25,11 @@ use prodrome::event::{
     mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, Actor, Hash, TodoEvent,
     TodoId,
 };
-use prodrome::fold::authored_at;
 use prodrome::fpl::FplError;
 use prodrome::literal::{Datetime, ProdromeError};
 use prodrome::policy::Untrusted;
 use prodrome::reference::{mk_authored, Todo};
-use prodrome::registers::nodes_of;
+use prodrome::registers::{self, nodes_of};
 use prodrome::store::EventStore;
 use prodrome::view::{entries, Entry};
 
@@ -183,11 +182,19 @@ pub fn read(store: &Store, at: Datetime) -> Result<Reading, Error> {
         }
     }
     let mut details = BTreeMap::new();
-    for (todo, record) in authored_at(&events, at) {
-        if !record.payload.body.as_str().is_empty() {
-            bodies.insert(todo.clone(), record.payload.body.as_str().to_owned());
+    let state = registers::fold(&nodes);
+    for prodrome in state.prodromes().values() {
+        for (todo, records) in prodrome::fold::content(prodrome, prodrome::fpl::instant_of(at)) {
+            let joined = |field: fn(&Todo) -> &str| {
+                let texts: Vec<&str> = records.iter().map(|r| field(&r.payload)).collect();
+                texts.join(" | ")
+            };
+            let body = joined(|todo| todo.body.as_str());
+            if !body.is_empty() {
+                bodies.insert(todo.clone(), body);
+            }
+            details.insert(todo, joined(|todo| todo.detail.as_str()));
         }
-        details.insert(todo, record.payload.detail.as_str().to_owned());
     }
 
     Ok(Reading {

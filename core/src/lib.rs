@@ -20,12 +20,12 @@
 //!
 //! ```
 //! use prodrome::event::{mk_created, mk_spec_revised, TodoId};
-//! use prodrome::fold::{env_at, evaluation_env, flatten, link_specs};
+//! use prodrome::fold::{env, flatten, link_specs};
 //! use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, link, mk_decay};
 //! use prodrome::literal::Datetime;
 //! use prodrome::policy::Untrusted;
 //! use prodrome::reference::Todo;
-//! use prodrome::registers::nodes_of;
+//! use prodrome::registers::{fold, nodes_of};
 //! use prodrome::store::EventStore;
 //! use prodrome::view::entries;
 //!
@@ -56,24 +56,27 @@
 //! assert_eq!(objects.len(), 2);
 //! assert!(store.verify().is_empty(), "no finding against this store");
 //!
-//! // Fold at an instant, and price what the fold believes.
+//! // Fold at an instant, and price what the fold believes. The fold keeps each
+//! // prodrome's todos apart; this store is one.
 //! let now = Datetime::new(2026, 9, 14, 9, 0, 0, 0)?;
 //! let policy = store.policy();
-//! let events = store.events()?;
-//! let env = env_at(&events, now, policy);
-//! let functions = flatten(&events, now, policy)?;
+//! let nodes = nodes_of(&objects);
+//! let state = fold(&nodes);
+//! let prodrome = &state.prodromes()[&None];
+//! let env = env(prodrome, instant_of(now), policy);
+//! let functions = flatten(prodrome, instant_of(now), policy)?;
 //! let todo = TodoId::new("todo-1")?;
 //! // A spec may name other todos with `Ref`, so evaluation takes a CLOSED term:
 //! // `link` binds every reference to that todo's own function, and to
 //! // `Absent` for a todo the store knows that has none.
 //! let closed = link(&functions[&todo], &link_specs(&functions, [&todo]))?;
 //! // A value is `Option<f64>`: `None` is `∅`, the reading of `Absent`.
-//! let value = fulfillment(&closed, instant_of(now), &evaluation_env(&env));
+//! let value = fulfillment(&closed, instant_of(now), &env);
 //! assert!(value.is_some_and(|value| (0.0..=1.0).contains(&value)));
 //!
 //! // Or the whole composition at once: one row per todo the chain mentions,
 //! // each with its outcome, its function, its price and its conflicts (§6.7).
-//! let rows = entries(&nodes_of(&objects), now, policy)?;
+//! let rows = entries(&nodes, now, policy)?;
 //! assert_eq!(rows.len(), 1);
 //! assert_eq!(rows[0].state(), "open");
 //! assert_eq!(rows[0].value(), Ok(value));
@@ -92,8 +95,8 @@
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
 //! - `policy`   — §5: `Standing`, the `Policy` trait, and the reference policy
-//! - `fold`     — §6.1–6.5: causal folds, flatten, history
-//! - `registers`— §6.6: frontiers over the DAG, the fold as a monoid action
+//! - `registers`— §6.6: the DAG's structure and each todo's stream, a monoid action
+//! - `fold`     — §6.1–6.5: the registers, and every reading a projection of them
 //! - `breaks`   — §7 breakpoints and series knots
 //! - `view`     — §6.7: the entry, the composition of the folds above
 //! - `reference`— the payload the vectors were taken with (feature `reference`)
