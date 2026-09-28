@@ -195,7 +195,7 @@ pub fn series_knots(
         }
     }
     for j in &breaks.jumps {
-        if from < *j && *j < to {
+        if from < *j && *j <= to {
             instants.insert(*j - Duration::seconds(1));
         }
     }
