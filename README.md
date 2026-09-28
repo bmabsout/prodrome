@@ -257,9 +257,10 @@ It is a static site: the page fetches the objects of the `roadmap-data`
 branch as they are on disk, folds and prices them with the core compiled to
 WebAssembly, and typesets the result with Typst compiled to WebAssembly.
 Nothing is computed on a server. `#/` is the list, most urgent first, and
-`#/todo/<id>` one item: its body, price, explanation and history. Both pages
-carry the two marks: a ring of the next 72 hours and a 30-day bar, coloured
-Problem (below 0.5), Watch (below 0.7) or Fine. The item page also has a
+`#/todo/<id>` one item: its body, price, explanation and history. A list row
+draws its price as a small pie, and an item its thirty days, fifteen back and
+fifteen ahead, as one line; both are coloured on one continuous scale, red at
+0 through orange and yellow to green at 1. The item page also has a
 small Typst editor with highlighting and completion, as a demo; it saves
 nothing.
 
