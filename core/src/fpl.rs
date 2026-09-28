@@ -467,108 +467,61 @@ fn iso_note(t: Instant) -> Note {
     Note::One(Scalar::Text(iso(t)))
 }
 
-/// The term's own fields, as notes: every scalar of this layer, keyed the way
-/// the wire keys it, and none of its subterms.
-fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
-    let mut n = BTreeMap::new();
-    match term.out() {
-        TermF::Flat { value } => {
-            n.insert("value".into(), Note::One(Scalar::Float(*value)));
-        }
-        TermF::Decay {
-            start,
-            end,
-            end_date,
-            lead_up,
-            start_date,
-        } => {
-            n.insert("start".into(), Note::One(Scalar::Float(*start)));
-            n.insert("end".into(), Note::One(Scalar::Float(*end)));
-            n.insert("endDate".into(), iso_note(*end_date));
-            n.insert(
-                "leadUpHours".into(),
-                Note::One(Scalar::Float(total_seconds(*lead_up) / 3600.0)),
-            );
-            if let Some(sd) = start_date {
-                n.insert("startDate".into(), iso_note(*sd));
-            }
-        }
-        TermF::Curve { points } => {
-            n.insert(
-                "points".into(),
-                Note::Maps(
-                    points
-                        .iter()
-                        .map(|pt| {
-                            let mut m = BTreeMap::new();
-                            m.insert("at".to_string(), Scalar::Text(iso(pt.at)));
-                            m.insert("value".to_string(), Scalar::Float(pt.value));
-                            if !pt.label.is_empty() {
-                                m.insert("label".to_string(), Scalar::Text(pt.label.clone()));
-                            }
-                            m
-                        })
-                        .collect(),
-                ),
-            );
-        }
-        TermF::Conj { p, .. } => {
-            n.insert("p".into(), Note::One(Scalar::Float(*p)));
-        }
-        TermF::Within { window, p, .. } => {
-            n.insert(
-                "windowHours".into(),
-                Note::One(Scalar::Float(total_seconds(*window) / 3600.0)),
-            );
-            n.insert("p".into(), Note::One(Scalar::Float(*p)));
-        }
-        TermF::Offset { delta, .. } => {
-            n.insert("delta".into(), Note::One(Scalar::Float(*delta)));
-        }
-        TermF::Shift { delta, .. } => {
-            n.insert(
-                "deltaHours".into(),
-                Note::One(Scalar::Float(total_seconds(*delta) / 3600.0)),
-            );
-        }
-        TermF::Importance { w, .. } => {
-            n.insert("w".into(), Note::One(Scalar::Float(*w)));
-        }
-        TermF::After {
-            event,
-            anchor,
-            needs,
-            ..
-        } => {
-            n.insert("event".into(), Note::One(Scalar::Text(event.clone())));
-            n.insert("anchor".into(), iso_note(*anchor));
-            if let Some(nd) = needs {
-                n.insert(
-                    "needsHours".into(),
-                    Note::One(Scalar::Float(total_seconds(*nd) / 3600.0)),
-                );
-            }
-        }
-        TermF::Ref { todo } => {
-            n.insert("todo".into(), Note::One(Scalar::Text(todo.clone())));
-        }
-        TermF::Recur { todo, anchor, .. } => {
-            n.insert("todo".into(), Note::One(Scalar::Text(todo.clone())));
-            n.insert("anchor".into(), iso_note(*anchor));
-        }
-        TermF::Periodic { period, anchor, .. } => {
-            n.insert(
-                "periodHours".into(),
-                Note::One(Scalar::Float(total_seconds(*period) / 3600.0)),
-            );
-            n.insert("anchor".into(), iso_note(*anchor));
-        }
-        // Gate, OffsetBy: every field is a subterm. Piecewise: its head and
-        // pieces are transitions, and `explained` writes `pieces`/`since`.
-        // Absent has no field at all.
-        TermF::Gate { .. } | TermF::OffsetBy { .. } | TermF::Piecewise { .. } | TermF::Absent => {}
+/// A field's key in the notes and on the wire: camelCase, a span suffixed `Hours`.
+pub fn wire_key(name: &str, span: bool) -> String {
+    let mut words = name.split('_');
+    let mut key = words.next().unwrap_or_default().to_owned();
+    for word in words {
+        let mut chars = word.chars();
+        key.extend(chars.next().map(|c| c.to_ascii_uppercase()));
+        key.push_str(chars.as_str());
     }
-    n
+    if span {
+        key.push_str("Hours");
+    }
+    key
+}
+
+pub fn hours(d: Delta) -> f64 {
+    total_seconds(d) / 3600.0
+}
+
+/// A leaf field as a note's scalar; an unset optional or an empty text is none.
+pub fn scalar<A>(slot: &Slot<A>) -> Option<Scalar> {
+    match slot {
+        Slot::Real(value) => Some(Scalar::Float(*value)),
+        Slot::At(t) => Some(Scalar::Text(iso(*t))),
+        Slot::Span(d) => Some(Scalar::Float(hours(*d))),
+        Slot::Text(text) if !text.is_empty() => Some(Scalar::Text(text.clone())),
+        _ => None,
+    }
+}
+
+/// Every leaf field, keyed by [`wire_key`].
+pub fn scalars<A>(fields: &Fields<A>) -> BTreeMap<String, Scalar> {
+    fields
+        .iter()
+        .filter_map(|(name, slot)| {
+            Some((wire_key(name, matches!(slot, Slot::Span(_))), scalar(slot)?))
+        })
+        .collect()
+}
+
+/// The layer's own fields as notes; its subterms are explained, not noted.
+fn scalar_notes(term: &Term) -> BTreeMap<String, Note> {
+    let (_, fields) = schema::fields(term.out());
+    fields
+        .iter()
+        .filter_map(|(name, slot)| {
+            let note = match slot {
+                Slot::Rows(_, rows) if !slot.holds_term() => {
+                    Note::Maps(rows.iter().map(scalars).collect())
+                }
+                leaf => Note::One(scalar(leaf)?),
+            };
+            Some((wire_key(name, matches!(slot, Slot::Span(_))), note))
+        })
+        .collect()
 }
 
 /// The term's own shape, with every node carrying its own fulfillment.
@@ -603,9 +556,7 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
         },
         TermF::Conj { terms, p } => {
             let kids: Vec<Explanation> = terms.iter().map(|t| explain(t, now, env)).collect();
-            // Over the members that have a value, as the mean is; an absent
-            // member bears no share. A conjunction with no value certifies
-            // nothing and apportions nothing.
+            // An absent member bears no share, and a conjunction with no value apportions nothing.
             if let Some(value) = value {
                 let vs: Vec<f64> = kids.iter().filter_map(|k| k.value).collect();
                 notes.insert(
@@ -651,9 +602,7 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
         },
         TermF::Within { window, p, term } => {
             let step = us_of(div_delta(*window, WITHIN_SAMPLES));
-            // The samples that have a value, and their instants: the mean is
-            // over these, so the peak is too. With none, there is no peak, and
-            // the subterm is explained where the window opens.
+            // The peak is over the samples that have a value, as the mean is; with none, `now`.
             let sampled: Vec<(Instant, f64)> = (0..=WITHIN_SAMPLES)
                 .map(|i| after(now, step * i))
                 .filter_map(|t| eval(term, t, env).map(|v| (t, v)))
@@ -719,7 +668,7 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
                     notes.insert("tended".into(), iso_note(tended));
                     notes.insert(
                         "agoHours".into(),
-                        Note::One(Scalar::Float(total_seconds(now - tended) / 3600.0)),
+                        Note::One(Scalar::Float(hours(now - tended))),
                     );
                     after(now, -us_of(tended - *anchor))
                 }
