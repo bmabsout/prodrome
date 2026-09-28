@@ -51,9 +51,8 @@ use crate::term::Term;
 ///   core's kinds: it refuses what a smart constructor would refuse, and its
 ///   error is the parse error.
 /// - [`Payload::spec`] and [`Payload::checklist_len`] are the ONLY readings §6
-///   takes. `flatten` (§6.4) reads both; `specs_at` (§6.2) and the spec
-///   register (§6.6) read the first; nothing else in the core looks inside a
-///   payload at all.
+///   takes. `flatten` (§6.4) reads both, the spec register (§6.2, §6.6) the
+///   first; nothing else in the core looks inside a payload at all.
 ///
 /// `PartialEq` and not `Eq`: a spec is an FPL [`Term`], and a term holds
 /// floats.
