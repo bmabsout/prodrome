@@ -42,7 +42,7 @@ fn every_reference_links_to_its_print_and_reads_its_samples() {
                     "Cancelled" => Outcome::Cancelled(at),
                     other => panic!("unknown env kind {other:?}"),
                 };
-                (text_at(bound, "todo").to_owned(), outcome)
+                (text_at(bound, "todo").to_owned(), [Some(outcome)].into())
             })
             .collect(),
         ..Env::new()

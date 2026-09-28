@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
 use prodrome::fold::{Binding, Env};
-use prodrome::fpl::{self, Closed, Instant, Outcome};
+use prodrome::fpl::{self, Candidates, Closed, Instant, Outcome};
 use prodrome::literal;
 use prodrome::payload::Payload;
 use prodrome::policy::Untrusted;
@@ -113,7 +113,8 @@ pub fn parse_closed(field: &str, json_text: &str) -> Result<Closed, Refusal> {
 
 /// `{"outcomes": {"<name>": {"kind": "Completed" | "Cancelled", "at":
 /// "<iso>"}}, "tended": {"<todo>": ["<iso>", …]}}` — §7's environment, its two
-/// halves as the core holds them. An outcome has the same two fields
+/// halves as the core holds them. A conflict's outcome is the array of its
+/// candidates, `null` for an open one. An outcome has the same two fields
 /// `conformance/fpl.py`'s `Bound(...)` carries, so a vector's environment
 /// reaches this without a translation step that could disagree. A half left
 /// out is empty, so `{}` is the environment that binds nothing; any other key
@@ -121,8 +122,15 @@ pub fn parse_closed(field: &str, json_text: &str) -> Result<Closed, Refusal> {
 pub fn parse_env(json_text: &str) -> Result<fpl::Env, Refusal> {
     let raw: EnvIn = serde_json::from_str(json_text).map_err(|e| format!("env: {e}"))?;
     let mut env = fpl::Env::new();
-    for (name, entry) in raw.outcomes {
-        env.outcomes.insert(name, entry.outcome()?);
+    for (name, bound) in raw.outcomes {
+        let candidates: Candidates = match bound {
+            Bound::One(entry) => [Some(entry.outcome()?)].into(),
+            Bound::Many(entries) => entries
+                .iter()
+                .map(|entry| entry.as_ref().map(EnvEntry::outcome).transpose())
+                .collect::<Result<_, _>>()?,
+        };
+        env.outcomes.insert(name, candidates);
     }
     env.tended = parse_tended("env.tended", raw.tended)?;
     Ok(env)
@@ -132,7 +140,7 @@ pub fn parse_env(json_text: &str) -> Result<fpl::Env, Refusal> {
 #[serde(deny_unknown_fields)]
 struct EnvIn {
     #[serde(default)]
-    outcomes: BTreeMap<String, EnvEntry>,
+    outcomes: BTreeMap<String, Bound>,
     #[serde(default)]
     tended: BTreeMap<String, Vec<String>>,
 }
@@ -152,6 +160,13 @@ fn parse_tended(
             Ok((todo, set))
         })
         .collect()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Bound {
+    One(EnvEntry),
+    Many(Vec<Option<EnvEntry>>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,7 +253,7 @@ impl History {
                 }
             }
             if let Some(outcome) = current {
-                env.outcomes.insert(todo.clone(), outcome);
+                env.bind(todo.clone(), outcome);
             }
         }
         for (todo, tendings) in &self.tended {

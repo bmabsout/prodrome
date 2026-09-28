@@ -302,7 +302,7 @@ proptest! {
         let poisoned = Env {
             outcomes: EVENTS
                 .iter()
-                .map(|e| ((*e).to_string(), Outcome::Cancelled(moment(-10_000))))
+                .map(|e| ((*e).to_string(), [Some(Outcome::Cancelled(moment(-10_000)))].into()))
                 .collect(),
             tended: EVENTS
                 .iter()

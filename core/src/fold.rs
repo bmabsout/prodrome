@@ -93,7 +93,7 @@ pub fn evaluation_env(env: &Env) -> fpl::Env {
         outcomes: env
             .outcomes
             .iter()
-            .map(|(todo, binding)| (todo.as_str().to_owned(), binding.outcome()))
+            .map(|(todo, binding)| (todo.as_str().to_owned(), [Some(binding.outcome())].into()))
             .collect(),
         tended: env
             .tended

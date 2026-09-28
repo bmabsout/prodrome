@@ -244,25 +244,31 @@ pub fn grown_to(
     .boxed()
 }
 
-/// Each of `EVENTS` bound or not, and tended at a few grid instants or not.
+/// Each of `EVENTS` bound or not, sometimes to a conflict of candidates, and
+/// tended at a few grid instants or not.
 pub fn an_env() -> impl Strategy<Value = Env> {
+    let candidate = prop::option::of((any::<bool>(), hours()));
     (
-        prop::collection::vec(prop::option::of((any::<bool>(), hours())), 3),
+        prop::collection::vec(prop::collection::btree_set(candidate, 0..3), 3),
         prop::collection::vec(prop::collection::btree_set(hours(), 0..4), 3),
     )
         .prop_map(|(choices, tended)| {
             let mut env = Env::new();
             for ((name, choice), tendings) in EVENTS.iter().zip(choices).zip(tended) {
-                if let Some((completed, at)) = choice {
-                    let at = moment(at);
-                    env.outcomes.insert(
-                        (*name).to_string(),
-                        if completed {
-                            Outcome::Completed(at)
-                        } else {
-                            Outcome::Cancelled(at)
-                        },
-                    );
+                let candidates: prodrome::fpl::Candidates = choice
+                    .into_iter()
+                    .map(|bound| {
+                        bound.map(|(completed, at)| {
+                            if completed {
+                                Outcome::Completed(moment(at))
+                            } else {
+                                Outcome::Cancelled(moment(at))
+                            }
+                        })
+                    })
+                    .collect();
+                if candidates.iter().any(Option::is_some) {
+                    env.outcomes.insert((*name).to_string(), candidates);
                 }
                 if !tendings.is_empty() {
                     env.tended.insert(

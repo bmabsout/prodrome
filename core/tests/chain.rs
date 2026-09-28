@@ -74,7 +74,7 @@ fn env(bindings: &[(&str, Outcome)]) -> Env {
     Env {
         outcomes: bindings
             .iter()
-            .map(|(name, outcome)| ((*name).to_owned(), *outcome))
+            .map(|(name, outcome)| ((*name).to_owned(), [Some(*outcome)].into()))
             .collect(),
         ..Env::new()
     }
@@ -115,7 +115,7 @@ fn poison(term: &Term) -> Env {
     Env {
         outcomes: events
             .into_iter()
-            .map(|event| (event, Outcome::Cancelled(moment(-10_000))))
+            .map(|event| (event, [Some(Outcome::Cancelled(moment(-10_000)))].into()))
             .collect(),
         ..Env::new()
     }
