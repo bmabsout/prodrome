@@ -14,7 +14,7 @@
 import initProdrome, * as prodrome from "prodrome-wasm";
 import initTypst, * as typstWasm from "typst-wasm";
 import { editor } from "./editor";
-import { iso, wall, type Naive } from "./time";
+import { wall, type Naive } from "./time";
 import { body, compilePage, itemDocument, listDocument, scratchDocument, type Typst } from "./typst";
 import { read, type Entry, type ObjectIn, type View } from "./view";
 
@@ -29,6 +29,14 @@ const FONTS = [
   "SourceSerif4-Regular.otf",
   "SourceSerif4-It.otf",
 ];
+
+/** An instant as a reader says it; a naive instant's digits read as UTC (see time.ts). */
+const READABLE = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  hourCycle: "h23",
+  timeZone: "UTC",
+});
 
 type Route = { page: "list" } | { page: "item"; todo: string };
 
@@ -46,19 +54,9 @@ export function route(hash: string): Route {
 
 const page = document.getElementById("page") as HTMLElement;
 const status = document.getElementById("status") as HTMLElement;
-const timings: Record<string, number> = {};
 
 function say(text: string) {
   status.textContent = text;
-}
-
-async function time<T>(name: string, work: () => Promise<T> | T): Promise<T> {
-  const start = performance.now();
-  try {
-    return await work();
-  } finally {
-    timings[name] = Math.round(performance.now() - start);
-  }
 }
 
 async function fetchObjects(): Promise<ObjectIn[]> {
@@ -121,29 +119,28 @@ async function main() {
     navigator.serviceWorker.register("sw.js").catch(() => undefined);
   }
   say("loading the core…");
-  await time("core", () => initProdrome({ module_or_path: `wasm/prodrome_bg.wasm?v=${__BUILD__}` }));
+  await initProdrome({ module_or_path: `wasm/prodrome_bg.wasm?v=${__BUILD__}` });
   say("fetching the objects…");
-  const objects = await time("objects", fetchObjects);
+  const objects = await fetchObjects();
   const typst = loadTypst();
 
   // THE ONE READ OF THE CLOCK, as in the command line: the core has none,
   // and a host names the instant it asks about.
   const now: Naive = wall(new Date());
+  const readAt = `${objects.length} objects, read ${READABLE.format(new Date(now))}`;
 
   let current = 0;
   const render = async () => {
     const ticket = ++current;
     const at = route(location.hash);
     const focus = at.page === "item" ? at.todo : null;
-    const view = await time("fold", () => read(prodrome, objects, now, focus));
+    const view = read(prodrome, objects, now, focus);
     if (at.page === "list") show(plain(view), false);
-    say(`${objects.length} objects, folded at ${iso(now)} — loading Typst…`);
+    say(`${readAt} — loading Typst…`);
 
     const engine = await typst;
     if (ticket !== current) return;
-    const compiled = await time("typeset", () =>
-      compilePage(engine, at.page === "list" ? listDocument : itemDocument, view),
-    );
+    const compiled = compilePage(engine, at.page === "list" ? listDocument : itemDocument, view);
     if (compiled.html === null) {
       const errors = compiled.diagnostics.map((d) => d.message).join("; ");
       say(`Typst could not typeset this page: ${errors}`);
@@ -164,10 +161,7 @@ async function main() {
     }
     show(content, true);
     document.title = at.page === "item" ? `${at.todo} — Prodrome` : "Roadmap — Prodrome";
-    say(
-      `${objects.length} objects, folded at ${iso(now)} · core ${timings.core} ms · ` +
-        `fold ${timings.fold} ms · typeset ${timings.typeset} ms`,
-    );
+    say(readAt);
     document.body.dataset.state = "typeset";
     window.scrollTo(0, 0);
   };
