@@ -1,0 +1,77 @@
+# THE VIEWER, PUBLISHED: the app built from `main`, the objects from
+# `roadmap-data`, deployed to GitHub Pages. The site is static — the reader's
+# browser folds and typesets it — so publishing is copying files.
+#
+# TWO BRANCHES FEED IT, AND ONLY ONE CAN TRIGGER IT DIRECTLY. For a push,
+# GitHub reads the workflow files in the PUSHED commit's own tree, and
+# `roadmap-data` is an orphan branch holding only its own `verify.yml`: a
+# `push: branches: [roadmap-data]` trigger here would never fire. So a change
+# to the roadmap arrives by `workflow_run` instead — when that branch's
+# `verify` workflow finishes — and deploys only a push that verified. (A
+# `workflow_run` workflow must live on the default branch, which this does.)
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: [verify]
+    types: [completed]
+    branches: [roadmap-data]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and a newer one never cancels an older one
+# mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # From roadmap-data: only a PUSH (not a pull request's run) whose verify
+    # passed. Everything else — a push to main, a manual run — always builds.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # The app: prodrome-wasm, prodrome-typst-wasm, the fonts and the
+      # TypeScript, with no data in it.
+      - run: nix build .#prodrome-viewer -o result-viewer --print-build-logs
+      # The data: exactly the commit verify checked when this run came from
+      # it, the branch's tip otherwise.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || 'roadmap-data' }}
+          path: roadmap-data
+      # Verify before publishing, with the binary built from the same main.
+      - run: nix build .#prodrome-cli -o result-cli --print-build-logs
+      - run: ./result-cli/bin/prodrome verify --store roadmap-data/roadmap
+      - run: sh viewer/assemble.sh result-viewer roadmap-data/roadmap site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

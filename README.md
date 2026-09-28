@@ -243,6 +243,49 @@ record crosses as its payload's own field names; the module is built with one
 payload, named once at the top of `wasm/src/lib.rs`, so a host with its own
 compiles its own wasm from this crate with that line changed.
 
+## The viewer: the Prodrome in the browser
+
+<https://bmabsout.github.io/prodrome/> shows this crate's roadmap, read-only.
+It is a static site: the page fetches the objects of the `roadmap-data`
+branch as they are on disk, folds and prices them with the core compiled to
+WebAssembly, and typesets the result with Typst compiled to WebAssembly.
+Nothing is computed on a server. `#/` is the list, most urgent first, and
+`#/todo/<id>` one item: its body, price, explanation and history. Both pages
+carry the two marks: a ring of the next 72 hours and a 30-day bar, coloured
+Problem (below 0.5), Watch (below 0.7) or Fine. The item page also has a
+small Typst editor with highlighting and completion, as a demo; it saves
+nothing.
+
+**It is an example, and it is optional.** `core/` and `cli/` never depend on
+Typst, and nothing in them assumes a store's text is Typst. Typst lives in
+three directories of its own, for a host whose items hold Typst:
+
+```
+typst-wasm/   Typst 0.15.1 for the browser: HTML export, highlighting, completion
+              (its own cargo workspace and lock file, outside the core's)
+typst/        prodrome-typst, a Typst package: the list, an item, the two marks
+viewer/       the static web app, in TypeScript, built by nix with tsc and esbuild
+```
+
+The command line's `list` and `show` stay plain text: making them typeset
+would make `cli/` depend on Typst. A reader who wants a PDF compiles the
+package's layouts with the `typst` binary (see `typst/README.md`).
+
+To run it locally against a checkout of `roadmap-data`:
+
+```console
+$ nix build .#prodrome-viewer -o result-viewer
+$ git worktree add ../roadmap-data roadmap-data
+$ sh viewer/assemble.sh result-viewer ../roadmap-data/roadmap site
+$ python3 -m http.server -d site 8000     # then open http://localhost:8000/
+```
+
+`assemble.sh` works on any store, so the same three commands show your own.
+`node viewer/test/smoke.mjs site <todo>` drives the list and one item in
+headless Chromium, if Playwright is installed. The Pages workflow
+(`.github/workflows/pages.yml`) runs the same build and assembly on every
+push to `main` and after every verified push to `roadmap-data`.
+
 ## Documentation
 
 - [`SPEC.md`](SPEC.md): the contract, with the laws in §9.
@@ -300,6 +343,12 @@ conformance/  the vectors, as literals of the grammar in SPEC §2
 docs/         how the repository runs its own roadmap: the issue mirror
 .github/      CI, and the two workflows that mirror and price issues
 SPEC.md       the specification
+
+              OPTIONAL EXTRAS, for visualising a store whose items hold Typst;
+              nothing above depends on them:
+typst-wasm/   Typst compiled for the browser, its own workspace
+typst/        prodrome-typst, the Typst package of layouts
+viewer/       the static web app published to GitHub Pages
 ```
 
 **The core stays free of any markup language.** `core/` and `cli/` store a

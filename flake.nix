@@ -133,6 +133,97 @@
             };
           };
 
+        # TYPST FOR THE BROWSER (`nix build .#prodrome-typst-wasm`) — an
+        # OPTIONAL EXTRA, outside the core's workspace and its lock file.
+        #
+        # `typst-wasm/` is its own cargo workspace with its own `Cargo.lock`,
+        # so the typesetter's ~290 crates never enter the tree `prodrome-core`
+        # and `prodrome-cli` are built from, and `src` above never sees it.
+        # Built the way `prodrome-wasm` is — vendored, offline, the same
+        # pinned wasm-bindgen, `wasm-opt -Os` — with the `web/` glue only: its
+        # one consumer is the viewer. `SIZES` records the module raw and
+        # brotli-compressed, since the size is what a first visit pays.
+        typst-wasm-src = lib.fileset.toSource {
+          root = ./typst-wasm;
+          fileset = lib.fileset.unions [
+            ./typst-wasm/Cargo.toml
+            ./typst-wasm/Cargo.lock
+            ./typst-wasm/src
+          ];
+        };
+
+        prodrome-typst-wasm = pkgs.stdenv.mkDerivation {
+          pname = "prodrome-typst-wasm";
+          version = "0.1.0";
+          src = typst-wasm-src;
+
+          cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./typst-wasm/Cargo.lock; };
+
+          nativeBuildInputs = [
+            pkgs.rustPlatform.cargoSetupHook
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.lld
+            pkgs.wasm-bindgen-cli_0_2_127
+            pkgs.binaryen
+            pkgs.brotli
+          ];
+
+          buildPhase = ''
+            runHook preBuild
+            cargo build --offline --frozen \
+              --profile wasm-release --target wasm32-unknown-unknown
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            wasm=target/wasm32-unknown-unknown/wasm-release/prodrome_typst_wasm.wasm
+            features="--enable-bulk-memory --enable-bulk-memory-opt --enable-sign-ext"
+            features="$features --enable-nontrapping-float-to-int --enable-mutable-globals"
+            features="$features --enable-multivalue --enable-reference-types"
+            wasm-bindgen --target web --out-dir "$out/web" --out-name typst "$wasm"
+            # shellcheck disable=SC2086
+            wasm-opt -Os $features -o "$out/web/typst_bg.wasm" "$out/web/typst_bg.wasm"
+            raw=$(stat -c %s "$out/web/typst_bg.wasm")
+            brotli=$(brotli -c -q 11 "$out/web/typst_bg.wasm" | wc -c)
+            printf 'typst_bg.wasm\t%s bytes raw\t%s bytes brotli\n' "$raw" "$brotli" | tee "$out/SIZES"
+            runHook postInstall
+          '';
+
+          meta = {
+            description = "Typst 0.15.1 as WebAssembly: HTML export, highlighting and completion";
+            license = with lib.licenses; [ mit asl20 ];
+          };
+        };
+
+        # THE VIEWER (`nix build .#prodrome-viewer`): the static app — no
+        # data in it — that folds a store with prodrome-wasm and typesets it
+        # with prodrome-typst-wasm and the `typst/` package. An EXAMPLE host.
+        # TypeScript typechecked by nixpkgs' `tsc` and bundled by its
+        # `esbuild`, so nothing comes from npm; `viewer/build.sh` is the whole
+        # recipe, and `viewer/assemble.sh` puts a store's objects beside it.
+        prodrome-viewer = pkgs.stdenv.mkDerivation {
+          pname = "prodrome-viewer";
+          version = "0.1.0";
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [ ./viewer ./typst ];
+          };
+          nativeBuildInputs = [ pkgs.esbuild pkgs.typescript ];
+          buildPhase = ''
+            runHook preBuild
+            sh viewer/build.sh "$out" ${prodrome-wasm}/web ${prodrome-typst-wasm}/web \
+              ${pkgs.libertinus}/share/fonts ${pkgs.source-serif}/share/fonts
+            runHook postBuild
+          '';
+          dontInstall = true;
+          meta = {
+            description = "A read-only Prodrome viewer: folded and typeset in the browser";
+            license = with lib.licenses; [ mit asl20 ];
+          };
+        };
+
         # THE BINARY (`nix build .#prodrome-cli`), which is also a check: this
         # builds `cli/` and runs its tests, so `nix flake check` covers the
         # verbs and CI has the executable it points at `roadmap/`.
@@ -165,7 +256,7 @@
       in
       {
         packages = {
-          inherit prodrome-cli prodrome-github prodrome-wasm;
+          inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-viewer;
           default = prodrome-cli;
         };
 
@@ -186,7 +277,38 @@
               doCheck = false;
             };
           };
-          inherit prodrome-cli prodrome-github prodrome-wasm;
+          # typst-wasm's own tests (offsets, errors as values, packages,
+          # highlighting, completion), natively: a separate workspace, so a
+          # separate check.
+          prodrome-typst-wasm-tests = pkgs.rustPlatform.buildRustPackage {
+            pname = "prodrome-typst-wasm-tests";
+            version = "0.1.0";
+            src = typst-wasm-src;
+            cargoLock.lockFile = ./typst-wasm/Cargo.lock;
+            doCheck = true;
+            installPhase = "touch $out";
+          };
+          # The Typst package compiles its examples with the typst the
+          # pinned nixpkgs ships — 0.15.1, the version typst-wasm pins — to
+          # PDF and to HTML, so a layout that breaks either target fails here.
+          prodrome-typst = pkgs.runCommand "prodrome-typst-check"
+            {
+              nativeBuildInputs = [ pkgs.typst ];
+              src = lib.fileset.toSource { root = ./typst; fileset = ./typst; };
+            } ''
+            mkdir -p pkgs/local/prodrome-typst
+            cp -r "$src" pkgs/local/prodrome-typst/0.1.0
+            chmod -R u+w pkgs
+            cd pkgs/local/prodrome-typst/0.1.0/examples
+            for doc in roadmap item; do
+              typst compile --package-path "$NIX_BUILD_TOP/pkgs" "$doc.typ" "$doc.pdf"
+              typst compile --package-path "$NIX_BUILD_TOP/pkgs" --features html --format html "$doc.typ" "$doc.html"
+            done
+            grep -q 'href="#/todo/ship-the-viewer"' roadmap.html
+            grep -q '<svg' item.html
+            touch $out
+          '';
+          inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-viewer;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's
