@@ -15,10 +15,10 @@ use prodrome::event::{
     canonical_envelope, parents_of, parse_envelope, seal_hash, Actor, Envelope, TodoEvent,
     EVENT_SIGNATURES,
 };
-use prodrome::fpl::TERM_SIGNATURES;
 use prodrome::payload::Payload;
 use prodrome::policy::{Policy, Untrusted};
 use prodrome::reference::Todo;
+use prodrome::term::schema::signatures;
 
 fn roster() -> Untrusted {
     // The roster is the DEPLOYMENT's, never the engine's (§5): it arrives as a
@@ -160,11 +160,14 @@ fn a_name_outside_spec_4_is_refused_at_the_envelope() {
 /// UNION the payload's, which is what a stored object is read against.
 #[test]
 fn the_vocabulary_is_exactly_the_spec_s() {
-    let mut names: Vec<&str> = TERM_SIGNATURES
-        .iter()
-        .chain(EVENT_SIGNATURES.iter())
-        .chain(Todo::VOCABULARY.iter())
-        .map(|(name, _)| *name)
+    let mut names: Vec<&str> = signatures()
+        .names()
+        .chain(
+            EVENT_SIGNATURES
+                .iter()
+                .chain(Todo::VOCABULARY.iter())
+                .map(|(name, _)| *name),
+        )
         .chain(std::iter::once(Todo::KIND))
         .collect();
     names.sort_unstable();

@@ -29,7 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use thiserror::Error;
 
-use crate::literal::{self, print_literal, Call, Finite, ProdromeError, Table};
+use crate::literal::{self, print_literal, Call, Finite, ProdromeError};
+use crate::term::schema::{self, signatures, Field, FieldSource, Fields, Slot};
 use crate::term::{normalize, CurvePoint, Term, TermF};
 use crate::topo::Topo;
 
@@ -1110,55 +1111,8 @@ pub fn parse_iso(s: &str) -> Result<Instant, FplError> {
         .map_err(|e| FplError(format!("not an ISO instant: {s:?} ({e})")))
 }
 
-// --- §2 the literal bridge: `literal` is the grammar ------------------------
-//
-// ONE printer and ONE parser for the whole store. `literal::Value` is the
-// grammar's expression, `literal::print_literal` its canonical print and
-// `literal::parse_literal` its strict parser; everything below is the
-// translation between a `Term` and one of those expressions, plus the
-// vocabulary §7 contributes to a loader — `TERM_SIGNATURES`, which `event`
-// chains onto §4's so a spec can nest anywhere inside a stored object.
-//
-// The two layers keep DIFFERENT time types, deliberately. `literal::Datetime`
-// and `literal::Timedelta` are the GRAMMAR's records: CPython's field bounds
-// and its normalisation, and no arithmetic at all. Evaluation needs arithmetic
-// on instants and spans — `now + δ`, `done − anchor`, a window cut into 64 —
-// and takes `chrono`'s. Unifying them would mean either a date library inside
-// `literal` or an evaluator built on a record with no `+`, so the layers meet
-// HERE, in four total conversions, and the grammar stays ignorant of time as
-// anything but a shape.
-
-/// §7's constructors, name and declared field order — the vocabulary a literal
-/// loader consults for a term. §2's `datetime`/`timedelta` are the grammar's
-/// own and need no entry.
-pub const TERM_SIGNATURES: &[(&str, &[&str])] = &[
-    ("Flat", &["value"]),
-    (
-        "Decay",
-        &["start", "end", "end_date", "lead_up", "start_date"],
-    ),
-    ("Curve", &["points"]),
-    ("CurvePoint", &["at", "value", "label"]),
-    ("Conj", &["terms", "p"]),
-    ("Offset", &["delta", "term"]),
-    ("Gate", &["gate", "body"]),
-    ("Shift", &["delta", "term"]),
-    ("Within", &["window", "p", "term"]),
-    ("Importance", &["w", "term"]),
-    ("After", &["event", "anchor", "term", "pending", "needs"]),
-    ("Recur", &["todo", "anchor", "term", "pending"]),
-    ("Periodic", &["period", "anchor", "term"]),
-    ("Piecewise", &["head", "pieces"]),
-    ("Piece", &["at", "term"]),
-    ("OffsetBy", &["delta", "term"]),
-    ("Ref", &["todo"]),
-    ("Absent", &[]),
-];
-
-/// The vocabulary of a BARE term — what [`parse_term`] reads against. A stored
-/// object is read against `event::EventVocabulary<P>`, which is this, §4's own
-/// kinds, and the host payload's.
-pub const TERM_VOCABULARY: Table = Table(TERM_SIGNATURES);
+// --- §2 the literal bridge: the schema as `literal::Value` ----------------
+// The grammar's time records carry no arithmetic and `chrono`'s do; they meet here.
 
 /// A term's refusal, as the store's refusal. The two layers keep their own
 /// error types because their vocabularies of failure differ — a store reports
@@ -1184,23 +1138,14 @@ impl From<ProdromeError> for FplError {
     }
 }
 
-fn f(name: &str, value: literal::Value) -> (String, literal::Value) {
-    (name.to_owned(), value)
-}
-
-/// Every float inside a `Term` is finite: `unit`, `mk_conj`'s range,
-/// `mk_offset`'s and `mk_importance`'s all refuse a NaN or an infinity, so the
-/// printer is total and the `Finite` smart constructor cannot fire here.
 fn float_value(value: f64) -> literal::Value {
     literal::Value::Float(
         Finite::new(value).expect("a Term's floats are finite: every mk_* refuses the rest"),
     )
 }
 
-/// The grammar's `datetime` as an evaluable instant — THE place §2's record
-/// becomes §7's arithmetic, and what `fold` uses to read an event's `at`.
-/// Total: `literal::Datetime`'s constructor already refused everything a
-/// `NaiveDateTime` cannot hold, so the `expect` is a proof and not a hope.
+/// The grammar's `datetime` as an evaluable instant; `fold` reads an event's
+/// `at` through it.
 pub fn instant_of(at: literal::Datetime) -> Instant {
     NaiveDate::from_ymd_opt(at.year(), at.month(), at.day())
         .and_then(|day| {
@@ -1209,10 +1154,7 @@ pub fn instant_of(at: literal::Datetime) -> Instant {
         .expect("literal::Datetime::new admits only representable instants")
 }
 
-/// And back, for an instant the evaluator computed. `literal::Datetime` is the
-/// narrower type — years 1..=9999, as CPython — so this is the fallible
-/// direction, and the caller that cannot fail is the one printing a `Term`
-/// whose instants all came through [`instant_of`].
+/// And back; fallible, since the grammar's years are 1..=9999.
 pub fn datetime_of(t: Instant) -> Result<literal::Datetime, ProdromeError> {
     literal::Datetime::new(
         t.year(),
@@ -1232,15 +1174,6 @@ fn instant_value(t: Instant) -> literal::Value {
     )
 }
 
-fn instant_field(value: &literal::Value, context: &str) -> Result<Instant, FplError> {
-    match value {
-        literal::Value::Datetime(at) => Ok(instant_of(*at)),
-        other => err(format!("{context} must be a datetime(...), got {other:?}")),
-    }
-}
-
-/// A `chrono` span as the grammar's `timedelta(...)`. An i64 of microseconds is
-/// at most ~107 000 days, well inside CPython's 999 999 999-day range.
 fn delta_value(d: Delta) -> literal::Value {
     literal::Value::Timedelta(
         literal::Timedelta::from_micros(i128::from(us_of(d)))
@@ -1248,316 +1181,125 @@ fn delta_value(d: Delta) -> literal::Value {
     )
 }
 
-fn delta_field(value: &literal::Value, context: &str) -> Result<Delta, FplError> {
-    match value {
-        literal::Value::Timedelta(d) => i64::try_from(d.total_micros())
-            .map(Duration::microseconds)
-            .map_err(|_| FplError(format!("{context} is too large to evaluate"))),
-        other => err(format!("{context} must be a timedelta(...), got {other:?}")),
+fn call_value(name: &str, fields: Fields<&Term>) -> literal::Value {
+    literal::Value::call(
+        name,
+        fields
+            .into_iter()
+            .map(|(field, slot)| (field.to_owned(), slot_value(slot)))
+            .collect(),
+    )
+}
+
+fn slot_value(slot: Slot<&Term>) -> literal::Value {
+    match slot {
+        Slot::Real(value) => float_value(value),
+        Slot::At(t) => instant_value(t),
+        Slot::Span(d) => delta_value(d),
+        Slot::Text(text) => literal::Value::Str(text),
+        Slot::Nothing => literal::Value::None,
+        Slot::Child(term) => term.to_value(),
+        Slot::Children(terms) => {
+            literal::Value::Tuple(terms.into_iter().map(Term::to_value).collect())
+        }
+        Slot::Rows(row, rows) => literal::Value::Tuple(
+            rows.into_iter()
+                .map(|fields| call_value(row, fields))
+                .collect(),
+        ),
     }
 }
 
-fn lit_field<'a>(call: &'a Call, name: &str) -> Result<&'a literal::Value, FplError> {
-    call.field(name)
-        .ok_or_else(|| FplError(format!("{}(...) is missing {name}", call.name)))
-}
+/// A call's fields, `None` or left out being absent.
+struct CallSource<'a>(&'a Call);
 
-fn lit_number(call: &Call, name: &str) -> Result<f64, FplError> {
-    match lit_field(call, name)? {
-        literal::Value::Float(value) => Ok(value.get()),
-        literal::Value::Int(int) => int
-            .as_i64()
-            .map(|value| value as f64)
-            .ok_or_else(|| FplError(format!("{}.{name} is out of range", call.name))),
-        other => err(format!(
-            "{}.{name} must be a number, got {other:?}",
-            call.name
-        )),
+impl<'a> CallSource<'a> {
+    fn read<T>(
+        &self,
+        name: &'static str,
+        decode: impl FnOnce(&'a literal::Value) -> Option<T>,
+    ) -> Field<T> {
+        Field::new(
+            name,
+            match self.0.field(name) {
+                None | Some(literal::Value::None) => Ok(None),
+                Some(value) => decode(value).map(Some).ok_or_else(|| {
+                    FplError(format!("{}.{name} is malformed: {value:?}", self.0.name))
+                }),
+            },
+        )
     }
 }
 
-fn lit_text(call: &Call, name: &str) -> Result<String, FplError> {
-    match call.field(name) {
-        // A trailing label or note omitted from a hand-written literal reads as
-        // the `''` the canonical print puts back, exactly as in §4.
-        None => Ok(String::new()),
-        Some(literal::Value::Str(text)) => Ok(text.clone()),
-        Some(other) => err(format!(
-            "{}.{name} must be a string, got {other:?}",
-            call.name
-        )),
+impl FieldSource for CallSource<'_> {
+    fn real(&mut self, name: &'static str) -> Field<f64> {
+        self.read(name, |value| match value {
+            literal::Value::Float(value) => Some(value.get()),
+            literal::Value::Int(int) => int.as_i64().map(|value| value as f64),
+            _ => None,
+        })
     }
-}
 
-fn lit_tuple<'a>(call: &'a Call, name: &str) -> Result<&'a [literal::Value], FplError> {
-    lit_field(call, name)?
-        .as_tuple()
-        .ok_or_else(|| FplError(format!("{}.{name} must be a tuple", call.name)))
-}
+    fn at(&mut self, name: &'static str) -> Field<Instant> {
+        self.read(name, |value| match value {
+            literal::Value::Datetime(at) => Some(instant_of(*at)),
+            _ => None,
+        })
+    }
 
-/// One element of a tuple field, as the constructor it must be.
-fn lit_element<'a>(value: &'a literal::Value, name: &str) -> Result<&'a Call, FplError> {
-    match value.as_call() {
-        Some(call) if call.name == name => Ok(call),
-        other => err(format!("expected a {name}(...), got {other:?}")),
+    fn span(&mut self, name: &'static str) -> Field<Delta> {
+        self.read(name, |value| match value {
+            literal::Value::Timedelta(d) => i64::try_from(d.total_micros())
+                .ok()
+                .map(Duration::microseconds),
+            _ => None,
+        })
+    }
+
+    fn text(&mut self, name: &'static str) -> Field<String> {
+        self.read(name, |value| value.as_str().map(str::to_owned))
+    }
+
+    fn child(&mut self, name: &'static str) -> Field<Term> {
+        self.read(name, Some).and_then(Term::from_value)
+    }
+
+    fn children(&mut self, name: &'static str) -> Field<Vec<Term>> {
+        self.read(name, literal::Value::as_tuple)
+            .and_then(|items| items.iter().map(Term::from_value).collect())
+    }
+
+    fn rows<T>(
+        &mut self,
+        name: &'static str,
+        row: &'static str,
+        mut read: impl FnMut(&mut Self) -> Result<T, FplError>,
+    ) -> Field<Vec<T>> {
+        self.read(name, literal::Value::as_tuple).and_then(|items| {
+            items
+                .iter()
+                .map(|item| match item.as_call() {
+                    Some(call) if call.name == row => read(&mut CallSource(call)),
+                    _ => err(format!("expected a {row}(...), got {item:?}")),
+                })
+                .collect()
+        })
     }
 }
 
 impl Term {
-    /// The term as ONE expression of §2's grammar: every field, in declared
-    /// order, keyword form. `print_literal` of this is the canonical print, and
-    /// the print is the identity because [`Term::from_value`] reads it back.
+    /// The term as one expression of §2's grammar.
     pub fn to_value(&self) -> literal::Value {
-        let call = literal::Value::call;
-        match self.out() {
-            TermF::Flat { value } => call("Flat", vec![f("value", float_value(*value))]),
-            TermF::Decay {
-                start,
-                end,
-                end_date,
-                lead_up,
-                start_date,
-            } => call(
-                "Decay",
-                vec![
-                    f("start", float_value(*start)),
-                    f("end", float_value(*end)),
-                    f("end_date", instant_value(*end_date)),
-                    f("lead_up", delta_value(*lead_up)),
-                    f(
-                        "start_date",
-                        start_date.map_or(literal::Value::None, instant_value),
-                    ),
-                ],
-            ),
-            TermF::Curve { points } => call(
-                "Curve",
-                vec![f(
-                    "points",
-                    literal::Value::Tuple(
-                        points
-                            .iter()
-                            .map(|point| {
-                                call(
-                                    "CurvePoint",
-                                    vec![
-                                        f("at", instant_value(point.at)),
-                                        f("value", float_value(point.value)),
-                                        f("label", literal::Value::str(point.label.clone())),
-                                    ],
-                                )
-                            })
-                            .collect(),
-                    ),
-                )],
-            ),
-            TermF::Conj { terms, p } => call(
-                "Conj",
-                vec![
-                    f(
-                        "terms",
-                        literal::Value::Tuple(terms.iter().map(Term::to_value).collect()),
-                    ),
-                    f("p", float_value(*p)),
-                ],
-            ),
-            TermF::Offset { delta, term } => call(
-                "Offset",
-                vec![f("delta", float_value(*delta)), f("term", term.to_value())],
-            ),
-            TermF::Gate { gate, body } => call(
-                "Gate",
-                vec![f("gate", gate.to_value()), f("body", body.to_value())],
-            ),
-            TermF::Shift { delta, term } => call(
-                "Shift",
-                vec![f("delta", delta_value(*delta)), f("term", term.to_value())],
-            ),
-            TermF::Within { window, p, term } => call(
-                "Within",
-                vec![
-                    f("window", delta_value(*window)),
-                    f("p", float_value(*p)),
-                    f("term", term.to_value()),
-                ],
-            ),
-            TermF::Importance { w, term } => call(
-                "Importance",
-                vec![f("w", float_value(*w)), f("term", term.to_value())],
-            ),
-            TermF::After {
-                event,
-                anchor,
-                term,
-                pending,
-                needs,
-            } => call(
-                "After",
-                vec![
-                    f("event", literal::Value::str(event.clone())),
-                    f("anchor", instant_value(*anchor)),
-                    f("term", term.to_value()),
-                    f("pending", pending.to_value()),
-                    f("needs", needs.map_or(literal::Value::None, delta_value)),
-                ],
-            ),
-            TermF::Recur {
-                todo,
-                anchor,
-                term,
-                pending,
-            } => call(
-                "Recur",
-                vec![
-                    f("todo", literal::Value::str(todo.clone())),
-                    f("anchor", instant_value(*anchor)),
-                    f("term", term.to_value()),
-                    f("pending", pending.to_value()),
-                ],
-            ),
-            TermF::Periodic {
-                period,
-                anchor,
-                term,
-            } => call(
-                "Periodic",
-                vec![
-                    f("period", delta_value(*period)),
-                    f("anchor", instant_value(*anchor)),
-                    f("term", term.to_value()),
-                ],
-            ),
-            TermF::Piecewise { head, pieces } => call(
-                "Piecewise",
-                vec![
-                    f("head", head.to_value()),
-                    f(
-                        "pieces",
-                        literal::Value::Tuple(
-                            pieces
-                                .iter()
-                                .map(|(at, term)| {
-                                    call(
-                                        "Piece",
-                                        vec![
-                                            f("at", instant_value(*at)),
-                                            f("term", term.to_value()),
-                                        ],
-                                    )
-                                })
-                                .collect(),
-                        ),
-                    ),
-                ],
-            ),
-            TermF::OffsetBy { delta, term } => call(
-                "OffsetBy",
-                vec![f("delta", delta.to_value()), f("term", term.to_value())],
-            ),
-            TermF::Ref { todo } => call("Ref", vec![f("todo", literal::Value::str(todo.clone()))]),
-            TermF::Absent => call("Absent", vec![]),
-        }
+        let (kind, fields) = schema::fields(self.out());
+        call_value(kind, fields)
     }
 
-    /// One expression of §2's grammar as a `Term`, dispatched into the smart
-    /// constructors — whose error IS the parse error (§2). The grammar has
-    /// already checked the NAMES against [`TERM_SIGNATURES`] and put the fields
-    /// in declared order; what is left is the meaning, which is this layer's.
+    /// One expression of §2's grammar, through the smart constructors.
     pub fn from_value(value: &literal::Value) -> Result<Term, FplError> {
         let call = value
             .as_call()
             .ok_or_else(|| FplError(format!("expected a term constructor, got {value:?}")))?;
-        let term =
-            |name: &str| -> Result<Term, FplError> { Term::from_value(lit_field(call, name)?) };
-        match call.name.as_str() {
-            "Flat" => mk_flat(lit_number(call, "value")?),
-            "Decay" => mk_decay(
-                lit_number(call, "start")?,
-                lit_number(call, "end")?,
-                instant_field(lit_field(call, "end_date")?, "Decay.end_date")?,
-                match call.field("lead_up") {
-                    Some(value) => delta_field(value, "Decay.lead_up")?,
-                    None => Duration::weeks(1),
-                },
-                match call.field("start_date") {
-                    None | Some(literal::Value::None) => None,
-                    Some(value) => Some(instant_field(value, "Decay.start_date")?),
-                },
-            ),
-            "Curve" => {
-                let mut points = Vec::new();
-                for item in lit_tuple(call, "points")? {
-                    let point = lit_element(item, "CurvePoint")?;
-                    points.push(CurvePoint {
-                        at: instant_field(lit_field(point, "at")?, "CurvePoint.at")?,
-                        value: lit_number(point, "value")?,
-                        label: lit_text(point, "label")?,
-                    });
-                }
-                mk_curve(points)
-            }
-            "Conj" => {
-                let mut terms = Vec::new();
-                for item in lit_tuple(call, "terms")? {
-                    terms.push(Term::from_value(item)?);
-                }
-                mk_conj(
-                    terms,
-                    match call.field("p") {
-                        Some(_) => lit_number(call, "p")?,
-                        None => PRIORITY_POWER,
-                    },
-                )
-            }
-            "Offset" => mk_offset(lit_number(call, "delta")?, term("term")?),
-            "Gate" => mk_gate(term("gate")?, term("body")?),
-            "OffsetBy" => mk_offset_by(term("delta")?, term("term")?),
-            "Shift" => mk_shift(
-                delta_field(lit_field(call, "delta")?, "Shift.delta")?,
-                term("term")?,
-            ),
-            "Within" => mk_within(
-                delta_field(lit_field(call, "window")?, "Within.window")?,
-                lit_number(call, "p")?,
-                term("term")?,
-            ),
-            "Importance" => mk_importance(lit_number(call, "w")?, term("term")?),
-            "After" => mk_after(
-                lit_text(call, "event")?,
-                instant_field(lit_field(call, "anchor")?, "After.anchor")?,
-                term("term")?,
-                term("pending")?,
-                match call.field("needs") {
-                    None | Some(literal::Value::None) => None,
-                    Some(value) => Some(delta_field(value, "After.needs")?),
-                },
-            ),
-            "Recur" => mk_recur(
-                lit_text(call, "todo")?,
-                instant_field(lit_field(call, "anchor")?, "Recur.anchor")?,
-                term("term")?,
-                term("pending")?,
-            ),
-            "Periodic" => mk_periodic(
-                delta_field(lit_field(call, "period")?, "Periodic.period")?,
-                instant_field(lit_field(call, "anchor")?, "Periodic.anchor")?,
-                term("term")?,
-            ),
-            "Piecewise" => {
-                let mut pieces = Vec::new();
-                for item in lit_tuple(call, "pieces")? {
-                    let piece = lit_element(item, "Piece")?;
-                    pieces.push((
-                        instant_field(lit_field(piece, "at")?, "Piece.at")?,
-                        Term::from_value(lit_field(piece, "term")?)?,
-                    ));
-                }
-                mk_piecewise(term("head")?, pieces)
-            }
-            "Ref" => mk_ref(lit_text(call, "todo")?),
-            "Absent" => Ok(mk_absent()),
-            other => err(format!("{other:?} is not one of SPEC §7's terms")),
-        }
+        schema::build(&call.name, &mut CallSource(call))
     }
 }
 
@@ -1566,8 +1308,7 @@ pub fn print_term(term: &Term) -> String {
     print_literal(&term.to_value())
 }
 
-/// `print_term`'s inverse: one canonical literal back into a `Term`, through
-/// the closed vocabulary of §7 and every smart constructor.
+/// `print_term`'s inverse.
 pub fn parse_term(text: &str) -> Result<Term, FplError> {
-    Term::from_value(&literal::parse_literal(text, &TERM_VOCABULARY)?)
+    Term::from_value(&literal::parse_literal(text, signatures())?)
 }
