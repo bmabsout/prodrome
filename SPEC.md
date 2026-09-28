@@ -102,7 +102,10 @@ since this grammar has tuples and no mapping.
 - `ancestors(x)` is the transitive parent closure; `concurrent(a, b)` holds
   when neither is an ancestor of the other.
 - **`verify`** reports an object not hashing to its name, a missing parent, a
-  cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, and an event the
+  cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, every entry of
+  `objects/` that is not named `<name>.py` for a well-formed name (a temp an
+  interrupted write left, or a stray) as garbage, each by name — the reads
+  pass over such an entry, and only `verify` speaks of it — and an event the
   policy does not `confirm` (§5) dated before any of its ancestors — a writer
   whose stamp the host forces cannot legitimately be dated behind what it was
   written on top of, where a backfill can. There is no unreachable object and
