@@ -35,13 +35,28 @@ crate has left to do. Check that branch out and `prodrome list` folds it at
 whatever instant you ask for. The list is ascending in fulfillment, so the top
 of it is the most urgent thing. CI on `main` checks the branch out and runs
 `verify` and `list` over it on every change, so the code can never stop
-reading its own data. Issues on this repository are mirrored into it as
-items, and priced there (see the branch's `PRICING.md`).
+reading its own data.
+
+**Issues are items.** An issue opened here becomes item `gh-<number>` on that
+branch, at a neutral 80%, and its page is
+`https://bmabsout.github.io/prodrome/#/todo/gh-<number>`. Closing the issue
+completes the item and reopening it reopens it. A maintainer prices it with a
+comment — `/price 40`, `/price 30 --deadline 2026-10-15`, `/price ref gh-7` —
+on the scale in the branch's `PRICING.md`. A pricing bot (Claude) suggests a
+price on every new issue; its suggestion is stored as a CLAIM by
+`pricing-bot`, shown beside the item and binding nothing until a maintainer
+replies `/price accept`. The workflows are `.github/workflows/mirror.yml` and
+`price.yml`, over one deterministic, offline binary, `prodrome-github`. It lives in its
+own crate, `github/`: an optional integration, like the viewer, and nothing
+in `core/` or `cli/` knows GitHub.
+[`docs/github-agent.md`](docs/github-agent.md) explains the flow and where
+trust stops.
 
 ```console
 $ git switch roadmap-data
 $ prodrome list
 $ prodrome list --at 2026-09-09
+$ prodrome list --untrusted pricing-bot   # the bot's suggestions as claims
 ```
 
 ## Installation
@@ -232,6 +247,8 @@ compiles its own wasm from this crate with that line changed.
 
 - [`SPEC.md`](SPEC.md): the contract, with the laws in §9.
 - [`CHANGELOG.md`](CHANGELOG.md): what changed, and what the stored bytes promise.
+- [`docs/github-agent.md`](docs/github-agent.md): the issue mirror and the
+  pricing bot, and their trust boundaries.
 - `cargo doc --open`: the API.
 
 ## Testing
@@ -277,9 +294,19 @@ cli/          prodrome-cli: the `prodrome` binary — the verbs, over that paylo
               and the reference policy, and the only clock in the workspace
 wasm/         prodrome-wasm: the core compiled for the browser, built with that
               payload, plus `json`, the term codec the JavaScript side reads
+github/       prodrome-github: an optional integration, apart from the core — the
+              `prodrome-github` binary that mirrors GitHub issues into a store
 conformance/  the vectors, as literals of the grammar in SPEC §2
+docs/         how the repository runs its own roadmap: the issue mirror
+.github/      CI, and the two workflows that mirror and price issues
 SPEC.md       the specification
 ```
+
+**The core stays free of any markup language.** `core/` and `cli/` store a
+record's text as opaque strings and never read it as Typst, Markdown or
+anything else; the issue mirror writes titles as plain text. A viewer that
+renders a store whose items hold Typst is an optional extra built on top of
+the core, and an example of using it, not a part of it.
 
 ## Contributing
 

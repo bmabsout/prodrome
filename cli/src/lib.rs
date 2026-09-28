@@ -52,7 +52,8 @@ pub enum Error {
 }
 
 impl Error {
-    fn usage(message: impl Into<String>) -> Error {
+    /// A refusal of the input, in the words it gives.
+    pub fn usage(message: impl Into<String>) -> Error {
         Error::Usage(message.into())
     }
 }
@@ -68,7 +69,8 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn said(text: impl Into<String>) -> Outcome {
+    /// An answer: `text`, and a verdict that passed.
+    pub fn said(text: impl Into<String>) -> Outcome {
         Outcome {
             text: text.into(),
             ok: true,

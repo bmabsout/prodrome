@@ -1,0 +1,30 @@
+{
+  "action": "opened",
+  "issue": {
+    "url": "https://api.github.com/repos/bmabsout/prodrome/issues/12",
+    "html_url": "https://github.com/bmabsout/prodrome/issues/12",
+    "number": 12,
+    "title": "verify is slow on large stores",
+    "user": {
+      "login": "octocat",
+      "id": 1007,
+      "type": "User"
+    },
+    "labels": [],
+    "state": "open",
+    "created_at": "2026-09-20T10:00:00Z",
+    "updated_at": "2026-09-20T10:00:00Z",
+    "closed_at": null,
+    "author_association": "NONE",
+    "body": "Steps to reproduce: …"
+  },
+  "repository": {
+    "full_name": "bmabsout/prodrome",
+    "html_url": "https://github.com/bmabsout/prodrome"
+  },
+  "sender": {
+    "login": "octocat",
+    "id": 1007,
+    "type": "User"
+  }
+}

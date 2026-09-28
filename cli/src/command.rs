@@ -157,16 +157,24 @@ pub struct Price {
     pub deadline: Option<String>,
 
     /// Fulfillment before the lead-up begins, 0–98. Only with `--deadline`.
-    #[arg(long, default_value_t = 55, value_name = "N")]
+    #[arg(long, default_value_t = Price::DEFAULT_START, value_name = "N")]
     pub start: u8,
 
     /// Fulfillment at the deadline and after it, 0–100. Only with
     /// `--deadline`.
-    #[arg(long, default_value_t = 5, value_name = "N")]
+    #[arg(long, default_value_t = Price::DEFAULT_END, value_name = "N")]
     pub end: u8,
 
     /// How many days before the deadline the decay begins. Only with
     /// `--deadline`.
-    #[arg(long, default_value_t = 3.0, value_name = "DAYS")]
+    #[arg(long, default_value_t = Price::DEFAULT_LEAD_UP_DAYS, value_name = "DAYS")]
     pub lead_up_days: f64,
+}
+
+impl Price {
+    /// The defaults a deadline takes, named once so that `/price … --deadline`
+    /// on an issue and `--deadline` here write the same decay.
+    pub const DEFAULT_START: u8 = 55;
+    pub const DEFAULT_END: u8 = 5;
+    pub const DEFAULT_LEAD_UP_DAYS: f64 = 3.0;
 }

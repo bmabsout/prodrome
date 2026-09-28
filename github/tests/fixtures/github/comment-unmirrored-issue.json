@@ -1,0 +1,43 @@
+{
+  "action": "created",
+  "issue": {
+    "url": "https://api.github.com/repos/bmabsout/prodrome/issues/3",
+    "html_url": "https://github.com/bmabsout/prodrome/issues/3",
+    "number": 3,
+    "title": "document the literal grammar",
+    "user": {
+      "login": "octocat",
+      "id": 1007,
+      "type": "User"
+    },
+    "labels": [],
+    "state": "open",
+    "created_at": "2026-09-20T10:00:00Z",
+    "updated_at": "2026-09-21T18:00:00Z",
+    "closed_at": null,
+    "author_association": "NONE",
+    "body": "Steps to reproduce: …"
+  },
+  "comment": {
+    "id": 167307661,
+    "html_url": "https://github.com/bmabsout/prodrome/issues/3#issuecomment-1",
+    "user": {
+      "login": "BMabsout",
+      "id": 1008,
+      "type": "User"
+    },
+    "created_at": "2026-09-21T18:00:00Z",
+    "updated_at": "2026-09-21T18:00:00Z",
+    "author_association": "OWNER",
+    "body": "/price 60"
+  },
+  "repository": {
+    "full_name": "bmabsout/prodrome",
+    "html_url": "https://github.com/bmabsout/prodrome"
+  },
+  "sender": {
+    "login": "BMabsout",
+    "id": 1008,
+    "type": "User"
+  }
+}

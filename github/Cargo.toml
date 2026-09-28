@@ -1,0 +1,36 @@
+[package]
+name = "prodrome-github"
+description = "Mirror a repository's GitHub issues into a Prodrome store, and record priced proposals as claims"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "../README.md"
+keywords = ["github", "event-sourcing", "content-addressed", "roadmap"]
+categories = ["command-line-utilities"]
+
+# AN INTEGRATION, APART FROM THE CORE AND ITS CLI. The mirror knows GitHub's
+# webhook payloads; `prodrome-core` and `prodrome` know nothing of GitHub.
+# It builds on the CLI's library for the store type, its refusals and the
+# price grammar, so `/price 30 --deadline …` on an issue and `prodrome revise
+# --deadline …` write the same term.
+[lib]
+name = "prodrome_github"
+path = "src/lib.rs"
+
+[[bin]]
+name = "prodrome-github"
+path = "src/main.rs"
+
+[dependencies]
+prodrome-core.workspace = true
+prodrome-cli = { path = "../cli", version = "0.9.0" }
+clap = { version = "4", features = ["derive"] }
+# A webhook payload is JSON.
+serde_json = "1"
+
+[dev-dependencies]
+# The mirror's laws, a replay appends nothing and close then reopen is open,
+# are properties over generated deliveries, like the core's.
+proptest = "1"
