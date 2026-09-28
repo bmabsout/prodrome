@@ -137,8 +137,8 @@ pub fn a_valued_term() -> impl Strategy<Value = Term> {
 }
 
 /// A term of the EXACT fragment (§7 breakpoints) — `Flat`, `Decay`, `Curve`,
-/// `Absent`, and `Piecewise`, `Offset` and `Shift` over them — whose series
-/// knots are the curve.
+/// `Absent`, and `Piecewise`, `Offset`, `Shift` and `Least` over them — whose
+/// series knots are the curve.
 pub fn an_exact_term() -> impl Strategy<Value = Term> {
     a_closed_leaf().prop_recursive(3, 24, 3, |inner| {
         prop_oneof![
@@ -154,7 +154,8 @@ pub fn an_exact_term() -> impl Strategy<Value = Term> {
                     ))
                 }),
             (-0.9f64..0.9, inner.clone()).prop_map(|(d, t)| ok(fpl::mk_offset(d, t))),
-            (hours(), inner).prop_map(|(h, t)| ok(fpl::mk_shift(Duration::hours(h), t))),
+            (hours(), inner.clone()).prop_map(|(h, t)| ok(fpl::mk_shift(Duration::hours(h), t))),
+            prop::collection::vec(inner, 1..4).prop_map(|ts| ok(fpl::mk_least(ts))),
         ]
     })
 }
@@ -180,6 +181,9 @@ pub fn grown_to(
                 prop::sample::select(vec![-8.0, -4.0, -1.0, 0.0]),
             )
                 .prop_map(|(ts, p)| ok(fpl::mk_conj(ts, p)))
+                .boxed(),
+            prop::collection::vec(inner.clone(), 1..3)
+                .prop_map(|ts| ok(fpl::mk_least(ts)))
                 .boxed(),
             (-0.9f64..0.9, inner.clone())
                 .prop_map(|(d, t)| ok(fpl::mk_offset(d, t)))

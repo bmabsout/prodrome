@@ -86,6 +86,7 @@
 //! - `literal`  — §2: the grammar, its printer (Python `repr` rules) and parser
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
+//! - `genesis`, `change`, `snapshot` — Draft A's objects
 //! - `store`    — §3: objects on disk, heads, linearisation, verify, adopt/merge
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
@@ -101,9 +102,11 @@ pub mod breaks;
 /// §7.1 — the chain compiler: `After` erased against a snapshot, so a chain
 /// composes into one evaluable term instead of a lookup per node per sample.
 pub mod chain;
+pub mod change;
 pub mod event;
 pub mod fold;
 pub mod fpl;
+pub mod genesis;
 pub mod literal;
 pub mod payload;
 pub mod policy;
@@ -113,6 +116,7 @@ pub mod policy;
 #[cfg(feature = "reference")]
 pub mod reference;
 pub mod registers;
+pub mod snapshot;
 pub mod store;
 pub mod term;
 pub mod topo;

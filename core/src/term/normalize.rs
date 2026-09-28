@@ -25,6 +25,7 @@ pub fn normalize(term: &Term) -> Term {
             }),
         },
         layer @ (TermF::Conj { .. }
+        | TermF::Least { .. }
         | TermF::Offset { .. }
         | TermF::Gate { .. }
         | TermF::Importance { .. }

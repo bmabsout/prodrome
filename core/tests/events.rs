@@ -11,14 +11,18 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use prodrome::change::mk_change;
 use prodrome::event::{
-    canonical_envelope, parents_of, parse_envelope, seal_hash, Actor, Envelope, TodoEvent,
-    EVENT_SIGNATURES,
+    canonical, canonical_envelope, event_id, parents_of, parse_envelope, seal_hash, Actor,
+    Envelope, Hash, TodoEvent, EVENT_SIGNATURES,
 };
+use prodrome::genesis::mk_genesis;
 use prodrome::payload::Payload;
 use prodrome::policy::{Policy, Untrusted};
 use prodrome::reference::Todo;
+use prodrome::snapshot::mk_snapshot;
 use prodrome::term::schema::signatures;
+use proptest::prelude::*;
 
 fn roster() -> Untrusted {
     // The roster is the DEPLOYMENT's, never the engine's (§5): it arrives as a
@@ -73,6 +77,7 @@ fn the_corpus_holds_every_envelope_shape() {
                     merges += 1;
                 }
             }
+            other => panic!("the legacy corpus holds a {}", other.name()),
         }
     }
     assert_eq!(genesis, 1, "exactly one object rests on nothing");
@@ -147,6 +152,10 @@ fn a_name_outside_spec_4_is_refused_at_the_envelope() {
         "Sealed(prev='not a hash', event=None)",
         "Woven(parents=('a',), event=None)",
         "None",
+        "Genesis(label='x', nonce='abc')",
+        "Genesis(label='x')",
+        "Change(genesis='', deps=(), event=None)",
+        "Snapshot(genesis='', tips=(), previous='')",
     ] {
         assert!(
             parse_envelope::<Todo>(text).is_err(),
@@ -178,6 +187,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "After",
             "Authored",
             "Cancelled",
+            "Change",
             "Completed",
             "Conj",
             "Created",
@@ -186,7 +196,9 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Decay",
             "Flat",
             "Gate",
+            "Genesis",
             "Importance",
+            "Least",
             "Note",
             "Offset",
             "OffsetBy",
@@ -198,6 +210,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Reopened",
             "Sealed",
             "Shift",
+            "Snapshot",
             "Source",
             "SpecRevised",
             "SubTodo",
@@ -206,4 +219,128 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Woven",
         ]
     );
+}
+
+fn name(byte: char) -> Hash {
+    Hash::new(byte.to_string().repeat(64)).expect("hex")
+}
+
+/// Draft A's objects print every field in declared order, `''` for an unset
+/// `previous`.
+#[test]
+fn the_new_objects_print_as_draft_a_declares() {
+    let genesis: Envelope<Todo> =
+        Envelope::Genesis(mk_genesis("suzatary", &"9f".repeat(16)).expect("a genesis"));
+    assert_eq!(
+        canonical_envelope(&genesis),
+        format!("Genesis(label='suzatary', nonce='{}')", "9f".repeat(16))
+    );
+    assert!(parents_of(&genesis).is_empty());
+    assert!(genesis.event().is_none());
+
+    let event = common::events().remove(5);
+    let change = Envelope::Change(
+        mk_change(name('0'), vec![name('b'), name('a')], event.clone()).expect("a change"),
+    );
+    assert_eq!(
+        canonical_envelope(&change),
+        format!(
+            "Change(genesis='{}', deps=('{}', '{}'), event={})",
+            name('0').as_str(),
+            name('a').as_str(),
+            name('b').as_str(),
+            canonical(&event)
+        )
+    );
+    assert_eq!(parents_of(&change), vec![name('a'), name('b')]);
+    assert_eq!(change.event(), Some(&event));
+
+    let snapshot: Envelope<Todo> = Envelope::Snapshot(
+        mk_snapshot(name('0'), vec![name('c'), name('a')], None).expect("a snapshot"),
+    );
+    assert_eq!(
+        canonical_envelope(&snapshot),
+        format!(
+            "Snapshot(genesis='{}', tips=('{}', '{}'), previous='')",
+            name('0').as_str(),
+            name('a').as_str(),
+            name('c').as_str()
+        )
+    );
+    assert!(snapshot.event().is_none());
+}
+
+#[test]
+fn the_new_constructors_refuse_what_draft_a_forbids() {
+    let event = common::events().remove(0);
+    assert!(mk_genesis("x", "9F".repeat(16).as_str()).is_err());
+    assert!(mk_change(name('0'), vec![name('a'), name('a')], event.clone()).is_err());
+    assert!(mk_change(name('0'), vec![], event).is_ok());
+    assert!(mk_snapshot(name('0'), vec![], None).is_err());
+    assert!(mk_snapshot(name('0'), vec![name('a'), name('a')], None).is_err());
+}
+
+/// A snapshot's parents are its tips and its previous, each once.
+#[test]
+fn a_snapshot_rests_on_its_tips_and_its_previous() {
+    let on = |previous| {
+        parents_of::<Todo>(&Envelope::Snapshot(
+            mk_snapshot(name('0'), vec![name('b'), name('a')], previous).expect("a snapshot"),
+        ))
+    };
+    assert_eq!(on(Some(name('c'))), vec![name('a'), name('b'), name('c')]);
+    assert_eq!(on(Some(name('a'))), vec![name('a'), name('b')]);
+}
+
+/// An event's id is the hash of its print, whichever object carries it.
+#[test]
+fn an_event_id_ignores_where_the_event_was_written() {
+    let event = common::events().remove(2);
+    let here = mk_change(name('0'), vec![], event.clone()).expect("a change");
+    let there = mk_change(name('0'), vec![name('a')], event.clone()).expect("a change");
+    assert_eq!(event_id(&here.event), event_id(&there.event));
+    assert_ne!(
+        seal_hash(&Envelope::Change(here)),
+        seal_hash(&Envelope::Change(there))
+    );
+    assert_ne!(event_id(&event), event_id(&common::events().remove(3)));
+}
+
+fn a_name() -> impl Strategy<Value = Hash> {
+    "[0-9a-f]{64}".prop_map(|text| Hash::new(text).expect("hex"))
+}
+
+fn some_names(size: std::ops::Range<usize>) -> impl Strategy<Value = Vec<Hash>> {
+    prop::collection::btree_set(a_name(), size).prop_map(|names| names.into_iter().rev().collect())
+}
+
+fn a_new_object() -> impl Strategy<Value = Envelope<Todo>> {
+    let events = common::events();
+    prop_oneof![
+        (".{0,12}", "[0-9a-f]{32}").prop_map(|(label, nonce)| Envelope::Genesis(
+            mk_genesis(&label, &nonce).expect("a genesis")
+        )),
+        (a_name(), some_names(0..4), prop::sample::select(events)).prop_map(
+            |(genesis, deps, event)| Envelope::Change(
+                mk_change(genesis, deps, event).expect("a change")
+            )
+        ),
+        (a_name(), some_names(1..4), prop::option::of(a_name())).prop_map(
+            |(genesis, tips, previous)| Envelope::Snapshot(
+                mk_snapshot(genesis, tips, previous).expect("a snapshot")
+            )
+        ),
+    ]
+}
+
+proptest! {
+    /// Law 1 over Draft A's objects.
+    #[test]
+    fn a_new_object_prints_and_parses_back(object in a_new_object()) {
+        let text = canonical_envelope(&object);
+        let parsed = parse_envelope::<Todo>(&text).expect("a canonical print parses");
+        prop_assert_eq!(&parsed, &object);
+        prop_assert_eq!(canonical_envelope(&parsed), text);
+        prop_assert_eq!(seal_hash(&parsed), seal_hash(&object));
+    }
 }

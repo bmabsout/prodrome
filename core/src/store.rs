@@ -40,7 +40,7 @@ use crate::payload::Payload;
 use crate::policy::{Policy, Untrusted};
 
 /// §3 — THE TIPS OF AN OBJECT SET: every object no object in it names as a
-/// parent, whether as a `Sealed`'s `prev` or among a `Woven`'s parents.
+/// parent.
 ///
 /// A function of the SET and nothing else. The pairs may arrive in any order —
 /// a directory listing has none worth trusting — and the answer is the same
@@ -55,13 +55,15 @@ use crate::policy::{Policy, Untrusted};
 pub fn tips_of<'a, P: 'a>(
     objects: impl IntoIterator<Item = (&'a Hash, &'a Envelope<P>)>,
 ) -> BTreeSet<Hash> {
-    tips_among(objects.into_iter().map(|(name, object)| {
-        let parents: &[Hash] = match object {
-            Envelope::Sealed { prev, .. } => prev.as_slice(),
-            Envelope::Woven { parents, .. } => parents,
-        };
-        (name, parents)
-    }))
+    let graph: Vec<(&Hash, Vec<Hash>)> = objects
+        .into_iter()
+        .map(|(name, object)| (name, parents_of(object)))
+        .collect();
+    tips_among(
+        graph
+            .iter()
+            .map(|(name, parents)| (*name, parents.as_slice())),
+    )
 }
 
 /// [`tips_of`] over the graph alone — each name with the parents it names —
@@ -786,6 +788,13 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
                         digest.as_str()
                     )))
                 }
+                other => {
+                    return Err(ProdromeError::Store(format!(
+                        "object {} is a {} — read_chain reads a chain of Sealed objects",
+                        digest.as_str(),
+                        other.name()
+                    )))
+                }
             };
             chain.push(object);
             cursor = prev;
@@ -801,10 +810,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         Ok(self
             .read_dag()?
             .into_iter()
-            .filter_map(|object| match object {
-                Envelope::Sealed { event, .. } => Some(event),
-                Envelope::Woven { event, .. } => event,
-            })
+            .filter_map(Envelope::into_event)
             .collect())
     }
 
