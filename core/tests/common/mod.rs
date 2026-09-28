@@ -14,6 +14,9 @@
 #[path = "vectors.rs"]
 pub mod vectors;
 
+#[path = "terms.rs"]
+pub mod terms;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{Duration, NaiveDate};
@@ -106,6 +109,16 @@ pub fn close(path: &str, mine: f64, theirs: f64) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{path}: {mine} != {theirs} (off by {delta:e})"))
+    }
+}
+
+/// A READING compared the way §9.8 compares one: `None` — the vector's `∅` —
+/// only against `None`, and a number to 1e-9.
+pub fn reading(path: &str, mine: Option<f64>, theirs: &Value) -> Result<(), String> {
+    match (mine, vectors::maybe_number(theirs)) {
+        (Some(mine), Some(theirs)) => close(path, mine, theirs),
+        (None, None) => Ok(()),
+        (mine, theirs) => Err(format!("{path}: {mine:?} != {theirs:?}")),
     }
 }
 
@@ -453,13 +466,43 @@ pub fn a_random_spec() -> impl Strategy<Value = Term> {
     })
 }
 
+/// A spec as a log carries one now that `∅` and references exist:
+/// [`a_random_spec`]'s shapes, `Absent`, a `Ref` onto one of the generator's
+/// todos — which may have no function, or loop — or onto `delta`, which no
+/// event names, and a conjunction mixing them.
+pub fn a_spec_with_absence() -> impl Strategy<Value = Term> {
+    let reference = prop::sample::select(vec!["alpha", "beta", "gamma", "delta"])
+        .prop_map(|todo| fpl::mk_ref(todo.to_owned()).expect("a todo id"));
+    let member = prop_oneof![
+        2 => a_random_spec().boxed(),
+        1 => Just(fpl::mk_absent()).boxed(),
+        1 => reference.clone().boxed(),
+    ];
+    prop_oneof![
+        3 => a_random_spec().boxed(),
+        1 => Just(fpl::mk_absent()).boxed(),
+        1 => reference.boxed(),
+        1 => (
+            prop::collection::vec(member, 1..4),
+            prop::sample::select(vec![-4.0, -1.0, 0.0])
+        )
+            .prop_map(|(terms, p)| fpl::mk_conj(terms, p).expect("p is in range"))
+            .boxed(),
+    ]
+}
+
 pub fn a_draft() -> impl Strategy<Value = Draft> {
+    a_draft_with(a_random_spec())
+}
+
+/// [`a_draft`] with its specs drawn from `specs`.
+pub fn a_draft_with(specs: impl Strategy<Value = Term>) -> impl Strategy<Value = Draft> {
     (
         prop::sample::select(TODOS.to_vec()),
         prop::sample::select(ACTORS.to_vec()),
         0u8..8,
         // The generator carries a spec on most `Authored` records and not all.
-        prop::option::weighted(0.85, a_random_spec()),
+        prop::option::weighted(0.85, specs),
         prop::sample::select(vec![0usize, 0, 2, 3]),
         0u32..999,
     )
@@ -495,6 +538,18 @@ pub fn a_log() -> impl Strategy<Value = Vec<Event>> {
     a_schedule(0..25).prop_map(|schedule| realise(&schedule, 0))
 }
 
+/// [`a_log`] whose specs are [`a_spec_with_absence`]'s: records and revisions
+/// that price by `Absent`, reference todos with no function, never-seen ones
+/// and each other.
+pub fn a_log_with_absence() -> impl Strategy<Value = Vec<Event>> {
+    prop::collection::vec((a_draft_with(a_spec_with_absence()), 0i64..WINDOW), 0..25).prop_map(
+        |mut drafts| {
+            drafts.sort_by_key(|(_, at)| *at);
+            realise(&drafts, 0)
+        },
+    )
+}
+
 /// A log as the chain a single writer builds: each object sealed on the one
 /// before, so the node's parents are real and its name is its own hash.
 pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {
@@ -513,7 +568,8 @@ pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {
 ///
 /// THE SAME TEN FIELDS `prodrome-wasm`'s `wire::json_entry` puts on the wire,
 /// in the same forms — the lowercased state, `isoformat(" ")`, `""` for an
-/// absent claim, `None` for an absent value, a term as its §2 PRINT. That is
+/// absent claim, `'absent'` for an absent value and `None` for one that does
+/// not link, a term as its §2 PRINT. That is
 /// deliberate and is what `conformance/view/*.py` is frozen against: the entry
 /// as a CONSUMER reads it, not as the `Entry` struct happens to be shaped.
 /// `wasm/src/wire.rs`'s own test pins the JSON spelling of these same fields.
@@ -552,9 +608,11 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
             ("claimed".to_owned(), Value::Str(entry.claimed().to_owned())),
             (
                 "value".to_owned(),
-                entry.value().map_or(Value::None, |v| {
-                    Value::float(v).expect("a fulfillment is finite")
-                }),
+                match entry.value() {
+                    Ok(Some(v)) => Value::float(v).expect("a fulfillment is finite"),
+                    Ok(None) => Value::Str("absent".to_owned()),
+                    Err(_) => Value::None,
+                },
             ),
             (
                 "unconfirmed".to_owned(),
@@ -565,10 +623,7 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
                 "content".to_owned(),
                 optional(entry.content.as_ref().map(|h| h.as_str().to_owned())),
             ),
-            (
-                "spec".to_owned(),
-                optional(entry.spec().map(fpl::print_term)),
-            ),
+            ("spec".to_owned(), Value::Str(fpl::print_term(entry.spec()))),
             (
                 "stream".to_owned(),
                 Value::Tuple(
@@ -584,7 +639,7 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
 }
 
 /// One `explain` tree as the vector grammar's `Node(...)`: the kind tag, the
-/// value, the notes, and the children in order.
+/// value (`None` for `∅`), the notes, and the children in order.
 ///
 /// THE DECORATION AND NOT THE TERM. The term's own shape is the case's `term`
 /// print, which the same vector holds; what explaining ADDS is a value and a
@@ -616,7 +671,9 @@ pub fn explanation_value(node: &prodrome::fpl::Explanation) -> Value {
             ("kind".to_owned(), Value::Str(node.node.kind().to_owned())),
             (
                 "value".to_owned(),
-                Value::float(node.value).expect("a fulfillment is finite"),
+                node.value.map_or(Value::None, |v| {
+                    Value::float(v).expect("a fulfillment is finite")
+                }),
             ),
             ("notes".to_owned(), Value::Tuple(notes)),
             ("terms".to_owned(), Value::Tuple(children)),

@@ -14,6 +14,11 @@
 //! roster — so a failure here is a failure the vector generator could have
 //! produced, and a fix is checkable against it.
 //!
+//! And §9.18 at the store: over logs whose specs are `Absent`, references to
+//! todos with no function, to todos never seen and to each other, a
+//! reference links to `Absent` exactly when its todo is known and has no
+//! function, and every row reads what that link reads.
+//!
 //! The DAG laws build REAL stores in temp directories and drive them the way a
 //! second replica would: append, adopt, write concurrently, merge. Nothing
 //! about a frontier may depend on this side having constructed the graph in
@@ -38,7 +43,10 @@ use prodrome::store::EventStore;
 use prodrome::view;
 use proptest::prelude::*;
 
-use common::{a_draft, a_log, a_schedule, chain_of, far, moment, realise, Draft, WINDOW};
+use common::{
+    a_draft, a_log, a_log_with_absence, a_schedule, chain_of, far, moment, realise, Draft, TODOS,
+    WINDOW,
+};
 
 /// These laws are about the FOLDS, not about a record's fields, so the payload
 /// they run under is the reference one — the shape the vector generator drew.
@@ -439,7 +447,7 @@ proptest! {
                     // unpriced and with no content, like any mention.
                     None => {
                         prop_assert_eq!(row.outcome, None);
-                        prop_assert_eq!(row.spec(), None);
+                        prop_assert_eq!(row.spec(), &fpl::mk_absent());
                         prop_assert_eq!(row.content, None);
                     }
                 }
@@ -527,8 +535,14 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
          term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0)), \
          pieces=(Piece(at=datetime(2026, 9, 1, 0, 0, 1), term=Flat(value=0.02)),))"
     );
-    assert_eq!(fpl::fulfillment(&closed(&before[&gamma]), now, &env), 0.5);
-    assert_eq!(fpl::fulfillment(&closed(&after[&gamma]), now, &env), 0.51);
+    assert_eq!(
+        fpl::fulfillment(&closed(&before[&gamma]), now, &env),
+        Some(0.5)
+    );
+    assert_eq!(
+        fpl::fulfillment(&closed(&after[&gamma]), now, &env),
+        Some(0.51)
+    );
 
     // And the other way: a spec with no content record, given a checklist for
     // the first time at tau.
@@ -570,8 +584,14 @@ fn a_late_first_half_of_the_head_re_heads_the_curve() {
         "OffsetBy(delta=Flat(value=0.5), \
          term=Conj(terms=(Flat(value=0.5), Flat(value=0.5)), p=-4.0))"
     );
-    assert_eq!(fpl::fulfillment(&closed(&before[&beta]), now, &env), 0.5);
-    assert_eq!(fpl::fulfillment(&closed(&after[&beta]), now, &env), 0.75);
+    assert_eq!(
+        fpl::fulfillment(&closed(&before[&beta]), now, &env),
+        Some(0.5)
+    );
+    assert_eq!(
+        fpl::fulfillment(&closed(&after[&beta]), now, &env),
+        Some(0.75)
+    );
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -779,15 +799,16 @@ proptest! {
             let disputed = kinds(claimed_side.outcomes.get(todo).copied()) != kinds(bound.outcomes.get(todo).copied());
             prop_assert_eq!(row.claim, if disputed { claimed_side.outcomes.get(todo).copied() } else { None }, "claim");
 
-            // The PRICE: §6.4's function, valued at `t` under the CONFIRMED
-            // environment, and absent exactly where the function is.
-            prop_assert_eq!(row.spec().map(print_term), specs.get(todo).map(print_term), "spec");
+            // The PRICE: §6.4's function, `Absent` where there is none,
+            // linked against every known todo's and valued at `t` under the
+            // CONFIRMED environment.
+            let spec = specs.get(todo).cloned().unwrap_or_else(fpl::mk_absent);
+            prop_assert_eq!(row.spec(), &spec, "spec");
+            let known = rows.iter().map(|row| &row.todo);
+            let linked = fpl::link(&spec, &prodrome::fold::link_specs(&specs, known));
             prop_assert_eq!(
                 row.value(),
-                specs.get(todo).and_then(|spec| {
-                    let linked = fpl::link(spec, &prodrome::fold::link_specs(&specs)).ok()?;
-                    Some(fpl::fulfillment(&linked, now, &env))
-                }),
+                linked.as_ref().map(|linked| fpl::fulfillment(linked, now, &env)),
                 "value"
             );
 
@@ -964,6 +985,75 @@ proptest! {
             let named: Vec<prodrome::event::Hash> =
                 adopted.tips().expect("derives").into_iter().collect();
             prop_assert_eq!(adopted.merge(Some(&named), Some(settle)).expect("merges"), woven);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// §9.18: `link(Ref(x))` against a store's specs is `Absent` exactly when
+    /// the store knows `x` and it has no function, `x`'s own function linked
+    /// when it has one, and `Unknown(x)` for an id no event names.
+    #[test]
+    fn a_reference_links_to_absent_exactly_for_a_known_todo_with_no_function(
+        log in a_log_with_absence(),
+        asked in 0i64..WINDOW,
+    ) {
+        let (t, policy) = (moment(asked), roster());
+        let functions = flatten(&log, t, &policy).expect("the log folds");
+        let known: BTreeSet<&TodoId> = log.iter().map(TodoEvent::todo).collect();
+        let specs = prodrome::fold::link_specs(&functions, known.iter().copied());
+        for todo in TODOS.iter().chain(&["delta"]) {
+            let id = TodoId::new(*todo).expect("a todo id");
+            let linked = fpl::link(&fpl::mk_ref((*todo).to_owned()).expect("a todo id"), &specs);
+            match (known.contains(&id), functions.get(&id)) {
+                (false, _) => prop_assert_eq!(
+                    linked,
+                    Err(fpl::LinkError::Unknown((*todo).to_owned())),
+                    "Ref({}) never seen",
+                    todo
+                ),
+                (true, None) => prop_assert_eq!(
+                    linked,
+                    Ok(fpl::Closed::of(fpl::mk_absent()).expect("closed")),
+                    "Ref({}) known, no function",
+                    todo
+                ),
+                // A loop is named from where it was entered, so only what it
+                // links to is compared.
+                (true, Some(function)) => prop_assert_eq!(
+                    linked.ok(),
+                    fpl::link(function, &specs).ok(),
+                    "Ref({}) with a function",
+                    todo
+                ),
+            }
+        }
+    }
+
+    /// §9.9 over the same logs: every row's function is `flatten`'s, `Absent`
+    /// where there is none, and its value is that function linked against
+    /// every known todo's, read under the confirmed environment — a number,
+    /// `∅`, or the `LinkError`.
+    #[test]
+    fn every_row_reads_its_function_linked_over_what_the_store_knows(
+        log in a_log_with_absence(),
+        asked in 0i64..WINDOW,
+    ) {
+        let (t, policy) = (moment(asked), roster());
+        let rows = view::entries(&chain_of(&log), t, &policy).expect("the log folds");
+        let functions = flatten(&log, t, &policy).expect("the log folds");
+        let env = prodrome::fold::evaluation_env(&env_at(&log, t, &policy));
+        let specs = prodrome::fold::link_specs(&functions, rows.iter().map(|row| &row.todo));
+        for row in &rows {
+            let spec = functions.get(&row.todo).cloned().unwrap_or_else(fpl::mk_absent);
+            prop_assert_eq!(row.spec(), &spec);
+            let linked = fpl::link(&spec, &specs);
+            prop_assert_eq!(
+                row.value(),
+                linked.as_ref().map(|linked| fpl::fulfillment(linked, fpl::instant_of(t), &env))
+            );
         }
     }
 }

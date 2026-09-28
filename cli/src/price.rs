@@ -91,6 +91,7 @@ mod tests {
 
     fn fulfillment(term: &Term, now: Instant, env: &Env) -> f64 {
         prodrome::fpl::fulfillment(&Closed::of(term.clone()).expect("no Ref"), now, env)
+            .expect("a price the command line writes has a value")
     }
 
     fn price() -> Price {

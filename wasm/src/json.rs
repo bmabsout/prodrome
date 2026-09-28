@@ -21,10 +21,10 @@
 //! would have built, or a refusal.
 
 use prodrome::fpl::{
-    delta_from_hours, explained, iso, mk_after, mk_conj, mk_curve, mk_decay, mk_flat, mk_gate,
-    mk_importance, mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref, mk_shift,
-    mk_within, parse_iso, total_seconds, Closed, CurvePoint, Env, Explanation, FplError, Instant,
-    Note, Scalar, Term, TermF, PRIORITY_POWER,
+    delta_from_hours, explained, iso, mk_absent, mk_after, mk_conj, mk_curve, mk_decay, mk_flat,
+    mk_gate, mk_importance, mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref,
+    mk_shift, mk_within, parse_iso, total_seconds, Closed, CurvePoint, Env, Explanation, FplError,
+    Instant, Note, Scalar, Term, TermF, PRIORITY_POWER,
 };
 use serde_json::{Map, Value};
 
@@ -57,8 +57,9 @@ fn note_json(n: &Note) -> Value {
     }
 }
 
-/// The wire: `to_json`'s shape with a `value` on every node, the notes beside
-/// it, and each part explained in place of its printed subterm.
+/// The wire: `to_json`'s shape with a `value` on every node — `null` for `∅`
+/// — the notes beside it, and each part explained in place of its printed
+/// subterm.
 pub fn explanation_json(node: &Explanation) -> Value {
     let mut out = Map::new();
     out.insert("kind".into(), Value::String(node.node.kind().to_string()));
@@ -67,7 +68,11 @@ pub fn explanation_json(node: &Explanation) -> Value {
         out.insert(k.clone(), note_json(n));
     }
     match &*node.node {
-        TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Ref { .. } => {}
+        TermF::Flat { .. }
+        | TermF::Decay { .. }
+        | TermF::Curve { .. }
+        | TermF::Ref { .. }
+        | TermF::Absent => {}
         TermF::Conj { terms, .. } => {
             out.insert(
                 "terms".into(),
@@ -229,6 +234,7 @@ pub fn to_json(term: &Term) -> Value {
         TermF::Ref { todo } => {
             out.insert("todo".into(), Value::String(todo.clone()));
         }
+        TermF::Absent => {}
         TermF::Piecewise { head, pieces } => {
             out.insert("head".into(), to_json(head));
             out.insert(
@@ -357,6 +363,7 @@ pub fn from_json(d: &Value) -> Result<Term, FplError> {
             mk_piecewise(from_json(field(d, "head")?)?, pieces)
         }
         "ref" => mk_ref(text(d, "todo")?),
+        "absent" => Ok(mk_absent()),
         other => err(format!("unknown term kind: {other:?}")),
     }
 }
@@ -435,6 +442,35 @@ mod tests {
                 .collect(),
             tended: Default::default(),
         }
+    }
+
+    /// `Absent` crosses as its bare kind, and `∅` as `null` wherever a node
+    /// has no value — never as a number.
+    #[test]
+    fn absent_crosses_as_its_kind_and_its_value_as_null() {
+        let term = parse_term("Conj(terms=(Flat(value=0.25), Absent()), p=-4.0)").expect("a term");
+        let json = to_json(&term);
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "conj", "p": -4.0, "terms": [
+                {"kind": "flat", "value": 0.25}, {"kind": "absent"}
+            ]})
+        );
+        assert_eq!(from_json(&json).expect("a term"), term);
+        let at = parse_iso("2026-09-01T00:00:00").expect("an instant");
+        let tree = explain(&Closed::of(term).expect("closed"), at, &Env::new());
+        assert_eq!(tree["value"], 0.25);
+        assert_eq!(tree["shares"], serde_json::json!([1.0, 0.0]));
+        assert_eq!(
+            tree["terms"][1],
+            serde_json::json!({"kind": "absent", "value": null})
+        );
+        let alone = explain(
+            &Closed::of(parse_term("Absent()").expect("a term")).expect("closed"),
+            at,
+            &Env::new(),
+        );
+        assert_eq!(alone, serde_json::json!({"kind": "absent", "value": null}));
     }
 
     #[test]

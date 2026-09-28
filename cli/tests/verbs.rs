@@ -199,6 +199,33 @@ fn revise_without_a_price_is_a_refusal() {
 }
 
 #[test]
+fn an_unpriced_todo_reads_absent_and_lists_after_every_priced_one() {
+    let root = seeded();
+    said(
+        &root,
+        &[
+            "add",
+            "a-note",
+            "--body",
+            "no claim on attention",
+            "--actor",
+            "bassel",
+            "--at",
+            "2026-09-08T08:00:00",
+        ],
+    );
+    let list = said(&root, &["list", "--at", "2026-09-09T12:00:00"]);
+    let rows: Vec<&str> = list.lines().skip(1).collect();
+    assert_eq!(rows.len(), 3, "{list}");
+    assert!(rows[0].starts_with("0.350  ship-the-cli"), "{list}");
+    assert!(rows[1].starts_with("0.700  publish"), "{list}");
+    assert!(rows[2].starts_with("  ∅    a-note"), "{list}");
+    let show = said(&root, &["show", "a-note", "--at", "2026-09-09T12:00:00"]);
+    assert!(show.contains("price      absent"), "{show}");
+    assert!(show.contains("spec       Absent()"), "{show}");
+}
+
+#[test]
 fn a_verb_refuses_an_id_the_store_does_not_hold() {
     let root = seeded();
     assert!(prodrome(&root, &["done", "nope", "--actor", "bassel"]).is_err());

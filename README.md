@@ -133,17 +133,19 @@ let env = env_at(&events, now, policy);
 let functions = flatten(&events, now, policy)?;
 let todo = TodoId::new("todo-1")?;
 // A spec may name other todos with `Ref`, so evaluation takes a CLOSED term:
-// `link` binds every reference to that todo's own function.
-let closed = link(&functions[&todo], &link_specs(&functions))?;
+// `link` binds every reference to that todo's own function, and to
+// `Absent` for a todo the store knows that has none.
+let closed = link(&functions[&todo], &link_specs(&functions, [&todo]))?;
+// A value is `Option<f64>`: `None` is `∅`, the reading of `Absent`.
 let value = fulfillment(&closed, instant_of(now), &evaluation_env(&env));
-assert!((0.0..=1.0).contains(&value));
+assert!(value.is_some_and(|value| (0.0..=1.0).contains(&value)));
 
 // Or the whole composition at once: one row per todo the chain mentions,
 // each with its outcome, its function, its price and its conflicts (§6.7).
 let rows = entries(&nodes_of(&objects), now, policy)?;
 assert_eq!(rows.len(), 1);
 assert_eq!(rows[0].state(), "open");
-assert_eq!(rows[0].value(), Some(value));
+assert_eq!(rows[0].value(), Ok(value));
 ```
 
 This example is the crate's doctest; `cargo test` compiles and runs it.
@@ -185,10 +187,13 @@ own.
 **FPL.** Terms such as `Flat`, `Decay`, `Conj` (a power mean, so the weakest
 member dominates), `Within` (sampled over a window), `After` (anchored to
 another todo's completion), `Recur` (anchored to a todo's last tending),
-`Periodic` (repeated on the calendar), `Piecewise` and `Ref` (another todo's
-fulfillment, for subtodos and groups). A term holding a `Ref` is open;
-`link` binds every reference to that todo's function and answers a `Closed`
-term, refusing an unknown todo or a loop as a value. `fulfillment` evaluates a
+`Periodic` (repeated on the calendar), `Piecewise`, `Ref` (another todo's
+fulfillment, for subtodos and groups) and `Absent` (no value at all, `∅`: a
+note or a proposal with no claim on attention, which neither raises nor
+lowers what it is composed with). A term holding a `Ref` is open; `link`
+binds every reference to that todo's function, `Absent` for a known todo
+with none, and answers a `Closed` term, refusing a todo the store has never
+seen or a loop as a value. `fulfillment` evaluates a
 closed term at an instant; `explain` returns the same computation with a value
 at every node; `series_knots` gives a term's curve over a window.
 
@@ -202,7 +207,9 @@ An optimisation with an equivalence law (SPEC §9.13), not a second semantics:
 the interpreted path is unchanged and compiling is opt-in.
 
 **View.** `entries` composes the above into one row per todo: outcome, claim,
-function, value, current content, conflicts, and the objects that mention it.
+function, value (a number, `absent`, or why it does not link), current
+content, conflicts, and the objects that mention it. `list_order` is the one
+order a list shows them in: most urgent first, then every row with no number.
 
 The precise semantics are in [`SPEC.md`](SPEC.md).
 
@@ -317,6 +324,12 @@ instead — this crate's own log generator (`core/tests/common/mod.rs`'s
 and regenerating it is a separate, manual step —
 `cargo run --example generate_view_vectors -p prodrome-core` — that `nix
 flake check` and CI never run.
+
+`conformance/absent/*.py` (§9.18) is seeded the same way, for `Absent`:
+terms, exact series and logs drawn from the generators the laws of `∅` run
+over (`core/tests/common/terms.rs`, and `a_log_with_absence`), frozen, and
+regenerated only by hand with
+`cargo run --example generate_absent_vectors -p prodrome-core`.
 
 `conformance/link.py` (§7.2) is the other exception: it is written BY HAND
 from `link`'s laws — a few specs, the prints they link to, their values at a

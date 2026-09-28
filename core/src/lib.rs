@@ -64,17 +64,19 @@
 //! let functions = flatten(&events, now, policy)?;
 //! let todo = TodoId::new("todo-1")?;
 //! // A spec may name other todos with `Ref`, so evaluation takes a CLOSED term:
-//! // `link` binds every reference to that todo's own function.
-//! let closed = link(&functions[&todo], &link_specs(&functions))?;
+//! // `link` binds every reference to that todo's own function, and to
+//! // `Absent` for a todo the store knows that has none.
+//! let closed = link(&functions[&todo], &link_specs(&functions, [&todo]))?;
+//! // A value is `Option<f64>`: `None` is `∅`, the reading of `Absent`.
 //! let value = fulfillment(&closed, instant_of(now), &evaluation_env(&env));
-//! assert!((0.0..=1.0).contains(&value));
+//! assert!(value.is_some_and(|value| (0.0..=1.0).contains(&value)));
 //!
 //! // Or the whole composition at once: one row per todo the chain mentions,
 //! // each with its outcome, its function, its price and its conflicts (§6.7).
 //! let rows = entries(&nodes_of(&objects), now, policy)?;
 //! assert_eq!(rows.len(), 1);
 //! assert_eq!(rows[0].state(), "open");
-//! assert_eq!(rows[0].value(), Some(value));
+//! assert_eq!(rows[0].value(), Ok(value));
 //! # let _ = std::fs::remove_dir_all(&dir);
 //! # Ok(())
 //! # }

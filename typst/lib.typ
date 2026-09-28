@@ -12,6 +12,7 @@
 //
 //   (at: "2026-09-27T12:00:00",   the instant everything was read at
 //    entries: (..),               prodrome-wasm `entries(..).entries`
+//    order: (..),                 prodrome-wasm `entries(..).order`
 //    records: (..),               prodrome-wasm `entries(..).records`
 //    marks: ("<todo>": (ring: (72 values), bar: (values: (30), now: 10))),
 //    explain: ("<todo>": tree),   prodrome-wasm `explain`, optional
@@ -28,13 +29,15 @@
 #let problem = rgb("#e55900")
 #let watch = rgb("#a44554")
 #let fine = rgb("#379775")
-/// No value at all — a todo with no price. Absence is not a zero.
+/// No value at all — `∅`, a todo with no price, or one that does not link.
+/// Absence is not a zero.
 #let unpriced = rgb("#9b9b9b")
 #let ink = rgb("#222222")
 
 /// "Problem" below 0.5, "Watch" below 0.7, "Fine" from there, "Unpriced" for
-/// `none`.
-#let state-of(value) = if value == none {
+/// no number: `"absent"` (a row reading `∅`) or `none` (a mark or a node
+/// reading `∅`, or a row that does not link).
+#let state-of(value) = if value == none or value == "absent" {
   "Unpriced"
 } else if value < 0.5 {
   "Problem"
@@ -51,8 +54,9 @@
   Unpriced: unpriced,
 ).at(state-of(value))
 
-/// A value as the percentage the CLI prints (`0.42` is `42%`), `—` for none.
-#let percent(value) = if value == none { "—" } else {
+/// A value as the percentage the CLI prints (`0.42` is `42%`), `∅` for
+/// absent, `—` for none.
+#let percent(value) = if value == "absent" { "∅" } else if value == none { "—" } else {
   str(int(calc.round(value * 100))) + "%"
 }
 
@@ -158,11 +162,10 @@
 
 #let _marks(data, todo) = data.at("marks", default: (:)).at(todo, default: none)
 
-/// Most urgent first: ascending in value, the unpriced last, ties by id — the
-/// order `prodrome list` prints.
-#let by-fulfillment(entries) = entries
-  .sorted(key: e => e.todo)
-  .sorted(key: e => if e.value == none { 2.0 } else { e.value })
+/// The rows in the core's list order (SPEC §6.7), which `prodrome list`
+/// prints too: most urgent first, then every row with no number, by id. The
+/// order is the core's, so this package never sorts by value itself.
+#let listed(data) = data.order.map(todo => data.entries.find(e => e.todo == todo))
 
 #let _ring-of(data, todo, size: 2.4em) = {
   let marks = _marks(data, todo)
@@ -187,7 +190,7 @@
   href: todo => "#/todo/" + todo,
   markup: false,
 ) = {
-  let open = by-fulfillment(data.entries.filter(e => e.state == "open" and _existed(data, e)))
+  let open = listed(data).filter(e => e.state == "open" and _existed(data, e))
   let closed = data.entries.filter(e => e.state != "open").sorted(key: e => e.todo)
 
   heading(level: 1, title)
@@ -222,12 +225,13 @@
 
 /// An explanation tree (prodrome-wasm `explain`): each node's kind and value,
 /// its notes, and its parts beneath it. A decoration of the term, never a
-/// second reading of it.
+/// second reading of it. A node's `null` is always `∅`: every node of a term
+/// that explains at all is linked.
 #let explanation(node) = {
   let notes = node
     .pairs()
     .filter(((key, _)) => key not in ("kind", "value") and key not in _children)
-  [#raw(node.kind) #price(node.value)]
+  [#raw(node.kind) #price(if node.value == none { "absent" } else { node.value })]
   if notes.len() > 0 {
     [ — ]
     notes.map(((key, value)) => [#emph(key): #_note(value)]).join([, ])
@@ -286,11 +290,8 @@
   if detail != "" { _div("detail", _text(detail, markup)) }
 
   heading(level: 2)[Price]
-  if entry.spec == none {
-    [No spec: this item has no price, which is not a zero.]
-  } else {
-    raw(entry.spec, block: true, lang: "python")
-  }
+  raw(entry.spec, block: true, lang: "python")
+  if entry.value == "absent" [Absent: this item has no value, which is not a zero.]
   if entry.unlinked != none [Not priced: #entry.unlinked]
 
   let tree = data.at("explain", default: (:)).at(todo, default: none)

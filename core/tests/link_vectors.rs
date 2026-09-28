@@ -7,7 +7,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::vectors::{call, each, field, maybe_text, moment, number, strings, text_at, vectors};
+use common::vectors::{call, each, field, maybe_text, moment, strings, text_at, vectors};
 use prodrome::fpl::{
     fulfillment, instant_of, link, parse_term, print_term, Env, LinkError, Outcome, Term,
 };
@@ -60,10 +60,10 @@ fn every_reference_links_to_its_print_and_reads_its_samples() {
                 assert_eq!(print_term(closed.term()), expected, "{print}: linked");
                 for sample in each(case, "samples") {
                     let now = instant_of(moment(field(sample, "now")));
-                    common::close(
+                    common::reading(
                         "fulfillment",
                         fulfillment(&closed, now, &env),
-                        number(field(sample, "value")),
+                        field(sample, "value"),
                     )
                     .unwrap_or_else(|e| panic!("{print} at {now}: {e}"));
                     samples += 1;
