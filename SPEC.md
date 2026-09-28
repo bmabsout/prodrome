@@ -77,7 +77,7 @@ since this grammar has tuples and no mapping.
 
 ## 3. Objects and the DAG
 
-> **Draft A** (below §10, NOT in force) proposes naming a change by its event
+> **Draft A** (below §10, NOT in force) proposes naming a change by its genesis, its event
 > and the register frontiers it supersedes rather than by the tips it was
 > written on. Nothing in this section changes until it lands.
 
@@ -752,64 +752,121 @@ multi-tenancy; a hosted service.
 > checks it, and §1–§10 above are the contract until it is folded into them
 > and this section is deleted. Where it says "§3 gains", §3 has not.
 
-**A1. The envelope (amends §3).** A third envelope, `Change(deps, event)`:
-`deps` a tuple of object names, sorted and distinct, possibly empty; `event`
-required. Its name is the hash of its print, like every object's.
-`parents_of(Change(deps, _)) = deps`, and every definition of §3 and §6
-that reads parents reads `deps`. `Sealed` and `Woven` stay readable; a writer
-under this draft writes neither.
+**A1. Objects (amends §2, §3).** Three new constructors.
+- `Genesis(label, nonce)` starts a prodrome. `nonce` is 32 hex characters
+  drawn once. It has no parents and no event.
+- `Change(genesis, deps, event)`. `deps` is sorted, distinct and possibly
+  empty, and `event` is required.
+- `Snapshot(genesis, tips, previous)`. `tips` is sorted, distinct and
+  non-empty, and `previous` is a snapshot's name or `''`.
 
-**A2. Dependencies (amends §3's appending).** `append(event)` computes `deps`
+`parents_of` a `Change` is its `deps`, and of a `Snapshot` its `tips` plus a
+non-empty `previous`. `Sealed` and `Woven` stay readable, and a writer under
+this draft writes neither. `event_id(e) = sha256(utf8(print(e)))` names an
+event apart from where it was written, and is never stored.
+
+**A2. Genesis (amends §3).** Every object has exactly one genesis. A
+`Change` or `Snapshot` names it. A legacy object's genesis is the
+`Sealed("", …)` root it rests on, or the least such by name where a legacy
+store already joined two roots. No `deps` or snapshot edge crosses geneses.
+A store may hold several geneses, and every fold, register and entry factors
+into per-genesis ones, keyed by `(genesis, todo)`. An unqualified `Ref(todo)`
+resolves within its own genesis.
+
+**A3. Dependencies (amends §3's appending).** `append(event)` computes `deps`
 as the union, over the registers `event` writes (§6.6), of each register's
-frontier in the writer's store, folded STRUCTURALLY: under the policy where
-everything binds and at no moment. An event that writes no register
-(`Created`, `Tended`) has `deps = ()`. So a change depends on exactly what it
-supersedes, and its name is a function of its event and that, and of nothing
-else the writer holds.
+frontier within the writer's genesis. The frontier is folded STRUCTURALLY:
+under the policy where everything binds, and at no moment. `Created` and
+`Tended` write no register and have `deps = ()`. A register is one todo's, so
+`deps` never leave a todo.
 
-**A3. Idempotence (amends §3's appending).** Before writing, `append` looks
-for an object whose event prints byte-identically to `event`. If one exists
-anywhere in the store, it writes nothing and answers the first such in the
-linearisation. A replay never writes, even over a write that has since been
+**A4. Idempotence (amends §3's appending).** If the genesis holds an object
+whose event prints byte-identically to `event`, `append` writes nothing and
+answers the first such object in the linearisation, even one since
 superseded.
 
-**A4. No merges (amends §3).** `append` never writes a `Woven` into a store
-that holds a `Change`. Tips stay derived (law 17(a), (c)) and are no longer
-read to write. `merge` stays for stores written before this draft.
+**A5. No merges (amends §3).** `append` never writes a `Woven`. Tips stay
+derived and are no longer read to write. `merge` stays for legacy stores.
 
-**A5. Twins (amends §6.6).** Objects carrying byte-identical events under
-different `deps` are TWINS: distinct objects, each superseding only what its
-own `deps` reach. A frontier whose writes all carry one event print is a
-value, not a conflict. `conflicts_of` names only frontiers holding two or
-more distinct events.
+**A6. Candidates (amends §6).** A register's reading is its CANDIDATES: the
+distinct events of its frontier, so writes carrying one event are one
+candidate. Nothing projects a winner. In the confirmed reading only binding
+writes are candidates, and a claim neither joins a frontier nor removes from
+one, whatever its deps.
+- `env`'s outcome for a todo is its candidate bindings, where "open" is a
+  candidate if `Reopened` is one.
+- `specs` and `content` are the candidate specs and records.
+- `After(x, …)` reads the minimum over `x`'s candidate bindings.
 
-**A6. `verify` (amends §3).** It also reports a `Change` whose `deps` are
-unsorted or repeated, whose `deps` are not an antichain, or with a dep that
-writes no register its event writes. The clock rule is unchanged and reads
-the narrower ancestors.
+A WORLD of todo `x` picks one candidate from each of `x`'s written state,
+spec and content registers. Its log is the log minus the other candidates of
+those registers. `flatten[x]` is `Least` over the worlds, each flattened as
+§6.4 says. The entry's `value` is therefore the least over worlds, and its
+`content` is the candidate names, sorted. The linearisation decides no value
+and orders only `stream`.
 
-**A7. Stored bytes.** A store holding no `Change` reads, folds, derives and
-verifies exactly as under §3. In a mixed store a `Change` may depend on
-`Sealed` and `Woven` writes, whose ancestry keeps its global position. A
-reader without this draft refuses a `Change` by §2's whitelist.
+**A7. `Least(terms)` (amends §7).** The minimum of the members that have a
+value, and `∅` when none does. `Absent` is its identity and `Least([t]) =
+t`. `normalize` pushes it under `Piecewise`. It is exact when its members
+are, with the crossings among its breakpoints. The compiler writes a
+conflicted `After` as `Least` of the per-candidate compiled terms.
 
-**A8. Laws (amend §9).**
+**A8. Snapshots (amends §3).** A snapshot's closure is exactly what it
+attests. An object is in it iff it existed when the snapshot was written. On
+a `previous` chain each closure contains the one before. No fold reads a
+snapshot, and no change depends on one.
 
-19. **A name is its event and its view.** The object `append(event)` writes
-    is a function of `event` and of the structural frontiers of the registers
-    it writes. Adding objects that write other registers (and do not carry
-    `event`, law 20) changes no name `append` would write.
-20. **Append is idempotent.** Appending an event whose print the store holds
-    writes nothing and answers the first object carrying it. Replaying any
-    sequence of appends, in any order, onto the store they produced leaves
-    its object set unchanged.
-21. **Independence is structural.** Changes writing disjoint registers are
-    concurrent unless one names the other's ancestor, and every fold reads
-    the same in either order.
-22. **No stored byte moves.** Every `conformance/dag.py` store, and every
-    generated store of `Sealed` and `Woven`, reads, derives, linearises and
-    verifies exactly as before.
+**A9. `verify` (amends §3).** It also reports:
+- a `Change` whose `deps` are unsorted, repeated, or not an antichain;
+- a dep of another genesis, of another todo, or writing no register its
+  event writes;
+- a `Snapshot` whose closure is incomplete or crosses geneses;
+- a legacy store that joined two roots.
 
-Law 6 reads "conflicts are exactly the registers both branches wrote
-different events to". Law 17(b) reads, for a store of changes, "the next
-`append` on the union writes the object one writer holding the union would".
+The clock rule is unchanged and reads the narrower ancestors.
+
+**A10. Laws (amend §9).** The checking property test is named after each
+law.
+
+19. **A name is its genesis, event and view.** Adding objects that write
+    other registers (and do not carry `event`) changes no name `append` would
+    write. `change.rs::name_ignores_other_registers`.
+20. **Append is idempotent.** Replaying any sequence of appends onto the
+    store they produced leaves its object set unchanged, including a replay
+    after a rejection. `change.rs::replay_is_a_no_op`,
+    `change.rs::replay_after_rejection_writes_nothing`.
+21. **Independence is structural.** `deps` name one todo, and changes to
+    different todos commute. `change.rs::deps_name_one_todo`,
+    `fold_laws.rs::disjoint_todos_commute`.
+22. **No stored byte moves.** Legacy stores derive, linearise and verify as
+    before, and read as before wherever no register has two candidates.
+    `conformance/dag.py`'s `env` changes exactly at state conflicts (law
+    24). The existing suites.
+23. **Geneses are disjoint.** No edge crosses geneses, and a fold of a
+    union is the union of per-genesis folds.
+    `change.rs::no_edge_crosses_geneses`,
+    `fold_laws.rs::union_folds_per_genesis`.
+24. **A conflict prices as its most urgent candidate.** With one candidate
+    per register, the reading is today's, bit for bit. Otherwise the value is
+    the least over worlds. `fold_laws.rs::one_candidate_reads_as_before`,
+    `fold_laws.rs::conflict_is_its_most_urgent_world`,
+    `registers.rs::agreeing_twins_are_one_candidate`.
+25. **The linearisation decides no value.** Any linear extension folds to
+    the same entries. `fold_laws.rs::any_linear_extension_folds_alike`.
+26. **`Least` is a semilattice with `Absent` as identity**, preserved by
+    `normalize` and `compile`, and it round-trips.
+    `fpl_laws.rs::least_is_a_semilattice`, with `Least` drawn by `a_term()`.
+27. **A claim settles nothing it is not trusted to.** A claiming change
+    leaves every confirmed frontier as it was.
+    `fold_laws.rs::claim_never_settles`.
+28. **A snapshot attests its closure.** `change.rs::snapshot_commits_to_closure`,
+    `change.rs::snapshot_chain_grows`.
+29. **Placement is not identity.** Moving a change between stores of one
+    genesis changes no name. A re-proposal over the same frontier is the same
+    object, and over a moved one it has the same `event_id`.
+    `change.rs::accept_is_a_same_name_move`,
+    `change.rs::reproposal_is_recognised`.
+
+Law 6 becomes definitional: the folds ARE the register projections, and its
+surviving content is "a descending write settles, a merge settles nothing".
+Law 17(b)'s `Woven` clause holds only for legacy stores.
