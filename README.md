@@ -323,7 +323,7 @@ push to `main` and after every verified push to `roadmap-data`.
 ## Testing
 
 ```console
-$ nix flake check              # tests and clippy, in the sandbox
+$ nix flake check              # fmt, tests and clippy, in the sandbox
 $ nix develop -c cargo test    # the same with a toolchain in hand
 ```
 
