@@ -64,6 +64,10 @@
           cargoVendorDir = craneLib.vendorCargoDeps { cargoLock = ./Cargo.lock; };
           preBuild = remapVendorDir;
           strictDeps = true;
+          # No debuginfo in the dev and test profiles: no check runs a
+          # debugger or prints a backtrace, and a panic names its line
+          # without it. Here, so that the deps are built to match.
+          CARGO_PROFILE_DEV_DEBUG = "0";
         };
 
         # THE DEPENDENCY TREE, BUILT ONCE. `buildDepsOnly` compiles it against
