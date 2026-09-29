@@ -1,15 +1,11 @@
-//! SPEC §9 law 6 and §6.6, on `conformance/dag.py` and `conformance/folds.py`.
+//! SPEC §6.6 and Draft A, on `conformance/dag.py` and `conformance/folds.py`:
+//! each DAG's conflicts, named by the exact objects that wrote them, and its
+//! environment at a far moment, a state conflict read as its candidates; and
+//! the structure the registers stand on — the monoid action, frontiers,
+//! agreeing twins, and deps that never leave a todo.
 //!
-//! Two claims, and they are different claims. The FIRST is the vectors: each
-//! DAG's `conflicts` — every register both branches wrote, named by the exact
-//! objects that wrote it — and its `env` at a far moment. The SECOND is the
-//! law behind them: on ANY dag, and on any chain, the register projections are
-//! the event folds, so a conflicted todo never shows one write's content
-//! beside another write's price.
-//!
-//! The DAGs are rebuilt from their object files, exactly as `tests/dag.rs`
-//! rebuilds them: nothing about a frontier may depend on this side having been
-//! the writer.
+//! The DAGs are rebuilt from their object files: nothing about a frontier may
+//! depend on this side having been the writer.
 
 mod common;
 
@@ -18,25 +14,27 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::vectors::{each, field, integer, moment, strings, text, text_at, vectors};
-use prodrome::event::{parse_envelope, Actor, Envelope, Hash, TodoEvent};
-use prodrome::fold::{authored_at, env_at, specs_at, Env};
-use prodrome::fpl::{iso, print_term};
-use prodrome::literal::Value;
-use prodrome::policy::Untrusted;
-use prodrome::reference::Todo;
-use prodrome::registers::{
-    conflicts_of, content_of, env_of, extend, fold, nodes_of, since, specs_of, Folded, Node,
+use prodrome::change::mk_change;
+use prodrome::event::{
+    mk_cancelled, mk_completed, mk_reopened, parse_envelope, seal_hash, Actor, Envelope, Hash,
+    TodoEvent,
 };
+use prodrome::fold::{Kind, Registers};
+use prodrome::fpl::{instant_of, iso, Env};
+use prodrome::genesis::mk_genesis;
+use prodrome::literal::{Datetime, Value};
+use prodrome::policy::{Everything, Untrusted};
+use prodrome::reference::Todo;
+use prodrome::registers::{deps_for, extend, fold, nodes_of, since, Folded, Node};
 use prodrome::store::EventStore;
+use prodrome::view;
 
-/// The vectors were taken with the reference payload, so that is the record
-/// shape they are read back under.
-type Event = TodoEvent<Todo>;
 type Chain = Node<Todo>;
 type Store = EventStore<Todo, Untrusted>;
 
-/// An environment as the vectors hold it: `(todo, kind, instant)`.
-type Outcomes = BTreeMap<String, (String, String)>;
+/// An environment as the vectors hold it: `(todo, kind, instant)` per
+/// candidate, `("open", "")` for an open one.
+type Outcomes = BTreeSet<(String, String, String)>;
 
 fn dags() -> Vec<Value> {
     each(&vectors("dag.py"), "dags").to_vec()
@@ -47,32 +45,10 @@ fn logs() -> Vec<Value> {
 }
 
 fn roster() -> Untrusted {
-    // The deployment's roster was `{"triage"}`, which is what
-    // the generator folded these vectors with. The roster arrives as a
-    // parameter here exactly as it does there.
     Untrusted::of([Actor::new("triage").expect("valid")])
 }
 
-/// `ORIGIN + 400 days` — the "far" moment the generator asked `env_at` at,
-/// later than every event any vector holds, so the dated fold sees the whole
-/// DAG and can be compared with the undated register fold.
-fn far() -> prodrome::literal::Datetime {
-    prodrome::literal::Datetime::new(2027, 10, 6, 0, 0, 0, 0).expect("a real instant")
-}
-
 static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-fn objects_of(dag: &Value) -> BTreeMap<String, String> {
-    each(dag, "objects")
-        .iter()
-        .map(|o| {
-            (
-                text_at(o, "name").to_owned(),
-                text_at(o, "literal").to_owned(),
-            )
-        })
-        .collect()
-}
 
 fn materialise(dag: &Value) -> Store {
     let root = std::env::temp_dir().join(format!(
@@ -83,8 +59,11 @@ fn materialise(dag: &Value) -> Store {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("objects")).expect("creates the store");
     let tips = strings(dag, "tips");
-    for (name, text) in &objects_of(dag) {
-        fs::write(root.join("objects").join(format!("{name}.py")), text).expect("writes an object");
+    for object in each(dag, "objects") {
+        let path = root
+            .join("objects")
+            .join(format!("{}.py", text_at(object, "name")));
+        fs::write(path, text_at(object, "literal")).expect("writes an object");
     }
     if tips.len() > 1 {
         fs::create_dir_all(root.join("refs")).expect("creates refs/");
@@ -99,11 +78,11 @@ fn materialise(dag: &Value) -> Store {
 fn outcomes(env: &Env) -> Outcomes {
     env.outcomes
         .iter()
-        .map(|(todo, binding)| {
-            (
-                todo.as_str().to_owned(),
-                (binding.kind().to_owned(), iso(binding.at())),
-            )
+        .flat_map(|(todo, candidates)| {
+            candidates.iter().map(move |binding| match binding {
+                Some(b) => (todo.clone(), b.kind().to_owned(), iso(b.at())),
+                None => (todo.clone(), "open".to_owned(), String::new()),
+            })
         })
         .collect()
 }
@@ -112,19 +91,19 @@ fn frozen_outcomes(dag: &Value) -> Outcomes {
     each(dag, "env")
         .iter()
         .map(|bound| {
-            (
-                text_at(bound, "todo").to_owned(),
-                (
+            let todo = text_at(bound, "todo").to_owned();
+            match bound.as_call().map(|call| call.name.as_str()) {
+                Some("Open") => (todo, "open".to_owned(), String::new()),
+                _ => (
+                    todo,
                     text_at(bound, "kind").to_owned(),
-                    iso(prodrome::fpl::instant_of(moment(field(bound, "at")))),
+                    iso(instant_of(moment(field(bound, "at")))),
                 ),
-            )
+            }
         })
         .collect()
 }
 
-/// A DAG's conflicts as the vector holds them: by todo, then by register kind,
-/// each the object names that wrote it.
 fn frozen_conflicts(dag: &Value) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
     let mut out: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
     for held in each(dag, "conflicts") {
@@ -135,13 +114,7 @@ fn frozen_conflicts(dag: &Value) -> BTreeMap<String, BTreeMap<String, Vec<String
     out
 }
 
-fn events_of(nodes: &[Chain]) -> Vec<Event> {
-    nodes.iter().filter_map(|node| node.event.clone()).collect()
-}
-
-/// A log's events as a CHAIN of nodes, each sealed on the one before — which
-/// is the DAG a single writer builds, and the shape the registers must agree
-/// with the folds on.
+/// A log as the chain a single writer builds.
 fn chain_of(log: &Value) -> Vec<Chain> {
     let seed = integer(field(log, "seed"));
     let mut prev = String::new();
@@ -150,7 +123,7 @@ fn chain_of(log: &Value) -> Vec<Chain> {
         let object = format!("Sealed(prev='{prev}', event={})", text(item));
         let envelope: Envelope<Todo> =
             parse_envelope(&object).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
-        let name = prodrome::event::seal_hash(&envelope);
+        let name = seal_hash(&envelope);
         prev = name.as_str().to_owned();
         nodes.push(Node::of(name, &envelope));
     }
@@ -159,207 +132,95 @@ fn chain_of(log: &Value) -> Vec<Chain> {
 
 #[test]
 fn every_dag_vector_has_the_references_conflicts_and_environment() {
-    let dags = dags();
-    assert!(!dags.is_empty());
     let mut conflicted = 0;
-    let mut registers = 0;
-    for dag in &dags {
+    for dag in &dags() {
         let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
-        let objects: Vec<(Hash, Envelope<Todo>)> = store
+        let objects = store
             .read_dag_named()
             .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
-        let nodes = nodes_of(&objects);
-        let state = fold(&nodes, None, &roster());
+        let state = fold(&nodes_of(&objects));
 
-        let found: BTreeMap<String, BTreeMap<String, Vec<String>>> = conflicts_of(&state)
-            .iter()
-            .map(|(todo, by_kind)| {
-                (
-                    todo.as_str().to_owned(),
-                    by_kind
-                        .iter()
-                        .map(|(kind, frontier)| {
-                            (
-                                kind.as_str().to_owned(),
-                                frontier
-                                    .writes()
-                                    .iter()
-                                    .map(|write| write.at.as_str().to_owned())
-                                    .collect(),
-                            )
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
+        let mut found: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+        let mut env = Env::new();
+        for (todo, stream) in state.todos() {
+            let registers = Registers::read(stream, None, &roster());
+            registers.bind(todo, &mut env);
+            for (kind, names) in registers.conflicts() {
+                found.entry(todo.as_str().to_owned()).or_default().insert(
+                    kind.as_str().to_owned(),
+                    names.iter().map(|n| n.as_str().to_owned()).collect(),
+                );
+            }
+        }
         assert_eq!(found, frozen_conflicts(dag), "seed {seed}: conflicts");
         conflicted += found.len();
-
-        assert_eq!(
-            outcomes(&env_of(&state)),
-            frozen_outcomes(dag),
-            "seed {seed}: env"
-        );
-        registers += state.frontiers().len();
+        assert_eq!(outcomes(&env), frozen_outcomes(dag), "seed {seed}: env");
         let _ = fs::remove_dir_all(store.root());
     }
-    // A conflict is what these vectors are FOR: a zero would mean the corpus
-    // stopped forking and this file went quietly green.
     assert!(conflicted > 0, "some DAGs hold a conflicted todo");
-    assert!(registers > 0, "the DAGs write registers");
 }
 
 #[test]
-fn on_every_dag_the_registers_are_the_folds() {
-    let dags = dags();
-    let policy = roster();
-    for dag in &dags {
-        let seed = integer(field(dag, "seed"));
-        let store = materialise(dag);
-        let objects = store.read_dag_named().expect("the DAG reads");
-        let nodes = nodes_of(&objects);
-        let events = events_of(&nodes);
-        let state = fold(&nodes, None, &policy);
-
-        assert_eq!(
-            env_of(&state),
-            env_at(&events, far(), &policy),
-            "seed {seed}: env"
-        );
-        assert_eq!(
-            printed(&specs_of(&state)),
-            printed(&specs_at(&events, far(), &policy)),
-            "seed {seed}: specs"
-        );
-        assert_eq!(
-            content_of(&state),
-            authored_at(&events, far()),
-            "seed {seed}: content"
-        );
-        let _ = fs::remove_dir_all(store.root());
-    }
-}
-
-fn printed(
-    specs: &BTreeMap<prodrome::event::TodoId, prodrome::term::Term>,
-) -> BTreeMap<String, String> {
-    specs
-        .iter()
-        .map(|(todo, spec)| (todo.as_str().to_owned(), print_term(spec)))
-        .collect()
-}
-
-/// On a CHAIN the registers are the folds too, and nothing is ever in
-/// conflict: every write descends from the one before it.
-#[test]
-fn on_every_log_the_registers_are_the_folds_and_nothing_conflicts() {
-    let logs = logs();
+fn on_a_chain_nothing_conflicts() {
     let mut written = 0;
-    for log in &logs {
+    for log in &logs() {
         let seed = integer(field(log, "seed"));
-        let policy = Untrusted::of(
-            strings(log, "untrusted")
-                .iter()
-                .map(|name| Actor::new(name.as_str()).expect("an actor name")),
-        );
-        let nodes = chain_of(log);
-        let events = events_of(&nodes);
-        let state = fold(&nodes, None, &policy);
-        assert_eq!(
-            conflicts_of(&state),
-            BTreeMap::new(),
-            "seed {seed}: a chain has no conflicts"
-        );
-        assert_eq!(
-            env_of(&state),
-            env_at(&events, far(), &policy),
-            "seed {seed}: env"
-        );
-        assert_eq!(
-            printed(&specs_of(&state)),
-            printed(&specs_at(&events, far(), &policy)),
-            "seed {seed}: specs"
-        );
-        assert_eq!(
-            content_of(&state),
-            authored_at(&events, far()),
-            "seed {seed}: content"
-        );
-        written += state.frontiers().len();
+        let state = fold(&chain_of(log));
+        for (_, stream) in state.todos() {
+            let registers = Registers::read(stream, None, &Everything);
+            assert!(registers.conflicts().is_empty(), "seed {seed}");
+            written += registers.state.writes().len() + registers.spec.writes().len();
+        }
     }
     assert!(written > 0, "the logs write registers");
 }
 
-/// §6.6's monoid action, on the real DAGs: splitting the read at any point and
-/// applying the halves in turn is the same state as folding the whole, and
-/// applying what is already folded changes nothing.
+/// §6.6's monoid action, on the real DAGs.
 #[test]
 fn the_fold_is_a_monoid_action_on_every_dag() {
-    let dags = dags();
-    let policy = roster();
-    for dag in &dags {
+    for dag in &dags() {
         let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
-        let objects = store.read_dag_named().expect("the DAG reads");
-        let nodes = nodes_of(&objects);
-        let whole = fold(&nodes, None, &policy);
+        let nodes = nodes_of(&store.read_dag_named().expect("the DAG reads"));
+        let whole = fold(&nodes);
         for split in 0..=nodes.len() {
-            let stepped = extend(
-                &fold(&nodes[..split], None, &policy),
-                &nodes[split..],
-                None,
-                &policy,
-            );
-            assert_eq!(whole, stepped, "seed {seed}: split at {split}");
-            // And the prefix that is already folded is exactly what `since`
-            // declines to hand back.
-            let prefix = fold(&nodes[..split], None, &policy);
-            let left: Vec<&Chain> = since(&prefix, &nodes);
+            let prefix = fold(&nodes[..split]);
             assert_eq!(
-                left,
+                whole,
+                extend(&prefix, &nodes[split..]),
+                "seed {seed}: {split}"
+            );
+            assert_eq!(
+                since(&prefix, &nodes),
                 nodes[split..].iter().collect::<Vec<_>>(),
                 "seed {seed}: since at {split}"
             );
         }
-        assert_eq!(
-            extend(&whole, &nodes, None, &policy),
-            whole,
-            "seed {seed}: re-extending with a prefix"
-        );
+        assert_eq!(extend(&whole, &nodes), whole, "seed {seed}: re-extending");
         let _ = fs::remove_dir_all(store.root());
     }
 }
 
-/// The frontier is the DAG's, not the reader's: every write in a conflict is
-/// concurrent with every other, and every write NOT in it is superseded by one
-/// that is. That is the definition, checked against the ancestry the state
-/// itself computed.
+/// Every write in a frontier is concurrent with every other, checked against
+/// the ancestry the state computed.
 #[test]
 fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
-    let dags = dags();
-    let policy = roster();
     let mut pairs = 0;
-    for dag in &dags {
+    for dag in &dags() {
         let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
-        let objects = store.read_dag_named().expect("the DAG reads");
-        let nodes = nodes_of(&objects);
-        let state = fold(&nodes, None, &policy);
-        for frontier in state.frontiers().values() {
-            let names: Vec<&Hash> = frontier.writes().iter().map(|write| &write.at).collect();
-            // Sorted by name, so two states holding the same writes are equal.
-            let sorted: Vec<&str> = names.iter().map(|name| name.as_str()).collect();
-            let mut expected = sorted.clone();
-            expected.sort_unstable();
-            assert_eq!(sorted, expected, "seed {seed}: frontier order");
-            for a in &names {
-                for b in &names {
-                    if a != b {
-                        assert!(
-                            !state.descends(a, b),
-                            "seed {seed}: {a:?} descends from {b:?} and is still in the frontier"
-                        );
+        let state = fold(&nodes_of(&store.read_dag_named().expect("the DAG reads")));
+        for (_, stream) in state.todos() {
+            let registers = Registers::read(stream, None, &Everything);
+            for kind in [Kind::State, Kind::Spec, Kind::Content] {
+                let names = registers.frontier(kind).names();
+                let mut sorted = names.clone();
+                sorted.sort();
+                assert_eq!(names, sorted, "seed {seed}: frontier order");
+                for a in &names {
+                    for b in names.iter().filter(|b| *b != a) {
+                        assert!(!state.descends(a, b), "seed {seed}: {a:?} over {b:?}");
                         pairs += 1;
                     }
                 }
@@ -370,19 +231,106 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
     assert!(pairs > 0, "the corpus holds a frontier with two writes");
 }
 
-/// The empty state is the unit, and it holds nothing — the shape that makes
-/// "no writes" an absent key rather than an empty frontier.
 #[test]
 fn the_empty_state_is_the_unit() {
-    let policy = roster();
     let empty = Folded::<Todo>::empty();
-    assert!(empty.frontiers().is_empty());
-    assert_eq!(extend(&empty, &[], None, &policy), empty);
-    assert_eq!(fold(&[], None, &policy), empty);
-    assert_eq!(env_of(&empty), Env::new());
-    assert_eq!(conflicts_of(&empty), BTreeMap::new());
+    assert_eq!(empty.todos().count(), 0);
+    assert_eq!(extend(&empty, &[]), empty);
+    assert_eq!(fold::<Todo>(&[]), empty);
     let unknown = Hash::new("a".repeat(64)).expect("hex");
     assert!(!empty.descends(&unknown, &unknown));
     assert!(!empty.holds(&unknown));
-    let _: BTreeSet<_> = prodrome::registers::registers_of(&empty);
+}
+
+fn at(day: u32) -> Datetime {
+    Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
+}
+
+/// Changes of one genesis, each named by its own print, as nodes.
+struct Prodrome {
+    genesis: Hash,
+    nodes: Vec<Chain>,
+}
+
+impl Prodrome {
+    fn new() -> Prodrome {
+        let genesis =
+            Envelope::<Todo>::Genesis(mk_genesis("test", &"0".repeat(32)).expect("a genesis"));
+        let name = seal_hash(&genesis);
+        Prodrome {
+            nodes: vec![Node::of(name.clone(), &genesis)],
+            genesis: name,
+        }
+    }
+
+    fn write(&mut self, deps: &[&Hash], event: TodoEvent<Todo>) -> Hash {
+        let deps = deps.iter().map(|dep| (*dep).clone()).collect();
+        let change = mk_change(self.genesis.clone(), deps, event).expect("a change");
+        let envelope = Envelope::Change(change);
+        let name = seal_hash(&envelope);
+        self.nodes.push(Node::of(name.clone(), &envelope));
+        name
+    }
+}
+
+/// Law 24: the same event written over two different views is two objects and
+/// ONE candidate. The frontier names both, and the reading is one.
+#[test]
+fn agreeing_twins_are_one_candidate() {
+    let mut p = Prodrome::new();
+    let done = p.write(
+        &[],
+        mk_completed("alpha", at(1), "bassel", "").expect("valid"),
+    );
+    let dropped = p.write(
+        &[],
+        mk_cancelled("alpha", at(2), "bassel", "").expect("valid"),
+    );
+    let reopened = mk_reopened("alpha", at(3), "bassel", "").expect("valid");
+    let one = p.write(&[&done], reopened.clone());
+    let two = p.write(&[&dropped], reopened.clone());
+    assert_ne!(one, two, "twins are two objects");
+
+    let state = fold(&p.nodes);
+    let (_, stream) = state.todos().next().expect("alpha");
+    let registers = Registers::read(stream, None, &roster());
+    let mut twins = vec![one.clone(), two.clone()];
+    twins.sort();
+    assert_eq!(registers.state.names(), twins, "both are in the frontier");
+    assert_eq!(registers.state.candidates().len(), 1, "one candidate");
+    assert_eq!(registers.outcomes(), [None].into(), "and it reads open");
+
+    let genesis = Some(p.genesis.clone());
+    assert_eq!(deps_for(&state, &genesis, &reopened), twins);
+    let rows = view::entries(&p.nodes, at(9), &roster()).expect("folds");
+    let [row] = &rows[..] else { panic!("one todo") };
+    assert_eq!(row.genesis, genesis);
+    assert!(row.is_open());
+    assert_eq!(row.conflicts[&Kind::State], twins);
+}
+
+/// Law 21's footing: a change's deps are its own todo's frontiers, whatever
+/// else the prodrome holds.
+#[test]
+fn deps_name_one_todo() {
+    let mut p = Prodrome::new();
+    let alpha = p.write(
+        &[],
+        mk_completed("alpha", at(1), "bassel", "").expect("valid"),
+    );
+    let state = fold(&p.nodes);
+    let genesis = Some(p.genesis.clone());
+    let beta = mk_completed("beta", at(2), "bassel", "").expect("valid");
+    assert!(deps_for(&state, &genesis, &beta).is_empty());
+    let again = mk_reopened("alpha", at(2), "bassel", "").expect("valid");
+    assert_eq!(deps_for(&state, &genesis, &again), [alpha]);
+    let tended = prodrome::event::mk_tended("alpha", at(2), "bassel", "").expect("valid");
+    assert!(
+        deps_for(&state, &genesis, &tended).is_empty(),
+        "a tending writes no frontier"
+    );
+    assert!(
+        deps_for(&state, &None, &again).is_empty(),
+        "another prodrome's frontier is not mine"
+    );
 }

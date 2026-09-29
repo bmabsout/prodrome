@@ -58,8 +58,8 @@ fn err<T>(msg: impl Into<String>) -> Result<T, FplError> {
 
 /// A term with no [`TermF::Ref`] anywhere in it: what evaluation takes (§7).
 ///
-/// A newtype so that forgetting to [`link`] is a type error, for the reason
-/// `fold::evaluation_env` exists: a reference has no value until it is bound.
+/// A newtype so that forgetting to [`link`] is a type error: a reference has
+/// no value until it is bound.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Closed(Term);
 
@@ -93,7 +93,7 @@ pub fn holds_absent(term: &Term) -> bool {
 
 /// What history says about a named event. The two ways an event can be over
 /// mean OPPOSITE things downstream, so they are an ADT and never a boolean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Outcome {
     Completed(Instant),
     Cancelled(Instant),
@@ -105,14 +105,27 @@ impl Outcome {
             Outcome::Completed(at) | Outcome::Cancelled(at) => *at,
         }
     }
+
+    /// The constructor name the reference prints for this outcome.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Outcome::Completed(_) => "Completed",
+            Outcome::Cancelled(_) => "Cancelled",
+        }
+    }
 }
 
-/// What history says, as a snapshot: `After`'s freeze variables, and the
-/// tendings `Recur` re-anchors to — a grow-only set per todo, so two replicas'
-/// tendings merge by union and never conflict.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// A register's candidate bindings (§6.6), `None` where a candidate is open:
+/// one member is a value, more are a conflict.
+pub type Candidates = BTreeSet<Option<Outcome>>;
+
+/// What history says, as a snapshot: `After`'s freeze variables, each the
+/// candidate bindings of a todo that is not simply open, and the tendings
+/// `Recur` re-anchors to — a grow-only set per todo, so two replicas' tendings
+/// merge by union and never conflict.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Env {
-    pub outcomes: BTreeMap<String, Outcome>,
+    pub outcomes: BTreeMap<String, Candidates>,
     pub tended: BTreeMap<String, BTreeSet<Instant>>,
 }
 
@@ -120,6 +133,11 @@ impl Env {
     /// The environment that binds nothing and records no tending.
     pub fn new() -> Env {
         Env::default()
+    }
+
+    /// `event` bound to exactly `outcome`.
+    pub fn bind(&mut self, event: impl Into<String>, outcome: Outcome) {
+        self.outcomes.insert(event.into(), [Some(outcome)].into());
     }
 }
 
@@ -273,14 +291,21 @@ pub fn in_force<'a>(
     (since, term)
 }
 
-/// What history says about `event` AS OF `now`. A snapshot taken later may
-/// hold a binding dated after `now`; that binding is not in force yet, and
-/// reading it would let a later completion rewrite an earlier moment.
-pub fn bound(env: &Env, event: &str, now: Instant) -> Option<Outcome> {
-    match env.outcomes.get(event) {
-        Some(o) if o.at() <= now => Some(*o),
-        _ => None,
-    }
+/// What history says about `event` AS OF `now`, one reading per candidate. A
+/// snapshot taken later may hold a binding dated after `now`; that binding is
+/// not in force yet, and reading it would let a later completion rewrite an
+/// earlier moment.
+pub fn bound<'e>(
+    env: &'e Env,
+    event: &str,
+    now: Instant,
+) -> impl Iterator<Item = Option<Outcome>> + 'e {
+    let held = env.outcomes.get(event);
+    held.is_none().then_some(None).into_iter().chain(
+        held.into_iter()
+            .flatten()
+            .map(move |o| o.filter(|o| o.at() <= now)),
+    )
 }
 
 /// The latest tending of `todo` AS OF `now`, under `bound`'s guard: a pass
@@ -361,14 +386,19 @@ pub(crate) fn eval(term: &Term, now: Instant, env: &Env) -> Option<f64> {
             term,
             pending,
             ..
-        } => match bound(env, event, now) {
-            None => eval(pending, now, env),
-            // The body slides by the slippage: authored against `anchor`,
-            // re-anchored to the actual completion.
-            Some(Outcome::Completed(done)) => eval(term, after(now, -us_of(done - *anchor)), env),
-            // Moot AS PRICING — reporting must surface it (§7, After).
-            Some(Outcome::Cancelled(_)) => Some(1.0),
-        },
+        } => bound(env, event, now)
+            .filter_map(|binding| match binding {
+                None => eval(pending, now, env),
+                // The body slides by the slippage: authored against `anchor`,
+                // re-anchored to the actual completion.
+                Some(Outcome::Completed(done)) => {
+                    eval(term, after(now, -us_of(done - *anchor)), env)
+                }
+                // Moot AS PRICING — reporting must surface it (§7, After).
+                Some(Outcome::Cancelled(_)) => Some(1.0),
+            })
+            // A conflict reads as its most urgent candidate.
+            .reduce(f64::min),
         TermF::Recur {
             todo,
             anchor,
@@ -644,7 +674,21 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
             pending,
             needs,
         } => {
-            let (label, at) = match bound(env, event, now) {
+            let reading = |binding: &Option<Outcome>| match binding {
+                None => eval(pending, now, env),
+                Some(Outcome::Completed(done)) => {
+                    eval(term, after(now, -us_of(*done - *anchor)), env)
+                }
+                Some(Outcome::Cancelled(_)) => Some(1.0),
+            };
+            let urgent = bound(env, event, now)
+                .reduce(|a, b| match (reading(&a), reading(&b)) {
+                    (Some(x), Some(y)) if y < x => b,
+                    (None, Some(_)) => b,
+                    _ => a,
+                })
+                .flatten();
+            let (label, at) = match urgent {
                 None => ("pending", now),
                 // The slippage the parent applied.
                 Some(Outcome::Completed(done)) => ("completed", after(now, -us_of(done - *anchor))),
@@ -800,6 +844,21 @@ pub fn mk_least(terms: Vec<Term>) -> Result<Term, FplError> {
         return err("Least needs a member");
     }
     Ok(Term::new(TermF::Least { terms }))
+}
+
+/// `Least` of the distinct `terms`: one is itself, so a reading with no
+/// conflict is written exactly as it was.
+pub fn least_of(terms: Vec<Term>) -> Result<Term, FplError> {
+    let mut distinct: Vec<Term> = Vec::with_capacity(terms.len());
+    for term in terms {
+        if !distinct.contains(&term) {
+            distinct.push(term);
+        }
+    }
+    match <[Term; 1]>::try_from(distinct) {
+        Ok([one]) => Ok(one),
+        Err(many) => mk_least(many),
+    }
 }
 
 pub fn mk_offset(delta: f64, term: Term) -> Result<Term, FplError> {

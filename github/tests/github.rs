@@ -535,7 +535,7 @@ proptest! {
                 .entries
                 .iter()
                 .find(|entry| entry.todo.as_str() == "gh-1")
-                .map(|entry| entry.outcome.is_none())
+                .map(|entry| entry.is_open())
         };
 
         apply_delivery(&store, &close, None).expect("close applies");
