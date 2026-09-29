@@ -193,8 +193,9 @@ pub fn since<'a, P: Payload>(state: &Folded<P>, nodes: &'a [Node<P>]) -> Vec<&'a
         .collect()
 }
 
-/// A change's deps: the union of the frontiers of the registers `event`
-/// writes, read structurally — everything binds, at no moment.
+/// A change's deps: the latest writes among the frontiers of the registers
+/// `event` writes, read structurally — everything binds, at no moment. A
+/// write another of them descends from is superseded through it.
 pub fn deps_for<P: Payload>(
     state: &Folded<P>,
     genesis: &Genesis,
@@ -208,12 +209,16 @@ pub fn deps_for<P: Payload>(
         return Vec::new();
     };
     let registers = Registers::read(stream, None, &Everything);
-    let deps: BTreeSet<&Hash> = Write::of(event)
+    let written: BTreeMap<&Hash, &Stamp<P>> = Write::of(event)
         .filter_map(|write| write.kind())
         .flat_map(|kind| registers.frontier(kind).writes())
-        .map(|stamp| &stamp.name)
+        .map(|stamp| (&stamp.name, *stamp))
         .collect();
-    deps.into_iter().cloned().collect()
+    written
+        .values()
+        .filter(|stamp| !written.values().any(|later| later.descends(stamp)))
+        .map(|stamp| stamp.name.clone())
+        .collect()
 }
 
 /// A set of small non-negative integers as a bitmap: set, test, union.
