@@ -552,6 +552,25 @@ pub fn a_log_with_absence() -> impl Strategy<Value = Vec<Event>> {
     )
 }
 
+/// The legacy writer: `event` sealed on every tip of `store`, as every store
+/// before Draft A was written.
+pub fn seal<Pol: prodrome::policy::Policy<Todo>>(
+    store: &prodrome::store::EventStore<Todo, Pol>,
+    event: Event,
+) -> Hash {
+    let on: Vec<Hash> = store.tips().expect("the tips derive").into_iter().collect();
+    let object = if on.len() > 1 {
+        mk_woven(on, Some(event)).expect("distinct tips")
+    } else {
+        mk_sealed(on.into_iter().next(), event)
+    };
+    let name = seal_hash(&object);
+    let print = prodrome::event::canonical_envelope(&object);
+    store
+        .adopt_objects(&[(name.clone(), print)].into(), &name)
+        .expect("writes")
+}
+
 /// A log as the chain a single writer builds: each object sealed on the one
 /// before, so the node's parents are real and its name is its own hash.
 pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {

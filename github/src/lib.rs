@@ -760,7 +760,7 @@ pub fn apply_delivery(
         Ok(fresh) => {
             let mut written = Vec::with_capacity(fresh.len());
             for event in fresh {
-                written.push(store.append(event, None)?.as_str().to_owned());
+                written.push(store.append(event)?.as_str().to_owned());
             }
             Ok(Outcome::said(written.join("\n")))
         }

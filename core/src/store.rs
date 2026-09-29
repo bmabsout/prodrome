@@ -31,11 +31,15 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::change::mk_change;
 use crate::dag::{decode, tips_among, Dag, Finding};
-use crate::event::{mk_sealed, mk_woven, parents_of, seal_hash, Envelope, Hash, TodoEvent};
+use crate::event::{canonical, mk_woven, parents_of, seal_hash, Envelope, Hash, TodoEvent};
+use crate::genesis::mk_genesis;
 use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Policy, Untrusted};
+use crate::registers::{deps_for, fold};
+use crate::snapshot::mk_snapshot;
 
 /// A chain rooted at `root`, read under one host [`Policy`] (§5).
 ///
@@ -68,6 +72,8 @@ pub struct EventStore<P, Pol = Untrusted> {
     /// handle verified it is not noticed by [`EventStore::tips`]. Every read of
     /// the objects themselves, and `verify`, still rehash every file.
     parents: Arc<Mutex<BTreeMap<Hash, Vec<Hash>>>>,
+    /// The prodrome this handle writes into, for a store that holds several.
+    genesis: Option<Hash>,
 }
 
 /// `objects/`, read once: the entries named as objects, and every other
@@ -85,6 +91,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             policy,
             payload: PhantomData,
             parents: Arc::default(),
+            genesis: None,
         }
     }
 
@@ -249,45 +256,97 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         }
     }
 
-    /// Seal `event` onto the store's tips.
-    ///
-    /// `parents` names what this event is written ON TOP OF, and `None` means
-    /// every tip the store has. One tip is the one-writer path, unchanged: a
-    /// `Sealed`, byte for byte the object this store has always written. None
-    /// is genesis. Two or more — named, or a store that holds two histories,
-    /// as a union of two replicas does — make a `Woven`, a write and a join as
-    /// one act, so the next write after a union settles it without anybody
-    /// having to ask for a merge. Whatever tips it names stop being tips,
-    /// because the new object names them.
-    pub fn append(
-        &self,
-        event: TodoEvent<P>,
-        parents: Option<&[Hash]>,
-    ) -> Result<Hash, ProdromeError> {
+    /// This handle, writing into the prodrome `genesis` begins; without one
+    /// a handle writes into the store's only genesis.
+    pub fn in_genesis(self, genesis: Hash) -> EventStore<P, Pol> {
+        EventStore {
+            genesis: Some(genesis),
+            ..self
+        }
+    }
+
+    fn genesis(&self, dag: &Dag<P>) -> Result<Hash, ProdromeError> {
+        let geneses = dag.geneses();
+        let mut sole = geneses.iter();
+        match (&self.genesis, sole.next(), sole.next()) {
+            (Some(mine), ..) if geneses.contains(mine) => Ok(mine.clone()),
+            (Some(mine), ..) => Err(ProdromeError::Store(format!(
+                "the store holds no genesis {}",
+                mine.as_str()
+            ))),
+            (None, Some(one), None) => Ok(one.clone()),
+            (None, None, _) => Err(ProdromeError::Store(
+                "the store has no genesis: `init` it first".to_owned(),
+            )),
+            (None, Some(_), Some(_)) => Err(ProdromeError::Store(format!(
+                "the store holds {} geneses: name the writer's with `in_genesis`",
+                geneses.len()
+            ))),
+        }
+    }
+
+    /// Begin a prodrome: write a `Genesis(label, nonce)` into a store that
+    /// has none, and answer its name.
+    pub fn init(&self, label: &str) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
-        let on: Vec<Hash> = match parents {
-            Some(named) => {
-                self.require_present(named)?;
-                named.to_vec()
-            }
-            None => self.tips()?.into_iter().collect(),
-        };
-        let object = if on.len() > 1 {
-            mk_woven(on, Some(event))?
-        } else {
-            mk_sealed(on.into_iter().next(), event)
-        };
-        self.write(&object)
+        if let Some(genesis) = self.dag()?.geneses().first() {
+            return Err(ProdromeError::Store(format!(
+                "the store already has a genesis, {}",
+                genesis.as_str()
+            )));
+        }
+        let nonce = format!("{:016x}{:016x}", random(), random());
+        self.write(&Envelope::Genesis(mk_genesis(label, &nonce)?))
+    }
+
+    /// Write `event` as a `Change` over the frontiers of the registers it
+    /// writes, or, when the writer's prodrome already holds an object whose
+    /// event prints the same, write nothing and answer the first such.
+    pub fn append(&self, event: TodoEvent<P>) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
+        let dag = self.dag()?;
+        let genesis = self.genesis(&dag)?;
+        let prodrome = dag.key(&genesis);
+        let nodes = dag.nodes_across_gaps()?;
+        let print = canonical(&event);
+        let held = nodes.iter().find(|node| {
+            node.genesis == prodrome && node.event.as_ref().is_some_and(|e| canonical(e) == print)
+        });
+        if let Some(node) = held {
+            return Ok(node.name.clone());
+        }
+        let deps = deps_for(&fold(&nodes), &prodrome, &event);
+        self.write(&Envelope::Change(mk_change(genesis, deps, event)?))
+    }
+
+    /// Attest the writer's prodrome: a `Snapshot` of its tips, chained to the
+    /// last snapshot among them. With nothing new since that one, it is the
+    /// answer and nothing is written.
+    pub fn snapshot(&self) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
+        let dag = self.dag()?;
+        let genesis = self.genesis(&dag)?;
+        let tips = dag.tips_in(&dag.key(&genesis));
+        let previous = dag.linearise()?.into_iter().rev().find(|name| {
+            tips.contains(name) && matches!(dag.get(name), Some(Envelope::Snapshot(_)))
+        });
+        let tips: Vec<Hash> = tips
+            .into_iter()
+            .filter(|tip| Some(tip) != previous.as_ref())
+            .collect();
+        match previous {
+            Some(previous) if tips.is_empty() => Ok(previous),
+            previous => self.write(&Envelope::Snapshot(mk_snapshot(genesis, tips, previous)?)),
+        }
     }
 
     /// Join two or more tips into one `Woven`, which becomes a tip in their
-    /// place.
+    /// place: a legacy store's merge, which a store of changes never needs.
     ///
-    /// `parents` of `None` means every tip there is, so a bare merge means
-    /// "settle this store back into one history". NO who/when/why, and that is
-    /// the design rather than an omission: a merge asserts structure, not a
-    /// fact about a todo. A caller that wants the act attributed passes an
-    /// ordinary `event`, and the object is a write and a join at once.
+    /// `parents` of `None` means every tip of the legacy prodrome. NO
+    /// who/when/why: a merge asserts structure, not a fact about a todo. A
+    /// caller that wants the act attributed passes an ordinary `event`, and
+    /// the object is a write and a join at once.
     pub fn merge(
         &self,
         parents: Option<&[Hash]>,
@@ -296,7 +355,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         let _locked = self.lock()?;
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
-            None => self.tips()?.into_iter().collect(),
+            None => self.dag()?.tips_in(&None).into_iter().collect(),
         };
         self.require_present(&on)?;
         self.write(&mk_woven(on, event)?)
@@ -308,8 +367,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// tips are derived, so git's three cases fall out of the objects. A tip we
     /// already contain changes nothing; a tip that contains every tip we hold
     /// names them all beneath it, so they stop being tips (a FAST-FORWARD);
-    /// anything else is a second tip for `merge`, or the next `append`, to
-    /// join. Answers `digest`.
+    /// anything else is a second tip. Answers `digest`.
     pub fn adopt(&self, source: &EventStore<P, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         self.copy_in(source, digest)?;
@@ -412,7 +470,10 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             };
             let object = decode::<P>(&name, &raw).map_err(|why| why.refusal(&name))?;
             pending.push(Visit::Leave(name, raw));
-            pending.extend(parents_of(&object).into_iter().map(Visit::Enter));
+            let named = parents_of(&object)
+                .into_iter()
+                .chain(object.genesis().cloned());
+            pending.extend(named.map(Visit::Enter));
         }
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
@@ -531,9 +592,8 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     ///
     /// ⚠️ What that answer is, stated: the tips of what the store HOLDS. The
     /// set-aside object's parents are named by nothing readable, so they may
-    /// be tips again, and the next append weaves them in beside the rest — a
-    /// parent that is also an ancestor, which reads the same once the object
-    /// is back.
+    /// be tips again, and the next append writes over the frontiers of what
+    /// is held.
     ///
     /// ONLY A FILE THAT FAILS ITS HASH. One that hashes to its name is that
     /// object, whatever it holds — one this reader cannot parse may be a newer
@@ -648,7 +708,11 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
 /// keys, advanced on every draw, so no dependency is taken for it; the
 /// exclusive create in [`EventStore::stage`] is what makes a clash harmless.
 fn temp_name() -> String {
-    format!("{:016x}.tmp", RandomState::new().build_hasher().finish())
+    format!("{:016x}.tmp", random())
+}
+
+fn random() -> u64 {
+    RandomState::new().build_hasher().finish()
 }
 
 /// Sync a directory, so the renames into it are on disk and not only in the
@@ -665,7 +729,8 @@ fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_created, mk_reopened, Actor};
+    use crate::change::Change;
+    use crate::event::{mk_completed, mk_created, mk_reopened, mk_sealed, Actor};
     use crate::literal::Datetime;
     use crate::reference::Todo;
     use proptest::prelude::*;
@@ -707,22 +772,50 @@ mod tests {
         root
     }
 
+    /// The pre-Draft-A append, for the tests of a legacy store: seal on
+    /// every tip.
+    fn seal(store: &Store, event: TodoEvent<Todo>) -> Hash {
+        let on: Vec<Hash> = tips(store).into_iter().collect();
+        let object = if on.len() > 1 {
+            mk_woven(on, Some(event)).expect("distinct tips")
+        } else {
+            mk_sealed(on.into_iter().next(), event)
+        };
+        store.write(&object).expect("writes")
+    }
+
+    fn change(store: &Store, name: &Hash) -> Change<Todo> {
+        match store.load(name).expect("loads") {
+            Envelope::Change(change) => change,
+            other => panic!("{} is not a change", other.name()),
+        }
+    }
+
+    /// An append writes a `Change` over the frontiers its event supersedes,
+    /// and appending the same event again writes nothing.
     #[test]
-    fn a_chain_appends_verifies_and_reads_back_in_order() {
+    fn an_append_writes_a_change_over_what_it_supersedes() {
         let store = Store::new(scratch("chain"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
+        let created = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
+        assert!(store.append(created.clone()).is_err(), "no genesis yet");
+        let genesis = store.init("chain").expect("begins");
+        assert!(store.init("again").is_err(), "a store begins once");
+        let first = store.append(created).expect("appends");
+        let done = mk_completed("alpha", at(2), "bassel", "").expect("valid");
+        let second = store.append(done.clone()).expect("appends");
+        let third = store
+            .append(mk_reopened("alpha", at(3), "bassel", "").expect("valid"))
             .expect("appends");
-        let second = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        assert_eq!(tips(&store), [second.clone()].into_iter().collect());
+        assert_eq!(change(&store, &first).genesis, genesis);
+        assert!(
+            change(&store, &second).deps.is_empty(),
+            "Created writes no register"
+        );
+        assert_eq!(change(&store, &third).deps, std::slice::from_ref(&second));
+        assert_eq!(
+            tips(&store),
+            [genesis, first, third.clone()].into_iter().collect()
+        );
         assert_eq!(
             fs::read_dir(store.root())
                 .expect("the store is a directory")
@@ -734,14 +827,17 @@ mod tests {
             "the objects are the whole store: no file names a head"
         );
         assert_eq!(findings(&store), Vec::<String>::new());
+        assert_eq!(store.events().expect("reads").len(), 3);
+        assert_eq!(
+            store.ancestors(&third).expect("walks"),
+            [second.clone()].into_iter().collect()
+        );
+        let held = order(&store).expect("reads");
+        assert_eq!(store.append(done).expect("replays"), second);
         assert_eq!(
             order(&store).expect("reads"),
-            vec![first.clone(), second.clone()]
-        );
-        assert_eq!(store.events().expect("reads").len(), 2);
-        assert_eq!(
-            store.ancestors(&second).expect("walks"),
-            [first].into_iter().collect()
+            held,
+            "a replay writes nothing"
         );
         let _ = fs::remove_dir_all(store.root());
     }
@@ -750,29 +846,23 @@ mod tests {
     fn adopt_makes_a_second_head_and_merge_settles_it() {
         let here = Store::new(scratch("here"), roster());
         let there = Store::new(scratch("there"), roster());
-        let shared = here
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let shared = seal(
+            &here,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
         there
             .adopt(&here, &shared)
             .expect("fast-forwards into an empty store");
         assert_eq!(tips(&there), [shared.clone()].into_iter().collect());
 
-        let mine = here
-            .append(
-                mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let theirs = there
-            .append(
-                mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let mine = seal(
+            &here,
+            mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
+        );
+        let theirs = seal(
+            &there,
+            mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
+        );
         here.adopt(&there, &theirs).expect("adopts");
         assert_eq!(
             tips(&here),
@@ -795,52 +885,34 @@ mod tests {
         let _ = fs::remove_dir_all(there.root());
     }
 
-    /// THE NEXT WRITE SETTLES A UNION. Two tips — here, two replicas' files
-    /// put in one directory, which is what a `git merge` of two clones does —
-    /// and an ordinary append with no parents named: it is written on top of
-    /// BOTH, as one `Woven` carrying the event, and the store is one history
-    /// again without anybody having asked for a merge.
+    /// THE NEXT WRITE SETTLES A UNION. Two replicas' files put in one
+    /// directory, which is what a `git merge` of two clones does, hold a
+    /// conflict; the next write to that register depends on both sides, and
+    /// nothing else is written.
     #[test]
-    fn the_next_append_weaves_every_tip() {
+    fn the_next_append_settles_a_union() {
         let here = Store::new(scratch("weave-here"), roster());
         let there = Store::new(scratch("weave-there"), roster());
-        let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
-        for store in [&here, &there] {
-            store.append(shared.clone(), None).expect("appends");
-        }
+        let genesis = here.init("union").expect("begins");
+        there.adopt(&here, &genesis).expect("adopts the genesis");
         let mine = here
-            .append(
-                mk_completed("alpha", at(2), "bassel", "mine").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(2), "bassel", "mine").expect("valid"))
             .expect("appends");
         let theirs = there
-            .append(
-                mk_completed("alpha", at(2), "bassel", "theirs").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(2), "bassel", "theirs").expect("valid"))
             .expect("appends");
         for entry in fs::read_dir(there.objects_dir()).expect("lists") {
             let path = entry.expect("an entry").path();
             let file = path.file_name().expect("a file name");
             fs::copy(&path, here.objects_dir().join(file)).expect("copies");
         }
-        assert_eq!(
-            tips(&here),
-            [mine.clone(), theirs.clone()].into_iter().collect()
-        );
-        let woven = here
-            .append(
-                mk_reopened("alpha", at(3), "bassel", "both").expect("valid"),
-                None,
-            )
+        let settled = here
+            .append(mk_reopened("alpha", at(3), "bassel", "both").expect("valid"))
             .expect("appends");
-        assert_eq!(tips(&here), [woven.clone()].into_iter().collect());
-        let object = here.load(&woven).expect("loads");
-        assert!(matches!(object, Envelope::Woven { event: Some(_), .. }));
-        let mut joined = vec![mine, theirs];
-        joined.sort();
-        assert_eq!(parents_of(&object), joined);
+        let mut both = vec![mine, theirs];
+        both.sort();
+        assert_eq!(change(&here, &settled).deps, both);
+        assert_eq!(tips(&here), [genesis, settled].into_iter().collect());
         assert_eq!(findings(&here), Vec::<String>::new());
         let _ = fs::remove_dir_all(here.root());
         let _ = fs::remove_dir_all(there.root());
@@ -853,24 +925,20 @@ mod tests {
     #[test]
     fn an_old_store_derives_what_its_head_named_and_is_told_to_drop_it() {
         let store = Store::new(scratch("legacy"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let second = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        let second = seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         let aside = store
-            .append(
+            .write(&mk_sealed(
+                Some(first),
                 mk_created("beta", at(2), "bassel", "", "").expect("valid"),
-                Some(std::slice::from_ref(&first)),
-            )
-            .expect("appends");
+            ))
+            .expect("writes");
         fs::write(store.root().join("HEAD"), second.as_str()).expect("writes HEAD");
         let refs = store.root().join("refs");
         fs::create_dir_all(&refs).expect("creates refs/");
@@ -907,23 +975,19 @@ mod tests {
         let there = Store::new(scratch("bytes-there"), roster());
         let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
         for store in [&by_dir, &by_bytes, &there] {
-            store.append(shared.clone(), None).expect("appends");
+            seal(store, shared.clone());
         }
         // Each side writes its own second object, so the two histories diverge.
         for store in [&by_dir, &by_bytes] {
-            store
-                .append(
-                    mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
-                    None,
-                )
-                .expect("appends");
+            seal(
+                store,
+                mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
+            );
         }
-        let theirs = there
-            .append(
-                mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let theirs = seal(
+            &there,
+            mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
+        );
 
         by_dir.adopt(&there, &theirs).expect("adopts a directory");
         // The same objects, as the wire carries them: a name and the canonical
@@ -974,19 +1038,15 @@ mod tests {
     fn a_contained_tip_changes_nothing_and_a_containing_one_fast_forwards() {
         let here = Store::new(scratch("ff-here"), roster());
         let there = Store::new(scratch("ff-there"), roster());
-        let first = here
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &here,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
         there.adopt(&here, &first).expect("adopts");
-        let second = there
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let second = seal(
+            &there,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         here.adopt(&there, &second).expect("fast-forwards");
         assert_eq!(tips(&here), [second.clone()].into_iter().collect());
         here.adopt(&there, &first).expect("a contained tip");
@@ -998,18 +1058,14 @@ mod tests {
     #[test]
     fn a_tampered_object_is_caught_on_read_and_by_verify() {
         let store = Store::new(scratch("tamper"), roster());
-        let digest = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let digest = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         let path = store.object_path(&digest);
         let text = fs::read_to_string(&path).expect("reads");
         fs::write(&path, text.replace("alpha", "omega")).expect("writes");
@@ -1046,18 +1102,14 @@ mod tests {
     #[test]
     fn an_unconfirmed_event_dated_behind_its_predecessor_is_a_finding() {
         let store = Store::new(scratch("dating"), roster());
-        store
-            .append(
-                mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let late = store
-            .append(
-                mk_completed("alpha", at(2), "triage", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        seal(
+            &store,
+            mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        );
+        let late = seal(
+            &store,
+            mk_completed("alpha", at(2), "triage", "").expect("valid"),
+        );
         assert_eq!(
             findings(&store),
             vec![format!(
@@ -1070,18 +1122,14 @@ mod tests {
         // The same event from a writer the policy CONFIRMS is a backfill, not a
         // finding.
         let trusted = Store::new(scratch("dating-trusted"), roster());
-        trusted
-            .append(
-                mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        trusted
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        seal(
+            &trusted,
+            mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        );
+        seal(
+            &trusted,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         assert_eq!(findings(&trusted), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
         let _ = fs::remove_dir_all(trusted.root());
@@ -1097,35 +1145,31 @@ mod tests {
     #[test]
     fn a_record_that_binds_is_still_held_to_the_dag_s_clock() {
         let store = Store::new(scratch("dating-record"), roster());
-        store
-            .append(
-                mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        seal(
+            &store,
+            mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        );
+        let record = seal(
+            &store,
+            crate::reference::mk_authored(
+                "alpha",
+                at(2),
+                "triage",
+                "todo",
+                at(2),
+                "body",
                 None,
-            )
-            .expect("appends");
-        let record = store
-            .append(
-                crate::reference::mk_authored(
-                    "alpha",
-                    at(2),
-                    "triage",
-                    "todo",
-                    at(2),
-                    "body",
-                    None,
-                    vec![],
-                    "",
-                    "",
-                    "",
-                    None,
-                    vec![],
-                    vec![],
-                    "",
-                )
-                .expect("valid"),
+                vec![],
+                "",
+                "",
+                "",
                 None,
+                vec![],
+                vec![],
+                "",
             )
-            .expect("appends");
+            .expect("valid"),
+        );
         let events = store.events().expect("reads");
         let late = events.last().expect("the record");
         assert!(
@@ -1152,18 +1196,14 @@ mod tests {
     #[test]
     fn the_index_follows_the_listing() {
         let store = Store::new(scratch("index"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let second = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        let second = seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         assert_eq!(tips(&store), [second.clone()].into_iter().collect());
         fs::remove_file(store.object_path(&second)).expect("removes");
         assert_eq!(tips(&store), [first].into_iter().collect());
@@ -1176,12 +1216,10 @@ mod tests {
     #[test]
     fn an_object_nothing_names_is_a_tip() {
         let store = Store::new(scratch("orphan"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
         let other = store
             .write(&mk_sealed(
                 None,
@@ -1213,9 +1251,7 @@ mod tests {
             for day in 0..crash {
                 let day = u32::try_from(day).expect("a few days") + 1;
                 written.push(
-                    store
-                        .append(mk_reopened("alpha", at(day), "bassel", "").expect("valid"), None)
-                        .expect("appends"),
+                    seal(&store, mk_reopened("alpha", at(day), "bassel", "").expect("valid")),
                 );
             }
             let day = u32::try_from(crash).expect("a few days") + 1;
@@ -1278,12 +1314,8 @@ mod tests {
         #[test]
         fn verify_names_every_stray(strays in prop::collection::btree_set(a_stray(), 1..6)) {
             let store = Store::new(scratch("strays"), roster());
-            store
-                .append(mk_created("alpha", at(1), "bassel", "", "").expect("valid"), None)
-                .expect("appends");
-            let tip = store
-                .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"), None)
-                .expect("appends");
+            seal(&store, mk_created("alpha", at(1), "bassel", "", "").expect("valid"));
+            let tip = seal(&store, mk_completed("alpha", at(2), "bassel", "").expect("valid"));
             for file in &strays {
                 fs::write(store.objects_dir().join(file), "stray").expect("writes a stray");
             }
@@ -1311,31 +1343,25 @@ mod tests {
     /// file is damaged: a fresh handle's `tips` refuses, naming the object and
     /// the command that sets it aside, and so does every append. Once it is
     /// quarantined the store answers again — the tips derive, the damaged
-    /// object's parent among them, and an append weaves them — and after that
-    /// append as before it, `verify` is clean but for the receipt,
+    /// object's parent among them, and an append writes a change over what is
+    /// held — and after that append as before it, `verify` is clean but for the receipt,
     /// which stands in for the "chain broke" the tip resting on it would be.
     /// A healthy object is not quarantined: that would be hiding it.
     #[test]
     fn after_quarantine_the_store_answers_and_verify_holds_the_receipt() {
         let store = Store::new(scratch("quarantine"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let middle = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let last = store
-            .append(
-                mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        let middle = seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
+        let last = seal(
+            &store,
+            mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
+        );
         let path = store.object_path(&middle);
         let text = fs::read_to_string(&path).expect("reads");
         fs::write(&path, text.replace("alpha", "omega")).expect("damages");
@@ -1348,10 +1374,7 @@ mod tests {
             "{refusal}"
         );
         assert!(fresh
-            .append(
-                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
-                None
-            )
+            .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .is_err());
         assert!(fresh.quarantine(&first).is_err(), "a healthy object stays");
 
@@ -1377,15 +1400,11 @@ mod tests {
         );
         assert_eq!(findings(&fresh), vec![receipt.clone()]);
         let next = fresh
-            .append(
-                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .expect("the store writes again");
-        assert_eq!(tips(&fresh), [next.clone()].into_iter().collect());
-        let mut both = vec![first, last];
-        both.sort();
-        assert_eq!(parents_of(&fresh.load(&next).expect("loads")), both);
+        assert_eq!(change(&fresh, &next).genesis, first);
+        assert_eq!(change(&fresh, &next).deps, [last]);
+        assert_eq!(tips(&fresh), [first, next].into_iter().collect());
         assert_eq!(findings(&fresh), vec![receipt]);
 
         // The repair: the object back from a replica, the receipt deleted.
@@ -1410,14 +1429,9 @@ mod tests {
         use rustix::fs::{flock, FlockOperation};
 
         let store = Store::new(scratch("locked"), roster());
-        store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        store.init("locked").expect("begins");
         assert_eq!(store.lock_file(), store.root().join(".lock"));
-        assert!(store.lock_file().exists(), "the append created the lock");
+        assert!(store.lock_file().exists(), "the write created the lock");
 
         // A second exclusive holder, the way another process would be.
         let held = File::create(store.lock_file()).expect("the lock file opens");
@@ -1432,10 +1446,7 @@ mod tests {
         );
         drop(held);
         store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"))
             .expect("appends once the other writer let go");
         assert_eq!(findings(&store), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());

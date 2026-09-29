@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 pub use finding::{Finding, Unread};
 
-use crate::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent};
+use crate::change::Change;
+use crate::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent, TodoId};
+use crate::fold::{Kind, Write};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::Policy;
@@ -93,20 +95,28 @@ impl<P> Dag<P> {
     /// incomparable objects in name order. A missing parent or a cycle is a
     /// refusal.
     pub fn linearise(&self) -> Result<Vec<Hash>, ProdromeError> {
+        self.order(false)
+    }
+
+    /// [`Dag::linearise`], passing over a parent this DAG lacks when `gaps`.
+    fn order(&self, gaps: bool) -> Result<Vec<Hash>, ProdromeError> {
         let mut children: BTreeMap<&Hash, Vec<&Hash>> = BTreeMap::new();
         let mut waiting: BTreeMap<&Hash, usize> = BTreeMap::new();
         for (name, object) in &self.objects {
-            let parents = parents_of(object);
-            waiting.insert(name, parents.len());
-            for parent in &parents {
-                let (known, _) = self.objects.get_key_value(parent).ok_or_else(|| {
-                    ProdromeError::Store(format!(
+            waiting.insert(name, 0);
+            for parent in &parents_of(object) {
+                let Some((known, _)) = self.objects.get_key_value(parent) else {
+                    if gaps {
+                        continue;
+                    }
+                    return Err(ProdromeError::Store(format!(
                         "missing object {}, named as a parent by {}",
                         parent.as_str(),
                         name.as_str()
-                    ))
-                })?;
+                    )));
+                };
                 children.entry(known).or_default().push(name);
+                *waiting.get_mut(name).expect("counted above") += 1;
             }
         }
         let mut ready: BinaryHeap<Reverse<&Hash>> = waiting
@@ -147,13 +157,38 @@ impl<P> Dag<P> {
         )
     }
 
-    /// Which prodrome an object is in; a change naming a legacy root is in the
-    /// legacy one.
+    /// Every prodrome's genesis: each `Genesis`, and the least legacy root,
+    /// whose prodrome every legacy object is in (Draft A, A2).
+    pub fn geneses(&self) -> BTreeSet<Hash> {
+        let genesis = self
+            .objects
+            .iter()
+            .filter(|(_, object)| matches!(object, Envelope::Genesis(_)))
+            .map(|(name, _)| name.clone());
+        let root = self.objects.keys().find(|name| self.is_root(name)).cloned();
+        genesis.chain(root).collect()
+    }
+
+    /// The registers' key for the prodrome `genesis` starts: `None` for a
+    /// legacy root.
+    pub fn key(&self, genesis: &Hash) -> Genesis {
+        (!self.is_root(genesis)).then(|| genesis.clone())
+    }
+
     fn prodrome(&self, name: &Hash, object: &Envelope<P>) -> Genesis {
         match object {
-            Envelope::Genesis(_) => Some(name.clone()),
-            other => other.genesis().filter(|g| !self.is_root(g)).cloned(),
+            Envelope::Sealed { .. } | Envelope::Woven { .. } => None,
+            Envelope::Genesis(_) => self.key(name),
+            other => other.genesis().and_then(|genesis| self.key(genesis)),
         }
+    }
+
+    /// The tips of one prodrome's objects.
+    pub fn tips_in(&self, prodrome: &Genesis) -> BTreeSet<Hash> {
+        self.tips()
+            .into_iter()
+            .filter(|tip| self.prodrome(tip, &self.objects[tip]) == *prodrome)
+            .collect()
     }
 }
 
@@ -182,8 +217,17 @@ impl<P: Payload> Dag<P> {
 
     /// The objects as the registers read them, in the linearisation's order.
     pub fn nodes(&self) -> Result<Vec<Node<P>>, ProdromeError> {
-        Ok(self
-            .linearise()?
+        self.nodes_in(self.linearise()?)
+    }
+
+    /// [`Dag::nodes`] over what is held when a parent is not: a writer's
+    /// read of a store with an object set aside.
+    pub fn nodes_across_gaps(&self) -> Result<Vec<Node<P>>, ProdromeError> {
+        self.nodes_in(self.order(true)?)
+    }
+
+    fn nodes_in(&self, order: Vec<Hash>) -> Result<Vec<Node<P>>, ProdromeError> {
+        Ok(order
             .into_iter()
             .map(|name| {
                 let object = &self.objects[&name];
@@ -197,7 +241,8 @@ impl<P: Payload> Dag<P> {
     }
 
     /// §3's findings: every print that is not an object, by name, then every
-    /// parent no object is, or else a cycle, or else the dating rule.
+    /// parent no object is, or else a cycle, or else the dating rule; then
+    /// Draft A's, object by object.
     pub fn verify(&self, policy: &impl Policy<P>) -> Vec<Finding> {
         let mut findings: Vec<Finding> = self
             .unread
@@ -223,6 +268,82 @@ impl<P: Payload> Dag<P> {
             why: self.unread.get(&at).cloned(),
             at,
         }));
+        for (name, object) in &self.objects {
+            findings.extend(self.genesis_findings(name, object));
+            match object {
+                Envelope::Change(change) => findings.extend(self.deps_findings(name, change)),
+                Envelope::Snapshot(_) => findings.extend(
+                    self.closure(parents_of(object))
+                        .into_iter()
+                        .filter(|held| !self.objects.contains_key(held))
+                        .map(|missing| Finding::Incomplete {
+                            snapshot: name.clone(),
+                            missing,
+                        }),
+                ),
+                _ => {}
+            }
+        }
+        findings
+    }
+
+    /// Draft A: an object names a genesis the store holds, and rests on
+    /// nothing of another.
+    fn genesis_findings(&self, name: &Hash, object: &Envelope<P>) -> Vec<Finding> {
+        let stranger = object.genesis().filter(|genesis| {
+            !self.is_root(genesis)
+                && !matches!(self.objects.get(*genesis), Some(Envelope::Genesis(_)))
+        });
+        let prodrome = self.prodrome(name, object);
+        let crossings = parents_of(object).into_iter().filter(|parent| {
+            self.objects
+                .get(parent)
+                .is_some_and(|held| self.prodrome(parent, held) != prodrome)
+        });
+        stranger
+            .map(|genesis| Finding::Stranger {
+                object: name.clone(),
+                genesis: genesis.clone(),
+            })
+            .into_iter()
+            .chain(crossings.map(|parent| Finding::Crossing {
+                object: name.clone(),
+                parent,
+            }))
+            .collect()
+    }
+
+    /// Draft A: each dep writes a register the change's event writes, and no
+    /// dep rests on another.
+    fn deps_findings(&self, name: &Hash, change: &Change<P>) -> Vec<Finding> {
+        let written = registers(Some(&change.event));
+        let beneath: Vec<(&Hash, BTreeSet<Hash>)> = change
+            .deps
+            .iter()
+            .map(|dep| {
+                let parents = self.objects.get(dep).map(parents_of).unwrap_or_default();
+                (dep, self.closure(parents))
+            })
+            .collect();
+        let mut findings = Vec::new();
+        for (dep, _) in &beneath {
+            let held = self.objects.get(dep);
+            if held.is_some_and(|held| registers(held.event()).is_disjoint(&written)) {
+                findings.push(Finding::Unwritten {
+                    change: name.clone(),
+                    dep: (*dep).clone(),
+                });
+            }
+            for (other, below) in &beneath {
+                if below.contains(*dep) {
+                    findings.push(Finding::Redundant {
+                        change: name.clone(),
+                        dep: (*dep).clone(),
+                        beneath: (*other).clone(),
+                    });
+                }
+            }
+        }
         findings
     }
 
@@ -256,6 +377,14 @@ impl<P: Payload> Dag<P> {
         }
         findings
     }
+}
+
+/// The registers an event writes.
+fn registers<P: Payload>(event: Option<&TodoEvent<P>>) -> BTreeSet<(&TodoId, Kind)> {
+    event
+        .into_iter()
+        .flat_map(|event| Write::of(event).filter_map(|write| Some((event.todo(), write.kind()?))))
+        .collect()
 }
 
 /// The tips of a graph given as each name with the parents it names.
