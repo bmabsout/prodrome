@@ -343,8 +343,11 @@ fn weave_settles_two_heads_and_is_a_no_op_on_one() {
     // what two replicas that both wrote look like once they have exchanged
     // objects.
     let store = Store::new(&root, Untrusted::none());
-    let dag = store.read_dag_named().expect("the store reads");
-    let elder: Hash = dag[0].0.clone();
+    let order = store
+        .dag()
+        .and_then(|dag| dag.linearise())
+        .expect("the store reads");
+    let elder: Hash = order[0].clone();
     let at = Datetime::new(2026, 9, 10, 11, 0, 0, 0).expect("an instant");
     store
         .append(

@@ -147,7 +147,7 @@ impl Hash {
         }
     }
 
-    fn of_bytes(bytes: &[u8]) -> Hash {
+    pub(crate) fn of_bytes(bytes: &[u8]) -> Hash {
         Hash(
             Sha256::digest(bytes)
                 .iter()
@@ -371,6 +371,15 @@ impl<P> Envelope<P> {
             Envelope::Woven { event, .. } => event,
             Envelope::Change(change) => Some(change.event),
             Envelope::Genesis(_) | Envelope::Snapshot(_) => None,
+        }
+    }
+
+    /// The genesis a change or a snapshot names.
+    pub fn genesis(&self) -> Option<&Hash> {
+        match self {
+            Envelope::Change(change) => Some(&change.genesis),
+            Envelope::Snapshot(snapshot) => Some(&snapshot.genesis),
+            Envelope::Sealed { .. } | Envelope::Woven { .. } | Envelope::Genesis(_) => None,
         }
     }
 

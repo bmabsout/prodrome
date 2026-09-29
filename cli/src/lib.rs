@@ -29,7 +29,7 @@ use prodrome::fpl::FplError;
 use prodrome::literal::{Datetime, ProdromeError};
 use prodrome::policy::Untrusted;
 use prodrome::reference::{mk_authored, Todo};
-use prodrome::registers::{self, nodes_of};
+use prodrome::registers;
 use prodrome::store::EventStore;
 use prodrome::view::{entries, Entry};
 
@@ -169,8 +169,7 @@ impl Reading {
 /// quoted its own copy of the argument could say something the fold did not
 /// do.
 pub fn read(store: &Store, at: Datetime) -> Result<Reading, Error> {
-    let objects = store.read_dag_named()?;
-    let nodes = nodes_of(&objects);
+    let nodes = store.dag()?.nodes()?;
     let events: Vec<TodoEvent<Todo>> = nodes.iter().filter_map(|node| node.event.clone()).collect();
 
     let mut created = BTreeMap::new();
@@ -306,7 +305,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
         Command::Verify => {
             let problems = store.verify();
             if problems.is_empty() {
-                let objects = store.read_dag_named()?.len();
+                let objects = store.dag()?.objects().len();
                 let heads = store.tips()?.len();
                 Ok(Outcome::said(format!(
                     "ok: {objects} objects, {heads} head{}",
@@ -314,7 +313,11 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
                 )))
             } else {
                 Ok(Outcome {
-                    text: problems.join("\n"),
+                    text: problems
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     ok: false,
                 })
             }
