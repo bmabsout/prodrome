@@ -8,8 +8,8 @@
 //!
 //! THE GENERATORS ARE NOT SECOND. The terms and environments come from
 //! `tests/common/terms.rs` — `a_term`, `an_exact_term`, `an_env`, the ones
-//! `tests/fpl_laws.rs`'s properties draw from — and the logs from
-//! `tests/common/mod.rs`'s `a_log_with_absence`, the one `tests/fold_laws.rs`'s
+//! `tests/all/fpl_laws.rs`'s properties draw from — and the logs from
+//! `tests/common/mod.rs`'s `a_log_with_absence`, the one `tests/all/fold_laws.rs`'s
 //! §9.18 properties draw from. This file's only new code is running them
 //! under a fixed seed, keeping the draws that hold an `Absent`, and asking the
 //! core about them.

@@ -1,5 +1,5 @@
 //! THE TERM GENERATORS: random closed and open terms, specs that link, and
-//! environments — what `tests/fpl_laws.rs`'s properties draw from and
+//! environments — what `tests/all/fpl_laws.rs`'s properties draw from and
 //! `examples/generate_absent_vectors.rs` draws `conformance/absent/*.py`
 //! from, over a fixed seed. Moved here out of `fpl_laws.rs` for the reason
 //! `a_log` was moved beside it: one generator, read by a property and frozen

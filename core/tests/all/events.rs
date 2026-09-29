@@ -1,13 +1,13 @@
-//! The same stored objects as `tests/literals.rs`, but through the CLOSED
+//! The same stored objects as `tests/all/literals.rs`, but through the CLOSED
 //! vocabulary of §4 and as TYPED events: parsed into an `Envelope`, printed
 //! back, and named by `seal_hash`.
 //!
-//! `tests/literals.rs` proves the grammar round-trips; this proves the KINDS
+//! `tests/all/literals.rs` proves the grammar round-trips; this proves the KINDS
 //! do — that every field the spec declares is read, validated by its `mk_*`,
 //! and printed back in declared order. A shipped field this side forgot would
 //! show up here as a print that is one field short of its name.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 

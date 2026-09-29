@@ -3,11 +3,11 @@
 //! prodrome-core`); nothing under `cargo test` and nothing CI runs calls
 //! this, which is what makes the two files FROZEN evidence rather than a
 //! cache `conformance_view.rs` could quietly refill. See
-//! `core/tests/conformance_view.rs`'s module doc for the law this pins and
+//! `core/tests/all/conformance_view.rs`'s module doc for the law this pins and
 //! `README.md`/`SPEC.md` §6.7 for the same rule stated for a reader who never
 //! opens this file.
 //!
-//! THE GENERATOR IS NOT SECOND. `common::a_log` is `tests/fold_laws.rs`'s own
+//! THE GENERATOR IS NOT SECOND. `common::a_log` is `tests/all/fold_laws.rs`'s own
 //! random-log strategy (`tests/common/mod.rs`, moved there so this example
 //! and that property test draw from the one place); this file's only new
 //! code is running it under a FIXED seed instead of an ambient one, sealing
@@ -17,7 +17,7 @@
 //! TWO POLICIES, not one, because §6.7's whole point is the asymmetry between
 //! the two readings: `common::ACTORS` is two `"bassel"` writes for every
 //! `"triage"` one, so a reference roster of `"triage"` (the crate's usual one,
-//! `tests/fold_laws.rs`'s `roster()`) and one of `"bassel"` instead exercise
+//! `tests/all/fold_laws.rs`'s `roster()`) and one of `"bassel"` instead exercise
 //! the SAME logs from opposite sides of that 2:1 split — the first is the
 //! common case (a minority write is provisional), the second is the inverted
 //! one (most of a log's writes are). `Untrusted::none()` would have been a
@@ -42,7 +42,7 @@ const SEED: [u8; 32] = *b"the-prodrome-view-vectors-seed!!";
 
 const LOGS: usize = 30;
 /// Three drawn instants per log plus `common::far()` — the same shape
-/// `tests/fold_laws.rs`'s laws ask for (`asked in
+/// `tests/all/fold_laws.rs`'s laws ask for (`asked in
 /// prop::collection::vec(0i64..WINDOW, 1..6)`) with one end pinned so every
 /// log is also queried once with its whole history in view.
 const RANDOM_INSTANTS: usize = 3;

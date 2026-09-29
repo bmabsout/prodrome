@@ -9,7 +9,7 @@
 //! `cargo run --example` and this test never calls it either, which is what
 //! makes `conformance/view/*.py` evidence and not a cache. See that
 //! example's module doc for the seed and the generator (`tests/common/mod.rs`'s
-//! `a_log`, the same one `tests/fold_laws.rs`'s properties draw from — one
+//! `a_log`, the same one `tests/all/fold_laws.rs`'s properties draw from — one
 //! generator, not a second).
 //!
 //! Each case is a log, frozen as its events' canonical PRINTS in append
@@ -19,7 +19,7 @@
 //! with `parse_event` and reseals the array with `common::chain_of`, the
 //! same function the generator used, so a name here is trusted no further
 //! than the bytes that produced it and the two sides' hashes agree without
-//! either one freezing them — exactly as `tests/dag.rs` insists a store's
+//! either one freezing them — exactly as `tests/all/dag.rs` insists a store's
 //! reader rebuild its DAG from object files rather than from a writer's
 //! in-memory graph.
 //!
@@ -29,7 +29,7 @@
 //! split collapses to one `unconfirmed` bool there, and a vector that compared
 //! the richer Rust value would be pinning a distinction nobody reads.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 

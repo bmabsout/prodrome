@@ -2,7 +2,7 @@
 //! genesis, event and view; append is idempotent; deps never leave a todo;
 //! geneses are disjoint; a snapshot attests its closure.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
