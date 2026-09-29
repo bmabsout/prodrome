@@ -1,7 +1,9 @@
 # One gate, and it is the same command a developer runs: the checks live in
 # flake.nix, so CI needs no Rust toolchain of its own and no network during the
-# build. Magic Nix Cache keeps every store path in this repository's Actions
-# cache, so a run rebuilds only what its commit changed. A pull request runs
+# build. Every store path a run builds goes to the public bmabsout.cachix.org
+# cache, which this CI, cloud sessions and the box all read, so a run rebuilds
+# only what its commit changed. (Magic Nix Cache stopped uploading a minute
+# into a run, so pull requests found almost nothing of main's.) A pull request runs
 # once, as a pull request; main runs on push.
 name: ci
 
@@ -16,7 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v23
-      - uses: DeterminateSystems/magic-nix-cache-action@v15
+      - uses: cachix/cachix-action@v17
+        with:
+          name: bmabsout
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       # `cargo test` over the workspace and clippy at -D warnings, both in the
       # sandbox (checks.prodrome-workspace), and every package built as a
       # check: the wasm, and the binary the roadmap steps below link.
