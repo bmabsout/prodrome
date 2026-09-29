@@ -10,7 +10,7 @@
 //! `prodrome-wasm`'s (0.4: the codec went to the boundary JSON is for), and
 //! `wasm/conformance/term-json.json` freezes that, unchanged, for the same 150.
 
-mod common;
+use crate::common;
 
 use common::vectors::{each, field, integer, moment, text_at, vectors};
 use prodrome::fpl::{

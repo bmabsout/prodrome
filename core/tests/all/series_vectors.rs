@@ -5,7 +5,7 @@
 //! over `conformance/absent/series.py`: 30 seeded exact terms holding an
 //! `Absent`, whose knots are `∅` where the term has no value.
 
-mod common;
+use crate::common;
 
 use chrono::Duration;
 use common::vectors::{boolean, each, field, integer, moment, text_at, vectors};

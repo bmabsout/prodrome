@@ -12,7 +12,7 @@
 //! The vector file is itself a literal of §2's grammar (0.4), read by the same
 //! parser the events inside it are read with — `tests/common/vectors.rs`.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -288,7 +288,7 @@ the events with `at <= t` in causal order.
    record the policy does not `confirm`, or both. Checked against `conformance/view/*.py` — SEEDED, not
    taken from the reference like the rest of `conformance/`: random logs
    drawn from this crate's own generator (`core/tests/common/mod.rs`'s
-   `a_log`, the one `core/tests/fold_laws.rs`'s properties draw from too)
+   `a_log`, the one `core/tests/all/fold_laws.rs`'s properties draw from too)
    under a fixed seed, folded at several instants under two reference
    policies. Their `untrusted` fields are read through the reference policy;
    the stored bytes and every expected answer are unchanged.
@@ -607,7 +607,7 @@ Against `conformance/*.py` and on generated inputs:
 9. **The view is the composition** (§6.7): on any DAG and at any moment,
    every field of every entry equals the fold it is named by, and the rows
    are exactly the todos the events mention. Against `conformance/view/*.py`
-   (seeded, §6.7) on linear chains and against `core/tests/fold_laws.rs`'s
+   (seeded, §6.7) on linear chains and against `core/tests/all/fold_laws.rs`'s
    property on random DAGs.
 
 Laws 10–12 QUANTIFY OVER THE POLICY (§5). They are what makes "the host
@@ -641,7 +641,7 @@ optimisation rather than a second evaluator.
     read against the EMPTY environment, which is the statement's teeth: it
     answers the same while unable to look anything up, because `After` and
     `Recur` are the only constructors that read the environment and compiling
-    leaves neither. On `core/tests/fpl_laws.rs`'s own generators, the
+    leaves neither. On `core/tests/all/fpl_laws.rs`'s own generators, the
     `a_term()` and `an_env()` §9.5 is checked over, tendings included; and
     pinned by every §9.8 vector, which the compiler does not touch, and every
     `conformance/recur.py` sample, which it reads the same.
@@ -657,7 +657,7 @@ substitution and nothing more.
     `mk_piecewise`'s normal form. A loop is refused with a path that closes
     on itself, every step of it a reference its spec holds, and is never
     evaluated. `Ref` round-trips through print and parse like every other
-    constructor (law 1). On `core/tests/fpl_laws.rs`'s generators, over
+    constructor (law 1). On `core/tests/all/fpl_laws.rs`'s generators, over
     acyclic specs; and against `conformance/link.py`, written BY HAND from
     these laws — exact linked prints, readings to 1e-9, an unknown todo and a
     cycle refused. Law 18 says what a reference to an unpriced todo links
@@ -674,8 +674,8 @@ Laws 15 and 16 are §7.3's: care is a set, and recurrence reads it as of now.
     their tendings, and a tending writes no register, so never a conflict.
     `last_tended(env, x, now)` is the latest tending at or before `now`, and
     a tending dated later changes nothing it answers. On
-    `core/tests/fold_laws.rs`'s generators, which draw `Tended` among the
-    other kinds, and `core/tests/fpl_laws.rs`'s.
+    `core/tests/all/fold_laws.rs`'s generators, which draw `Tended` among the
+    other kinds, and `core/tests/all/fpl_laws.rs`'s.
 16. **Recurrence reads time as §7.3 says.** With the last tending of `x` at
     `s`, `Recur(x, anchor, term, pending)` at `s + d` equals `term` at
     `anchor + d`; with no tending at or before `now` it equals `pending` at
@@ -684,7 +684,7 @@ Laws 15 and 16 are §7.3's: care is a set, and recurrence reads it as of now.
     equals itself at `now`, and on `[anchor, anchor + period)` equals `term`.
     Both round-trip through print and parse (law 1), and the smart
     constructors refuse a `Recur` whose `todo` is not a `TodoId` and a
-    `Periodic` whose `period` is not positive. On `core/tests/fpl_laws.rs`'s
+    `Periodic` whose `period` is not positive. On `core/tests/all/fpl_laws.rs`'s
     generators; and against `conformance/recur.py`, written BY HAND from
     these laws — `Tended` prints folded under the reference policy, a claimed
     pass among them, and exact term prints with readings to 1e-9.
@@ -703,10 +703,10 @@ files.
     Derivation does not depend on the order objects are listed or files were
     written. And NO STORED BYTE MOVES: for every `conformance/dag.py` store,
     laid out with the `HEAD` and `refs/` its writer left, the derived tips are
-    exactly the heads those files named. On `core/tests/tips.rs`'s random
+    exactly the heads those files named. On `core/tests/all/tips.rs`'s random
     DAGs, pure and on disk, which also check that the tips cover the store and
-    none rests on another; `core/tests/fold_laws.rs`'s two-writer property;
-    and `core/tests/dag.rs`.
+    none rests on another; `core/tests/all/fold_laws.rs`'s two-writer property;
+    and `core/tests/all/dag.rs`.
 
 Law 18 is §7's empty term: `∅` is an identity, and nothing mistakes it for a
 number.
@@ -727,9 +727,9 @@ number.
     root reads what `fulfillment` reads, every `Absent` node is `∅`, an
     absent member's share is 0 — and `Absent` is exact, with no breakpoints,
     so law 7 holds over it. Laws 5, 13 and 14 are checked over generators
-    that draw `Absent` among their leaves too. On `core/tests/fpl_laws.rs`'s
+    that draw `Absent` among their leaves too. On `core/tests/all/fpl_laws.rs`'s
     and
-    `core/tests/fold_laws.rs`'s generators; and against
+    `core/tests/all/fold_laws.rs`'s generators; and against
     `conformance/absent/*.py` — `fpl.py`, `series.py` and `view.py` in the
     shapes of `conformance/fpl.py`, `conformance/series.py` and
     `conformance/view/*.py` — SEEDED like the view vectors (§6.7): drawn from

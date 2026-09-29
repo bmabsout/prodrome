@@ -2,13 +2,13 @@
 //! (`vectors`), comparing two literal trees the way the spec compares them —
 //! shape and strings exactly, floats to 1e-9 — the synthetic corpus of stored
 //! objects the grammar and the event suites both read, and the RANDOM LOG
-//! GENERATOR (`a_log` and what it is built from) that `tests/fold_laws.rs`
+//! GENERATOR (`a_log` and what it is built from) that `tests/all/fold_laws.rs`
 //! draws its properties from and `examples/generate_view_vectors.rs` draws
 //! `conformance/view/*.py` from — one generator, read by a property and frozen
 //! by a vector file, never two.
 //!
-//! Included by several test binaries, each of which uses a part of it; the
-//! part one binary does not call is not dead code, it is another's.
+//! Included by the test binary and by the examples, each of which uses a part
+//! of it; the part one of them does not call is not dead code, it is another's.
 #![allow(dead_code)]
 
 #[path = "vectors.rs"]
@@ -133,8 +133,8 @@ pub fn reading(path: &str, mine: Option<f64>, theirs: &Value) -> Result<(), Stri
 // microsecond argument, the empty tuple, an absent optional field — and a
 // random draw covers what it happens to draw.
 //
-// `tests/literals.rs` reads these prints through the OPEN vocabulary (§2 and
-// nothing else); `tests/events.rs` reads the same prints through the CLOSED
+// `tests/all/literals.rs` reads these prints through the OPEN vocabulary (§2 and
+// nothing else); `tests/all/events.rs` reads the same prints through the CLOSED
 // one as typed envelopes (§4). One corpus, two readings, exactly as the two
 // files always stood to each other.
 

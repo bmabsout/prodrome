@@ -2,7 +2,7 @@
 //! answer, every object's print and name — and what the store then verifies
 //! and prices. Written by hand from the laws `change.rs` checks.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::fs;

@@ -420,7 +420,7 @@ replays, conflicts and several geneses.
 
 | Law | Statement | Checked by |
 |---|---|---|
-| 19 | **A name is its genesis, event and view.** `append(event)` writes a function of its genesis, `event`, and the structural frontiers of the registers `event` writes. Adding objects that write other registers, and do not carry `event` (law 20), changes no name. | `core/tests/change.rs::name_ignores_other_registers` |
+| 19 | **A name is its genesis, event and view.** `append(event)` writes a function of its genesis, `event`, and the structural frontiers of the registers `event` writes. Adding objects that write other registers, and do not carry `event` (law 20), changes no name. | `core/tests/all/change.rs::name_ignores_other_registers` |
 | 20 | **Append is idempotent.** Appending an event whose print the genesis holds writes nothing and answers the first object carrying it. Replaying any sequence of appends onto the store they produced leaves its object set unchanged. That includes the replay after a rejection (3). | `change.rs::replay_is_a_no_op`, `change.rs::replay_after_rejection_writes_nothing` |
 | 21 | **Independence is structural.** `deps` never leave a todo, so changes to different todos are concurrent, and every fold reads the same whichever the linearisation puts first. | `change.rs::deps_name_one_todo`, `fold_laws.rs::disjoint_todos_commute` |
 | 22 | **No stored byte moves.** Every `conformance/dag.py` store, and every generated store of `Sealed` and `Woven`, derives, linearises and verifies exactly as before, and reads exactly as before wherever no register has two candidates. `dag.py`'s `env` changes exactly where law 24 says it must: at a todo with a state conflict, it becomes the candidate set. Law 18 set this precedent for the view vectors. | the existing `dag.rs`, `tips.rs`, `fold_laws.rs` and vector tests, green, with `dag.py`'s conflicted `env` rows regenerated and the diff checked to touch nothing else |
@@ -461,7 +461,7 @@ Nothing here is started. In order, each step green before the next:
    plus every existing vector unchanged (law 22).
 5. `core/src/store.rs`: `init` writes a `Genesis`, `append` writes a
    `Change` and is idempotent, `snapshot`, and `verify`'s new checks. Delete
-   the tip-sealing branch. Laws 19–21, 23 and 28 in `core/tests/change.rs`.
+   the tip-sealing branch. Laws 19–21, 23 and 28 in `core/tests/all/change.rs`.
 6. `conformance/change.py`, written BY HAND from the laws, like `link.py`:
    exact prints and names, a replay that writes nothing, a twin pair, a
    conflict priced as its most urgent world, two geneses united, a snapshot

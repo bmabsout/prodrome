@@ -7,7 +7,7 @@
 //! The DAGs are rebuilt from their object files: nothing about a frontier may
 //! depend on this side having been the writer.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
