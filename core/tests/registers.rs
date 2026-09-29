@@ -25,7 +25,7 @@ use prodrome::genesis::mk_genesis;
 use prodrome::literal::{Datetime, Value};
 use prodrome::policy::{Everything, Untrusted};
 use prodrome::reference::Todo;
-use prodrome::registers::{deps_for, extend, fold, nodes_of, since, Folded, Node};
+use prodrome::registers::{deps_for, extend, fold, since, Folded, Node};
 use prodrome::store::EventStore;
 use prodrome::view;
 
@@ -73,6 +73,13 @@ fn materialise(dag: &Value) -> Store {
     }
     fs::write(root.join("HEAD"), &tips[0]).expect("writes HEAD");
     Store::new(root, roster())
+}
+
+fn nodes(store: &Store) -> Vec<Chain> {
+    store
+        .dag()
+        .and_then(|dag| dag.nodes())
+        .expect("the DAG reads")
 }
 
 fn outcomes(env: &Env) -> Outcomes {
@@ -136,10 +143,11 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
     for dag in &dags() {
         let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
-        let objects = store
-            .read_dag_named()
+        let nodes = store
+            .dag()
+            .and_then(|dag| dag.nodes())
             .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
-        let state = fold(&nodes_of(&objects));
+        let state = fold(&nodes);
 
         let mut found: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
         let mut env = Env::new();
@@ -182,7 +190,7 @@ fn the_fold_is_a_monoid_action_on_every_dag() {
     for dag in &dags() {
         let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
-        let nodes = nodes_of(&store.read_dag_named().expect("the DAG reads"));
+        let nodes = nodes(&store);
         let whole = fold(&nodes);
         for split in 0..=nodes.len() {
             let prefix = fold(&nodes[..split]);
@@ -210,7 +218,7 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
     for dag in &dags() {
         let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
-        let state = fold(&nodes_of(&store.read_dag_named().expect("the DAG reads")));
+        let state = fold(&nodes(&store));
         for (_, stream) in state.todos() {
             let registers = Registers::read(stream, None, &Everything);
             for kind in [Kind::State, Kind::Spec, Kind::Content] {

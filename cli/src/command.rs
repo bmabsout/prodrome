@@ -35,8 +35,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Create an empty store: `<dir>/objects/`, and nothing else. The objects
-    /// are the whole store; its tips are derived from them.
+    /// Create a store: `<dir>/objects/`, holding the prodrome's genesis. The
+    /// objects are the whole store; its tips are derived from them.
     Init {
         #[arg(value_name = "DIR")]
         dir: PathBuf,

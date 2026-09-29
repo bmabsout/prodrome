@@ -12,8 +12,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use clap::Parser;
 use proptest::prelude::*;
 
-use prodrome::event::Actor;
+use prodrome::event::{canonical_envelope, seal_hash, Actor, Envelope};
+use prodrome::genesis::mk_genesis;
 use prodrome::policy::Untrusted;
+use prodrome::reference::Todo;
 use prodrome_cli::command::Cli;
 use prodrome_cli::{read, run, Outcome, Store};
 use prodrome_github::{
@@ -22,6 +24,8 @@ use prodrome_github::{
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+/// A store begun with one fixed genesis, so that two of them given the same
+/// deliveries hold the same objects.
 fn a_store() -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "prodrome-github-{}-{}",
@@ -30,6 +34,12 @@ fn a_store() -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("objects")).expect("a store");
+    let genesis: Envelope<Todo> =
+        Envelope::Genesis(mk_genesis("roadmap", &"0".repeat(32)).expect("a genesis"));
+    let path = root
+        .join("objects")
+        .join(format!("{}.py", seal_hash(&genesis).as_str()));
+    std::fs::write(path, canonical_envelope(&genesis)).expect("a genesis");
     root
 }
 

@@ -29,7 +29,7 @@ use prodrome::fpl::FplError;
 use prodrome::literal::{Datetime, ProdromeError};
 use prodrome::policy::Untrusted;
 use prodrome::reference::{mk_authored, Todo};
-use prodrome::registers::{self, nodes_of};
+use prodrome::registers;
 use prodrome::store::EventStore;
 use prodrome::view::{entries, Entry};
 
@@ -169,8 +169,7 @@ impl Reading {
 /// quoted its own copy of the argument could say something the fold did not
 /// do.
 pub fn read(store: &Store, at: Datetime) -> Result<Reading, Error> {
-    let objects = store.read_dag_named()?;
-    let nodes = nodes_of(&objects);
+    let nodes = store.dag()?.nodes()?;
     let events: Vec<TodoEvent<Todo>> = nodes.iter().filter_map(|node| node.event.clone()).collect();
 
     let mut created = BTreeMap::new();
@@ -247,7 +246,7 @@ fn lifecycle(store: &Store, id: &str, stamp: &Stamp, make: MkLifecycle) -> Resul
     require_known(store, &todo)?;
     let at = price::instant(stamp.at.as_deref())?;
     let actor = actor_of(stamp)?;
-    let digest = store.append(make(id, at, &actor, &stamp.note)?, None)?;
+    let digest = store.append(make(id, at, &actor, &stamp.note)?)?;
     Ok(Outcome::said(digest.as_str()))
 }
 
@@ -265,7 +264,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
     let store = Store::new(&root, policy_of(&cli.untrusted)?);
 
     match &cli.command {
-        Command::Init { dir } => init(dir),
+        Command::Init { dir } => init(dir, store.policy().clone()),
 
         Command::Add {
             id,
@@ -286,7 +285,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
                 .ok_or_else(|| Error::usage("revise needs a new spec: --priority or --deadline"))?;
             let at = price::instant(stamp.at.as_deref())?;
             let actor = actor_of(stamp)?;
-            let digest = store.append(mk_spec_revised(id, at, &actor, spec, &stamp.note)?, None)?;
+            let digest = store.append(mk_spec_revised(id, at, &actor, spec, &stamp.note)?)?;
             Ok(Outcome::said(digest.as_str()))
         }
 
@@ -306,7 +305,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
         Command::Verify => {
             let problems = store.verify();
             if problems.is_empty() {
-                let objects = store.read_dag_named()?.len();
+                let objects = store.dag()?.objects().len();
                 let heads = store.tips()?.len();
                 Ok(Outcome::said(format!(
                     "ok: {objects} objects, {heads} head{}",
@@ -314,7 +313,11 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
                 )))
             } else {
                 Ok(Outcome {
-                    text: problems.join("\n"),
+                    text: problems
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     ok: false,
                 })
             }
@@ -326,7 +329,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
         }
 
         Command::Weave => {
-            let heads = store.tips()?;
+            let heads = store.dag()?.tips_in(&None);
             if heads.len() < 2 {
                 return Ok(Outcome::said(format!(
                     "{} head: nothing to weave",
@@ -342,14 +345,10 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
     }
 }
 
-/// `init`: an `objects/` directory, and nothing else.
-///
-/// The objects are the whole store: its tips are derived from them (§3), so
-/// there is no file naming a head, now or after the first append. A store this
-/// creates is therefore indistinguishable from an empty one somebody made with
-/// `mkdir`, which is the point — the layout is the format, not this program's
-/// doing.
-fn init(dir: &Path) -> Result<Outcome, Error> {
+/// `init`: an `objects/` directory holding the prodrome's `Genesis`, labelled
+/// with the directory's name. The objects are the whole store: its tips are
+/// derived from them (§3), so no file names a head.
+fn init(dir: &Path, policy: Untrusted) -> Result<Outcome, Error> {
     if dir.join("objects").is_dir() {
         return Err(Error::usage(format!(
             "{} is already a store",
@@ -360,6 +359,10 @@ fn init(dir: &Path) -> Result<Outcome, Error> {
         path: dir.display().to_string(),
         message: e.to_string(),
     })?;
+    let label = dir
+        .file_name()
+        .map_or(String::new(), |name| name.to_string_lossy().into_owned());
+    Store::new(dir, policy).init(&label)?;
     Ok(Outcome::said(format!("initialised {}", dir.display())))
 }
 
@@ -389,9 +392,9 @@ fn add(
     let at = price::instant(stamp.at.as_deref())?;
     let actor = actor_of(stamp)?;
 
-    let mut written = vec![store.append(mk_created(id, at, &actor, body, &stamp.note)?, None)?];
+    let mut written = vec![store.append(mk_created(id, at, &actor, body, &stamp.note)?)?];
     if let Some(spec) = price::term_of(price_args)? {
-        written.push(store.append(mk_spec_revised(id, at, &actor, spec, "")?, None)?);
+        written.push(store.append(mk_spec_revised(id, at, &actor, spec, "")?)?);
     }
     if !detail.is_empty() {
         let record = mk_authored(
@@ -411,7 +414,7 @@ fn add(
             Vec::new(),
             "",
         )?;
-        written.push(store.append(record, None)?);
+        written.push(store.append(record)?);
     }
     Ok(Outcome::said(
         written

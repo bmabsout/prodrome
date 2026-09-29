@@ -1,10 +1,10 @@
-//! §3 — objects on disk, the tips they imply, the linearisation, `verify`,
-//! `adopt`/`merge`.
+//! §3 — the files around a [`Dag`]: objects on disk, the lock, durable
+//! placement, quarantine, `adopt`/`merge`.
 //!
 //! Objects live at `root/objects/<name>.py`, one canonical constructor
 //! expression per file, the filename being the sha256 of its own bytes. THAT IS
 //! THE WHOLE STORE. Its tips are DERIVED — the objects no object names as a
-//! parent ([`tips_of`]) — so nothing on disk names a head, and two copies of a
+//! parent ([`Dag::tips`]) — so nothing on disk names a head, and two copies of a
 //! store that each only added files are merged by putting their files in one
 //! directory: a `git merge` of two clones IS the union, and nothing in it can
 //! conflict. A store written before 0.9 also holds `HEAD` (and `refs/` while it
@@ -22,9 +22,8 @@
 //!   name IS the append: there is no second file to move after it, and no
 //!   crash leaves a store half-written or an object empty.
 
-use std::cmp::Reverse;
 use std::collections::hash_map::RandomState;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
@@ -32,115 +31,15 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use sha2::{Digest, Sha256};
-
-use crate::event::{mk_sealed, mk_woven, parents_of, seal_hash, Envelope, Hash, TodoEvent};
-use crate::literal::{Datetime, ProdromeError};
+use crate::change::mk_change;
+use crate::dag::{decode, tips_among, Dag, Finding};
+use crate::event::{canonical, mk_woven, parents_of, seal_hash, Envelope, Hash, TodoEvent};
+use crate::genesis::mk_genesis;
+use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Policy, Untrusted};
-
-/// §3 — THE TIPS OF AN OBJECT SET: every object no object in it names as a
-/// parent.
-///
-/// A function of the SET and nothing else. The pairs may arrive in any order —
-/// a directory listing has none worth trusting — and the answer is the same
-/// (SPEC §9.17). Over a set closed under parents with no cycle, every object is
-/// a tip or an ancestor of one, which is why a store needs no file naming its
-/// heads: the objects already say. And tips compose: the tips of a union are
-/// the tips of either side that the other side does not name as a parent.
-///
-/// A name the set does not hold may be named as a parent here; it is simply
-/// not a tip. Whether that parent is MISSING is `verify`'s question, and
-/// `linearise`'s refusal.
-pub fn tips_of<'a, P: 'a>(
-    objects: impl IntoIterator<Item = (&'a Hash, &'a Envelope<P>)>,
-) -> BTreeSet<Hash> {
-    let graph: Vec<(&Hash, Vec<Hash>)> = objects
-        .into_iter()
-        .map(|(name, object)| (name, parents_of(object)))
-        .collect();
-    tips_among(
-        graph
-            .iter()
-            .map(|(name, parents)| (*name, parents.as_slice())),
-    )
-}
-
-/// [`tips_of`] over the graph alone — each name with the parents it names —
-/// which is all the derivation reads, and all the store's index keeps.
-fn tips_among<'a>(graph: impl IntoIterator<Item = (&'a Hash, &'a [Hash])>) -> BTreeSet<Hash> {
-    let mut names: Vec<&Hash> = Vec::new();
-    let mut named: BTreeSet<&Hash> = BTreeSet::new();
-    for (name, parents) in graph {
-        names.push(name);
-        named.extend(parents);
-    }
-    names
-        .into_iter()
-        .filter(|name| !named.contains(name))
-        .cloned()
-        .collect()
-}
-
-/// A closed object set in a deterministic TOPOLOGICAL order.
-///
-/// THE order every reader of a DAG gets. Every parent precedes every child, so
-/// an event is folded after everything it was written on top of. Among objects
-/// NEITHER of which precedes the other the tie is broken by HASH — Kahn's
-/// algorithm with a min-heap on the name — which is arbitrary-but-deterministic
-/// on purpose: a hash is not a clock and not an authority, and this exists so
-/// that two readers of the same DAG fold the same sequence.
-///
-/// ⚠️ Read that limit exactly: it gives the register folds a definite order over
-/// two concurrent events on ONE todo, where a definite order is not the right
-/// answer. Those are a CONFLICT to show and settle with a later event, never to
-/// tie-break (§6.6).
-pub fn linearise<P>(objects: &BTreeMap<Hash, Envelope<P>>) -> Result<Vec<Hash>, ProdromeError> {
-    let mut children: BTreeMap<&Hash, Vec<&Hash>> = BTreeMap::new();
-    let mut waiting: BTreeMap<&Hash, usize> = BTreeMap::new();
-    for (digest, object) in objects {
-        let parents = parents_of(object);
-        waiting.insert(digest, parents.len());
-        for parent in &parents {
-            let (known, _) = objects.get_key_value(parent).ok_or_else(|| {
-                ProdromeError::Store(format!(
-                    "missing object {}, named as a parent by {}",
-                    parent.as_str(),
-                    digest.as_str()
-                ))
-            })?;
-            children.entry(known).or_default().push(digest);
-        }
-    }
-    let mut ready: BinaryHeap<Reverse<&Hash>> = waiting
-        .iter()
-        .filter(|(_, count)| **count == 0)
-        .map(|(digest, _)| Reverse(*digest))
-        .collect();
-    let mut order: Vec<Hash> = Vec::with_capacity(objects.len());
-    while let Some(Reverse(digest)) = ready.pop() {
-        order.push(digest.clone());
-        for child in children.get(digest).into_iter().flatten() {
-            let count = waiting.get_mut(*child).expect("every object is counted");
-            *count -= 1;
-            if *count == 0 {
-                ready.push(Reverse(child));
-            }
-        }
-    }
-    if order.len() != objects.len() {
-        let placed: BTreeSet<&Hash> = order.iter().collect();
-        let stuck = objects
-            .keys()
-            .find(|digest| !placed.contains(digest))
-            .expect("a short order left something out");
-        return Err(ProdromeError::Store(format!(
-            "cycle in the object graph at {}",
-            stuck.as_str()
-        )));
-    }
-    Ok(order)
-}
+use crate::registers::{deps_for, fold};
+use crate::snapshot::mk_snapshot;
 
 /// A chain rooted at `root`, read under one host [`Policy`] (§5).
 ///
@@ -173,6 +72,8 @@ pub struct EventStore<P, Pol = Untrusted> {
     /// handle verified it is not noticed by [`EventStore::tips`]. Every read of
     /// the objects themselves, and `verify`, still rehash every file.
     parents: Arc<Mutex<BTreeMap<Hash, Vec<Hash>>>>,
+    /// The prodrome this handle writes into, for a store that holds several.
+    genesis: Option<Hash>,
 }
 
 /// `objects/`, read once: the entries named as objects, and every other
@@ -190,6 +91,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
             policy,
             payload: PhantomData,
             parents: Arc::default(),
+            genesis: None,
         }
     }
 
@@ -289,19 +191,18 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         Ok(listing)
     }
 
-    /// EVERY OBJECT THE STORE HOLDS, by name, each REVERIFIED — the one read
-    /// every other read of the whole store is taken from. Every parent a tip
-    /// rests on is in it (the store is closed under parents, and `linearise`
-    /// says so when it is not), so this IS the DAG, with no walk from a head
-    /// needed to find it.
-    pub fn objects(&self) -> Result<BTreeMap<Hash, Envelope<P>>, ProdromeError> {
-        self.names()?
-            .into_iter()
-            .map(|name| {
-                let object = self.load(&name)?;
-                Ok((name, object))
-            })
-            .collect()
+    /// Every object the store holds, each rehashed, refusing the first file
+    /// that is not an object.
+    pub fn dag(&self) -> Result<Dag<P>, ProdromeError> {
+        let dag = self.read(&self.names()?).whole()?;
+        for (name, object) in dag.objects() {
+            self.remember(name, object);
+        }
+        Ok(dag)
+    }
+
+    fn read(&self, names: &[Hash]) -> Dag<P> {
+        Dag::from_prints(names.iter().map(|name| (name.clone(), self.raw(name))))
     }
 
     fn lock_file(&self) -> PathBuf {
@@ -355,45 +256,97 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         }
     }
 
-    /// Seal `event` onto the store's tips.
-    ///
-    /// `parents` names what this event is written ON TOP OF, and `None` means
-    /// every tip the store has. One tip is the one-writer path, unchanged: a
-    /// `Sealed`, byte for byte the object this store has always written. None
-    /// is genesis. Two or more — named, or a store that holds two histories,
-    /// as a union of two replicas does — make a `Woven`, a write and a join as
-    /// one act, so the next write after a union settles it without anybody
-    /// having to ask for a merge. Whatever tips it names stop being tips,
-    /// because the new object names them.
-    pub fn append(
-        &self,
-        event: TodoEvent<P>,
-        parents: Option<&[Hash]>,
-    ) -> Result<Hash, ProdromeError> {
+    /// This handle, writing into the prodrome `genesis` begins; without one
+    /// a handle writes into the store's only genesis.
+    pub fn in_genesis(self, genesis: Hash) -> EventStore<P, Pol> {
+        EventStore {
+            genesis: Some(genesis),
+            ..self
+        }
+    }
+
+    fn genesis(&self, dag: &Dag<P>) -> Result<Hash, ProdromeError> {
+        let geneses = dag.geneses();
+        let mut sole = geneses.iter();
+        match (&self.genesis, sole.next(), sole.next()) {
+            (Some(mine), ..) if geneses.contains(mine) => Ok(mine.clone()),
+            (Some(mine), ..) => Err(ProdromeError::Store(format!(
+                "the store holds no genesis {}",
+                mine.as_str()
+            ))),
+            (None, Some(one), None) => Ok(one.clone()),
+            (None, None, _) => Err(ProdromeError::Store(
+                "the store has no genesis: `init` it first".to_owned(),
+            )),
+            (None, Some(_), Some(_)) => Err(ProdromeError::Store(format!(
+                "the store holds {} geneses: name the writer's with `in_genesis`",
+                geneses.len()
+            ))),
+        }
+    }
+
+    /// Begin a prodrome: write a `Genesis(label, nonce)` into a store that
+    /// has none, and answer its name.
+    pub fn init(&self, label: &str) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
-        let on: Vec<Hash> = match parents {
-            Some(named) => {
-                self.require_present(named)?;
-                named.to_vec()
-            }
-            None => self.tips()?.into_iter().collect(),
-        };
-        let object = if on.len() > 1 {
-            mk_woven(on, Some(event))?
-        } else {
-            mk_sealed(on.into_iter().next(), event)
-        };
-        self.write(&object)
+        if let Some(genesis) = self.dag()?.geneses().first() {
+            return Err(ProdromeError::Store(format!(
+                "the store already has a genesis, {}",
+                genesis.as_str()
+            )));
+        }
+        let nonce = format!("{:016x}{:016x}", random(), random());
+        self.write(&Envelope::Genesis(mk_genesis(label, &nonce)?))
+    }
+
+    /// Write `event` as a `Change` over the frontiers of the registers it
+    /// writes, or, when the writer's prodrome already holds an object whose
+    /// event prints the same, write nothing and answer the first such.
+    pub fn append(&self, event: TodoEvent<P>) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
+        let dag = self.dag()?;
+        let genesis = self.genesis(&dag)?;
+        let prodrome = dag.key(&genesis);
+        let nodes = dag.nodes_across_gaps()?;
+        let print = canonical(&event);
+        let held = nodes.iter().find(|node| {
+            node.genesis == prodrome && node.event.as_ref().is_some_and(|e| canonical(e) == print)
+        });
+        if let Some(node) = held {
+            return Ok(node.name.clone());
+        }
+        let deps = deps_for(&fold(&nodes), &prodrome, &event);
+        self.write(&Envelope::Change(mk_change(genesis, deps, event)?))
+    }
+
+    /// Attest the writer's prodrome: a `Snapshot` of its tips, chained to the
+    /// last snapshot among them. With nothing new since that one, it is the
+    /// answer and nothing is written.
+    pub fn snapshot(&self) -> Result<Hash, ProdromeError> {
+        let _locked = self.lock()?;
+        let dag = self.dag()?;
+        let genesis = self.genesis(&dag)?;
+        let tips = dag.tips_in(&dag.key(&genesis));
+        let previous = dag.linearise()?.into_iter().rev().find(|name| {
+            tips.contains(name) && matches!(dag.get(name), Some(Envelope::Snapshot(_)))
+        });
+        let tips: Vec<Hash> = tips
+            .into_iter()
+            .filter(|tip| Some(tip) != previous.as_ref())
+            .collect();
+        match previous {
+            Some(previous) if tips.is_empty() => Ok(previous),
+            previous => self.write(&Envelope::Snapshot(mk_snapshot(genesis, tips, previous)?)),
+        }
     }
 
     /// Join two or more tips into one `Woven`, which becomes a tip in their
-    /// place.
+    /// place: a legacy store's merge, which a store of changes never needs.
     ///
-    /// `parents` of `None` means every tip there is, so a bare merge means
-    /// "settle this store back into one history". NO who/when/why, and that is
-    /// the design rather than an omission: a merge asserts structure, not a
-    /// fact about a todo. A caller that wants the act attributed passes an
-    /// ordinary `event`, and the object is a write and a join at once.
+    /// `parents` of `None` means every tip of the legacy prodrome. NO
+    /// who/when/why: a merge asserts structure, not a fact about a todo. A
+    /// caller that wants the act attributed passes an ordinary `event`, and
+    /// the object is a write and a join at once.
     pub fn merge(
         &self,
         parents: Option<&[Hash]>,
@@ -402,7 +355,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         let _locked = self.lock()?;
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
-            None => self.tips()?.into_iter().collect(),
+            None => self.dag()?.tips_in(&None).into_iter().collect(),
         };
         self.require_present(&on)?;
         self.write(&mk_woven(on, event)?)
@@ -414,8 +367,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// tips are derived, so git's three cases fall out of the objects. A tip we
     /// already contain changes nothing; a tip that contains every tip we hold
     /// names them all beneath it, so they stop being tips (a FAST-FORWARD);
-    /// anything else is a second tip for `merge`, or the next `append`, to
-    /// join. Answers `digest`.
+    /// anything else is a second tip. Answers `digest`.
     pub fn adopt(&self, source: &EventStore<P, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         self.copy_in(source, digest)?;
@@ -516,9 +468,12 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
                     name.as_str()
                 )));
             };
-            let object = decode::<P>(&name, &raw)?;
+            let object = decode::<P>(&name, &raw).map_err(|why| why.refusal(&name))?;
             pending.push(Visit::Leave(name, raw));
-            pending.extend(parents_of(&object).into_iter().map(Visit::Enter));
+            let named = parents_of(&object)
+                .into_iter()
+                .chain(object.genesis().cloned());
+            pending.extend(named.map(Visit::Enter));
         }
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
@@ -598,7 +553,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// hashes bytes and not semantics, so that a future printer change cannot
     /// false-alarm the whole store as tampered.
     pub fn load(&self, digest: &Hash) -> Result<Envelope<P>, ProdromeError> {
-        let object = decode(digest, &self.raw(digest)?)?;
+        let object = decode(digest, &self.raw(digest)?).map_err(|why| why.refusal(digest))?;
         self.remember(digest, &object);
         Ok(object)
     }
@@ -637,9 +592,8 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     ///
     /// ⚠️ What that answer is, stated: the tips of what the store HOLDS. The
     /// set-aside object's parents are named by nothing readable, so they may
-    /// be tips again, and the next append weaves them in beside the rest — a
-    /// parent that is also an ancestor, which reads the same once the object
-    /// is back.
+    /// be tips again, and the next append writes over the frontiers of what
+    /// is held.
     ///
     /// ONLY A FILE THAT FAILS ITS HASH. One that hashes to its name is that
     /// object, whatever it holds — one this reader cannot parse may be a newer
@@ -648,7 +602,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     pub fn quarantine(&self, digest: &Hash) -> Result<PathBuf, ProdromeError> {
         let _locked = self.lock()?;
         let path = self.object_path(digest);
-        if rehash(digest, &self.raw(digest)?).is_ok() {
+        if Hash::of_bytes(&self.raw(digest)?) == *digest {
             return Err(ProdromeError::Store(format!(
                 "object {} hashes to its name: there is nothing to quarantine",
                 digest.as_str()
@@ -688,367 +642,64 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         Ok(!self.ancestors(a)?.contains(b) && !self.ancestors(b)?.contains(a))
     }
 
-    /// Every object reachable from `tips` by parents, reverified on the way.
-    /// The result is closed under parents, which is what `linearise` needs and
-    /// what makes a name it does not hold a real finding.
-    fn objects_from(
-        &self,
-        tips: &BTreeSet<Hash>,
-    ) -> Result<BTreeMap<Hash, Envelope<P>>, ProdromeError> {
-        let mut objects: BTreeMap<Hash, Envelope<P>> = BTreeMap::new();
-        let mut pending: Vec<Hash> = tips.iter().cloned().collect();
-        while let Some(name) = pending.pop() {
-            if objects.contains_key(&name) {
-                continue;
-            }
-            let object = self.load(&name)?;
-            pending.extend(parents_of(&object));
-            objects.insert(name, object);
-        }
-        Ok(objects)
-    }
-
-    /// Every object, in [`linearise`]'s topological order.
-    /// THE read: parents come before children, so the sequence is causal order.
-    pub fn read_dag(&self) -> Result<Vec<Envelope<P>>, ProdromeError> {
-        Ok(self
-            .read_dag_named()?
-            .into_iter()
-            .map(|(_, object)| object)
-            .collect())
-    }
-
-    /// The same read, with each object's name — which every caller that needs
-    /// to rehash, link or report an object wants and would otherwise recompute.
-    /// ONE PASS over the files: the tips are implied by the same objects, so
-    /// there is no walk from them to do.
-    pub fn read_dag_named(&self) -> Result<Vec<(Hash, Envelope<P>)>, ProdromeError> {
-        let mut objects = self.objects()?;
-        let order = linearise(&objects)?;
-        Ok(order
-            .into_iter()
-            .map(|digest| {
-                let object = objects.remove(&digest).expect("the order names objects");
-                (digest, object)
-            })
-            .collect())
-    }
-
-    /// The DAG as it stood when `tips` were its heads: every object they rest
-    /// on, named, in [`linearise`]'s order. Objects are never deleted, so this
-    /// read is reproducible for as long as the store holds them — which is
-    /// what lets a vector pin a tip and stay true while the chain grows past
-    /// it, and what a reader that was handed a tip (a page, a sync, a replay)
-    /// reads instead of whatever the store has by now.
-    pub fn read_dag_at(
-        &self,
-        tips: &BTreeSet<Hash>,
-    ) -> Result<Vec<(Hash, Envelope<P>)>, ProdromeError> {
-        let objects = self.objects_from(tips)?;
-        let order = linearise(&objects)?;
-        Ok(order
-            .into_iter()
-            .map(|digest| {
-                let object = objects[&digest].clone();
-                (digest, object)
-            })
-            .collect())
-    }
-
-    /// Walk tip → genesis, reverifying each object, returned genesis-first.
-    ///
-    /// A CHAIN, and it says so: a store with more than one head, or with a
-    /// merge on the path, REFUSES rather than answering with a fragment of
-    /// itself. Readers that cannot be wrong about a DAG keep calling this and
-    /// find out loudly.
-    pub fn read_chain(&self) -> Result<Vec<Envelope<P>>, ProdromeError> {
-        let heads = self.tips()?;
-        if heads.len() > 1 {
-            return Err(ProdromeError::Store(format!(
-                "the store has {} heads — read_chain reads a chain, read_dag reads a DAG",
-                heads.len()
-            )));
-        }
-        let mut chain: Vec<Envelope<P>> = Vec::new();
-        let mut seen: BTreeSet<Hash> = BTreeSet::new();
-        let mut cursor = heads.into_iter().next();
-        while let Some(digest) = cursor {
-            if !seen.insert(digest.clone()) {
-                return Err(ProdromeError::Store(format!(
-                    "cycle in chain at {}",
-                    digest.as_str()
-                )));
-            }
-            let object = self.load(&digest)?;
-            let prev = match &object {
-                Envelope::Sealed { prev, .. } => prev.clone(),
-                Envelope::Woven { .. } => {
-                    return Err(ProdromeError::Store(format!(
-                        "object {} is a merge — read_chain reads a chain, read_dag reads a DAG",
-                        digest.as_str()
-                    )))
-                }
-                other => {
-                    return Err(ProdromeError::Store(format!(
-                        "object {} is a {} — read_chain reads a chain of Sealed objects",
-                        digest.as_str(),
-                        other.name()
-                    )))
-                }
-            };
-            chain.push(object);
-            cursor = prev;
-        }
-        chain.reverse();
-        Ok(chain)
-    }
-
-    /// The store's event bodies, in the linearisation's order. A merge carries
-    /// no event and contributes none: the folds see facts about todos, and the
-    /// DAG's shape reaches them only as the ORDER those facts arrive in.
+    /// The store's events, in the linearisation's order.
     pub fn events(&self) -> Result<Vec<TodoEvent<P>>, ProdromeError> {
         Ok(self
-            .read_dag()?
+            .dag()?
+            .nodes()?
             .into_iter()
-            .filter_map(Envelope::into_event)
+            .filter_map(|node| node.event)
             .collect())
     }
 
     /// Full fsck; an empty result means healthy.
     ///
-    /// Every object rehashes to its filename and parses as an envelope (a
-    /// `Woven` with fewer than two parents, or one named twice, is malformed
-    /// and cannot parse — the constructor is the boundary); every parent named
-    /// exists; the objects go into one order without a cycle; no event the
-    /// policy does not CONFIRM is dated behind anything it rests on; and no
-    /// `HEAD` or `refs/` is left over from before the tips were derived; and
-    /// every entry of `objects/` is an object — anything else there, a temp an
-    /// interrupted write left or a stray, is reported by name as garbage.
-    ///
-    /// NO UNREACHABLE OBJECT AND NO STALE HEAD, and not because they are
-    /// forgiven: they cannot be stated any more. Every object is a tip or
-    /// beneath one, and a tip is by definition something nothing rests on.
-    pub fn verify(&self) -> Vec<String> {
+    /// The [`Dag`]'s findings, with what only the files can say beside them:
+    /// every entry of `objects/` that is not an object, a `HEAD` or `refs/`
+    /// left from before the tips were derived, and a receipt for each file in
+    /// `quarantine/`, which stands in for the missing parent it would be.
+    pub fn verify(&self) -> Vec<Finding> {
         let Listing {
             mut objects,
             mut garbage,
         } = match self.listing() {
             Ok(listing) => listing,
-            Err(error) => return vec![error.to_string()],
+            Err(error) => return vec![Finding::Io(error)],
         };
         objects.sort();
         garbage.sort();
-        let mut problems: Vec<String> = Vec::new();
-        for name in &objects {
-            problems.extend(self.object_problems(name));
-        }
-        problems.extend(garbage.iter().map(|file| {
-            format!(
-                "objects/{file} is not an object: a temp an interrupted write left, or a stray \
-                 (SPEC §3); delete it"
-            )
+        let (mut findings, graph): (Vec<Finding>, Vec<Finding>) = self
+            .read(&objects)
+            .verify(&self.policy)
+            .into_iter()
+            .partition(|finding| matches!(finding, Finding::Unread { .. }));
+        findings.extend(garbage.into_iter().map(Finding::Garbage));
+        findings.extend(
+            ["HEAD", "refs/"]
+                .into_iter()
+                .filter(|file| self.root.join(file.trim_end_matches('/')).exists())
+                .map(Finding::Leftover),
+        );
+        findings.extend(self.quarantined());
+        findings.extend(graph.into_iter().filter(|finding| {
+            !matches!(finding, Finding::Broken { at, .. } if self.quarantined_path(at).exists())
         }));
-        problems.extend(self.leftovers());
-        problems.extend(self.quarantined());
-        problems.extend(self.graph_problems(&objects));
-        problems
+        findings
     }
 
-    /// THE RECEIPT FOR EVERY QUARANTINED FILE. [`EventStore::quarantine`]
-    /// made the store answer; it did not make it whole. Until the object is
-    /// back from a replica the store lacks it, and whatever rests on it rests
-    /// on nothing here — which this one finding says, in place of a "chain
-    /// broke" for each object naming it.
-    fn quarantined(&self) -> Vec<String> {
+    fn quarantined(&self) -> Vec<Finding> {
         let dir = self.quarantine_dir();
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(error) => return vec![Self::io(&dir, error).to_string()],
+            Err(error) => return vec![Finding::Io(Self::io(&dir, error))],
         };
         let mut files: Vec<String> = entries
             .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         files.sort();
-        files
-            .into_iter()
-            .map(|file| {
-                format!(
-                    "quarantine/{file} failed its hash and was set aside (SPEC §3): restore the \
-                     object from a replica, then delete this file"
-                )
-            })
-            .collect()
-    }
-
-    /// `HEAD` and `refs/`, which a store written before 0.9 carries and
-    /// nothing reads. Reported rather than removed: a file this crate did not
-    /// write this time is not this crate's to delete, and one left in place
-    /// would name a head that stopped being one at the next append — a file
-    /// every reader of the old layout still trusts, telling it something
-    /// false. The finding makes the migration somebody's explicit act.
-    fn leftovers(&self) -> Vec<String> {
-        let mut problems: Vec<String> = Vec::new();
-        if self.root.join("HEAD").exists() {
-            problems.push(
-                "HEAD is left from before tips were derived (SPEC §3): nothing reads it, delete it"
-                    .to_owned(),
-            );
-        }
-        if self.root.join("refs").exists() {
-            problems.push(
-                "refs/ is left from before tips were derived (SPEC §3): nothing reads it, delete it"
-                    .to_owned(),
-            );
-        }
-        problems
-    }
-
-    /// One object's fsck findings: byte-hash against the filename, then
-    /// parseability. A malformed envelope is caught HERE, by the parser,
-    /// because the `mk_*` constructors are the parse boundary — a `Woven` with
-    /// one parent cannot be built, so it cannot be read back either, and the
-    /// finding names the rule it broke.
-    fn object_problems(&self, name: &Hash) -> Vec<String> {
-        let stem = name.as_str();
-        let Ok(raw) = fs::read(self.object_path(name)) else {
-            return vec![format!("object {stem} could not be read")];
-        };
-        if hex(&Sha256::digest(&raw)) != stem {
-            return vec![format!(
-                "object {stem} does not hash to its filename (tampered/corrupt)"
-            )];
-        }
-        let Ok(text) = std::str::from_utf8(&raw) else {
-            return vec![format!("object {stem} failed to parse: not UTF-8")];
-        };
-        match crate::event::parse_envelope::<P>(text) {
-            Ok(_) => Vec::new(),
-            Err(error) => vec![format!("object {stem} failed to parse: {error}")],
-        }
-    }
-
-    /// The graph the READABLE objects make: every parent one of them names
-    /// that the store cannot give back (absent, or failing its own check —
-    /// which `object_problems` has already said once about the file itself)
-    /// and that is not in quarantine, whose receipt already says it; then,
-    /// only if no parent is missing at all, a cycle, and the dating rule.
-    fn graph_problems(&self, names: &[Hash]) -> Vec<String> {
-        let objects: BTreeMap<Hash, Envelope<P>> = names
-            .iter()
-            .filter_map(|name| {
-                let object = self.load(name).ok()?;
-                Some((name.clone(), object))
-            })
-            .collect();
-        let named: BTreeSet<Hash> = objects.values().flat_map(parents_of).collect();
-        let missing: Vec<&Hash> = named
-            .iter()
-            .filter(|parent| !objects.contains_key(*parent))
-            .collect();
-        if missing.is_empty() {
-            return match linearise(&objects) {
-                Ok(order) => dating_problems(&order, &objects, &self.policy),
-                Err(error) => vec![error.to_string()],
-            };
-        }
-        missing
-            .into_iter()
-            .filter(|parent| !self.quarantined_path(parent).exists())
-            .filter_map(|parent| {
-                let error = self.load(parent).err()?;
-                Some(format!("chain broke at {}: {error}", parent.as_str()))
-            })
-            .collect()
-    }
-}
-
-/// THE ONE PLACE CAUSAL ORDER MEETS CLOCK ORDER.
-///
-/// The folds read `at` as data; the store orders by parents. They may disagree
-/// for an event the policy CONFIRMS — a backfill legitimately records 2025
-/// completions today. For one it does not, the `at` is the host's own clock,
-/// forced by the verb that wrote it, so a stamp behind something the event was
-/// written on top of is either a clock that ran backwards or an object nobody's
-/// verb wrote.
-///
-/// [`Policy::confirms`] is the question, and its DEFAULT is §5 exactly: an
-/// event that only CLAIMS is not the host's word, so its stamp is not either.
-/// A policy that folds a writer's events while still holding their clock — the
-/// reference policy does, for content records — says so by overriding it. No
-/// actor name is read here.
-///
-/// The finding's WORDING is frozen: `conformance/dag.py` holds these
-/// sentences byte for byte (§9.8), and they were taken under the reference
-/// policy, where "does not confirm" is "untrusted".
-///
-/// "Before" is over ANCESTORS, not over one predecessor: an object's high water
-/// mark is the latest stamp anywhere beneath it, carried up the DAG in
-/// topological order. On a chain that is the running maximum this rule has
-/// always used, so the finding and its wording are unchanged there.
-fn dating_problems<P: Payload>(
-    order: &[Hash],
-    objects: &BTreeMap<Hash, Envelope<P>>,
-    policy: &impl Policy<P>,
-) -> Vec<String> {
-    let mut high: BTreeMap<&Hash, Datetime> = BTreeMap::new();
-    let mut problems: Vec<String> = Vec::new();
-    for digest in order {
-        let object = &objects[digest];
-        let behind = parents_of(object)
-            .iter()
-            .filter_map(|parent| high.get(parent).copied())
-            .max();
-        let event = object.event();
-        if let (Some(event), Some(behind)) = (event, behind) {
-            if !policy.confirms(event) && event.at() < behind {
-                problems.push(format!(
-                    "untrusted event {} is dated {}, behind its predecessor ({})",
-                    digest.as_str(),
-                    event.at().isoformat(),
-                    behind.isoformat()
-                ));
-            }
-        }
-        let stamp = [behind, event.map(TodoEvent::at)]
-            .into_iter()
-            .flatten()
-            .max();
-        if let Some(stamp) = stamp {
-            let (key, _) = objects
-                .get_key_value(digest)
-                .expect("the order names objects");
-            high.insert(key, stamp);
-        }
-    }
-    problems
-}
-
-/// A stored object's bytes, reverified and parsed.
-fn decode<P: Payload>(digest: &Hash, raw: &[u8]) -> Result<Envelope<P>, ProdromeError> {
-    rehash(digest, raw)?;
-    let text = std::str::from_utf8(raw)
-        .map_err(|_| ProdromeError::Store(format!("object {} is not UTF-8", digest.as_str())))?;
-    crate::event::parse_envelope(text)
-}
-
-/// Do these bytes hash to the name they are stored under?
-///
-/// The refusal NAMES THE WAY OUT. Every read that meets such a file refuses
-/// rather than guess what it held — [`EventStore::tips`] among them, and so
-/// every append — which leaves a store with one damaged file stuck until
-/// somebody sets that file aside; the message says how.
-fn rehash(digest: &Hash, raw: &[u8]) -> Result<(), ProdromeError> {
-    let recomputed = hex(&Sha256::digest(raw));
-    if recomputed == digest.as_str() {
-        Ok(())
-    } else {
-        Err(ProdromeError::Store(format!(
-            "object {name} hashes to {recomputed} — tampered or corrupt: `prodrome quarantine \
-             {name}` (`EventStore::quarantine`) sets it aside so the store answers again",
-            name = digest.as_str()
-        )))
+        files.into_iter().map(Finding::Quarantined).collect()
     }
 }
 
@@ -1057,7 +708,11 @@ fn rehash(digest: &Hash, raw: &[u8]) -> Result<(), ProdromeError> {
 /// keys, advanced on every draw, so no dependency is taken for it; the
 /// exclusive create in [`EventStore::stage`] is what makes a clash harmless.
 fn temp_name() -> String {
-    format!("{:016x}.tmp", RandomState::new().build_hasher().finish())
+    format!("{:016x}.tmp", random())
+}
+
+fn random() -> u64 {
+    RandomState::new().build_hasher().finish()
 }
 
 /// Sync a directory, so the renames into it are on disk and not only in the
@@ -1071,14 +726,11 @@ fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
         })
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_created, mk_reopened, Actor};
+    use crate::change::Change;
+    use crate::event::{mk_completed, mk_created, mk_reopened, mk_sealed, Actor};
     use crate::literal::Datetime;
     use crate::reference::Todo;
     use proptest::prelude::*;
@@ -1102,6 +754,14 @@ mod tests {
         store.tips().expect("the tips derive")
     }
 
+    fn findings(store: &Store) -> Vec<String> {
+        store.verify().iter().map(ToString::to_string).collect()
+    }
+
+    fn order(store: &Store) -> Result<Vec<Hash>, ProdromeError> {
+        store.dag()?.linearise()
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "prodrome-{name}-{}-{:?}",
@@ -1112,22 +772,50 @@ mod tests {
         root
     }
 
+    /// The pre-Draft-A append, for the tests of a legacy store: seal on
+    /// every tip.
+    fn seal(store: &Store, event: TodoEvent<Todo>) -> Hash {
+        let on: Vec<Hash> = tips(store).into_iter().collect();
+        let object = if on.len() > 1 {
+            mk_woven(on, Some(event)).expect("distinct tips")
+        } else {
+            mk_sealed(on.into_iter().next(), event)
+        };
+        store.write(&object).expect("writes")
+    }
+
+    fn change(store: &Store, name: &Hash) -> Change<Todo> {
+        match store.load(name).expect("loads") {
+            Envelope::Change(change) => change,
+            other => panic!("{} is not a change", other.name()),
+        }
+    }
+
+    /// An append writes a `Change` over the frontiers its event supersedes,
+    /// and appending the same event again writes nothing.
     #[test]
-    fn a_chain_appends_verifies_and_reads_back_in_order() {
+    fn an_append_writes_a_change_over_what_it_supersedes() {
         let store = Store::new(scratch("chain"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
+        let created = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
+        assert!(store.append(created.clone()).is_err(), "no genesis yet");
+        let genesis = store.init("chain").expect("begins");
+        assert!(store.init("again").is_err(), "a store begins once");
+        let first = store.append(created).expect("appends");
+        let done = mk_completed("alpha", at(2), "bassel", "").expect("valid");
+        let second = store.append(done.clone()).expect("appends");
+        let third = store
+            .append(mk_reopened("alpha", at(3), "bassel", "").expect("valid"))
             .expect("appends");
-        let second = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        assert_eq!(tips(&store), [second.clone()].into_iter().collect());
+        assert_eq!(change(&store, &first).genesis, genesis);
+        assert!(
+            change(&store, &second).deps.is_empty(),
+            "Created writes no register"
+        );
+        assert_eq!(change(&store, &third).deps, std::slice::from_ref(&second));
+        assert_eq!(
+            tips(&store),
+            [genesis, first, third.clone()].into_iter().collect()
+        );
         assert_eq!(
             fs::read_dir(store.root())
                 .expect("the store is a directory")
@@ -1138,19 +826,18 @@ mod tests {
             vec!["objects".to_owned()],
             "the objects are the whole store: no file names a head"
         );
-        assert_eq!(store.verify(), Vec::<String>::new());
-        let names: Vec<Hash> = store
-            .read_dag_named()
-            .expect("reads")
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        assert_eq!(names, vec![first.clone(), second.clone()]);
-        assert_eq!(store.read_chain().expect("a chain is a chain").len(), 2);
-        assert_eq!(store.events().expect("reads").len(), 2);
+        assert_eq!(findings(&store), Vec::<String>::new());
+        assert_eq!(store.events().expect("reads").len(), 3);
         assert_eq!(
-            store.ancestors(&second).expect("walks"),
-            [first].into_iter().collect()
+            store.ancestors(&third).expect("walks"),
+            [second.clone()].into_iter().collect()
+        );
+        let held = order(&store).expect("reads");
+        assert_eq!(store.append(done).expect("replays"), second);
+        assert_eq!(
+            order(&store).expect("reads"),
+            held,
+            "a replay writes nothing"
         );
         let _ = fs::remove_dir_all(store.root());
     }
@@ -1159,41 +846,34 @@ mod tests {
     fn adopt_makes_a_second_head_and_merge_settles_it() {
         let here = Store::new(scratch("here"), roster());
         let there = Store::new(scratch("there"), roster());
-        let shared = here
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let shared = seal(
+            &here,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
         there
             .adopt(&here, &shared)
             .expect("fast-forwards into an empty store");
         assert_eq!(tips(&there), [shared.clone()].into_iter().collect());
 
-        let mine = here
-            .append(
-                mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let theirs = there
-            .append(
-                mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let mine = seal(
+            &here,
+            mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
+        );
+        let theirs = seal(
+            &there,
+            mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
+        );
         here.adopt(&there, &theirs).expect("adopts");
         assert_eq!(
             tips(&here),
             [mine.clone(), theirs.clone()].into_iter().collect()
         );
         assert!(here.concurrent(&mine, &theirs).expect("both present"));
-        assert_eq!(here.verify(), Vec::<String>::new());
-        assert!(here.read_chain().is_err(), "two heads are not a chain");
+        assert_eq!(findings(&here), Vec::<String>::new());
 
         let merged = here.merge(None, None).expect("merges");
         assert_eq!(tips(&here), [merged.clone()].into_iter().collect());
-        assert_eq!(here.verify(), Vec::<String>::new());
+        assert_eq!(findings(&here), Vec::<String>::new());
         // Sorted by `mk_woven`, so a merge is its parent SET and two replicas
         // joining the same two heads produce the same bytes.
         let mut joined = vec![mine, theirs];
@@ -1205,53 +885,35 @@ mod tests {
         let _ = fs::remove_dir_all(there.root());
     }
 
-    /// THE NEXT WRITE SETTLES A UNION. Two tips — here, two replicas' files
-    /// put in one directory, which is what a `git merge` of two clones does —
-    /// and an ordinary append with no parents named: it is written on top of
-    /// BOTH, as one `Woven` carrying the event, and the store is one history
-    /// again without anybody having asked for a merge.
+    /// THE NEXT WRITE SETTLES A UNION. Two replicas' files put in one
+    /// directory, which is what a `git merge` of two clones does, hold a
+    /// conflict; the next write to that register depends on both sides, and
+    /// nothing else is written.
     #[test]
-    fn the_next_append_weaves_every_tip() {
+    fn the_next_append_settles_a_union() {
         let here = Store::new(scratch("weave-here"), roster());
         let there = Store::new(scratch("weave-there"), roster());
-        let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
-        for store in [&here, &there] {
-            store.append(shared.clone(), None).expect("appends");
-        }
+        let genesis = here.init("union").expect("begins");
+        there.adopt(&here, &genesis).expect("adopts the genesis");
         let mine = here
-            .append(
-                mk_completed("alpha", at(2), "bassel", "mine").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(2), "bassel", "mine").expect("valid"))
             .expect("appends");
         let theirs = there
-            .append(
-                mk_completed("alpha", at(2), "bassel", "theirs").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(2), "bassel", "theirs").expect("valid"))
             .expect("appends");
         for entry in fs::read_dir(there.objects_dir()).expect("lists") {
             let path = entry.expect("an entry").path();
             let file = path.file_name().expect("a file name");
             fs::copy(&path, here.objects_dir().join(file)).expect("copies");
         }
-        assert_eq!(
-            tips(&here),
-            [mine.clone(), theirs.clone()].into_iter().collect()
-        );
-        let woven = here
-            .append(
-                mk_reopened("alpha", at(3), "bassel", "both").expect("valid"),
-                None,
-            )
+        let settled = here
+            .append(mk_reopened("alpha", at(3), "bassel", "both").expect("valid"))
             .expect("appends");
-        assert_eq!(tips(&here), [woven.clone()].into_iter().collect());
-        let object = here.load(&woven).expect("loads");
-        assert!(matches!(object, Envelope::Woven { event: Some(_), .. }));
-        let mut joined = vec![mine, theirs];
-        joined.sort();
-        assert_eq!(parents_of(&object), joined);
-        assert_eq!(here.verify(), Vec::<String>::new());
+        let mut both = vec![mine, theirs];
+        both.sort();
+        assert_eq!(change(&here, &settled).deps, both);
+        assert_eq!(tips(&here), [genesis, settled].into_iter().collect());
+        assert_eq!(findings(&here), Vec::<String>::new());
         let _ = fs::remove_dir_all(here.root());
         let _ = fs::remove_dir_all(there.root());
     }
@@ -1263,24 +925,20 @@ mod tests {
     #[test]
     fn an_old_store_derives_what_its_head_named_and_is_told_to_drop_it() {
         let store = Store::new(scratch("legacy"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let second = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        let second = seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         let aside = store
-            .append(
+            .write(&mk_sealed(
+                Some(first),
                 mk_created("beta", at(2), "bassel", "", "").expect("valid"),
-                Some(std::slice::from_ref(&first)),
-            )
-            .expect("appends");
+            ))
+            .expect("writes");
         fs::write(store.root().join("HEAD"), second.as_str()).expect("writes HEAD");
         let refs = store.root().join("refs");
         fs::create_dir_all(&refs).expect("creates refs/");
@@ -1289,7 +947,7 @@ mod tests {
         }
         assert_eq!(tips(&store), [second, aside].into_iter().collect());
         assert_eq!(
-            store.verify(),
+            findings(&store),
             vec![
                 "HEAD is left from before tips were derived (SPEC §3): nothing reads it, delete it",
                 "refs/ is left from before tips were derived (SPEC §3): nothing reads it, delete it",
@@ -1297,7 +955,7 @@ mod tests {
         );
         fs::remove_file(store.root().join("HEAD")).expect("removes HEAD");
         fs::remove_dir_all(&refs).expect("removes refs/");
-        assert_eq!(store.verify(), Vec::<String>::new());
+        assert_eq!(findings(&store), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
     }
 
@@ -1317,43 +975,37 @@ mod tests {
         let there = Store::new(scratch("bytes-there"), roster());
         let shared = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
         for store in [&by_dir, &by_bytes, &there] {
-            store.append(shared.clone(), None).expect("appends");
+            seal(store, shared.clone());
         }
         // Each side writes its own second object, so the two histories diverge.
         for store in [&by_dir, &by_bytes] {
-            store
-                .append(
-                    mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
-                    None,
-                )
-                .expect("appends");
+            seal(
+                store,
+                mk_created("beta", at(2), "bassel", "mine", "").expect("valid"),
+            );
         }
-        let theirs = there
-            .append(
-                mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let theirs = seal(
+            &there,
+            mk_created("beta", at(2), "bassel", "theirs", "").expect("valid"),
+        );
 
         by_dir.adopt(&there, &theirs).expect("adopts a directory");
         // The same objects, as the wire carries them: a name and the canonical
         // print that name is the hash of.
         let over_the_wire: BTreeMap<Hash, String> = there
-            .read_dag_named()
+            .dag()
             .expect("reads")
-            .into_iter()
-            .map(|(name, object)| (name, crate::event::canonical_envelope(&object)))
+            .objects()
+            .iter()
+            .map(|(name, object)| (name.clone(), crate::event::canonical_envelope(object)))
             .collect();
         by_bytes
             .adopt_objects(&over_the_wire, &theirs)
             .expect("adopts bytes");
 
         assert_eq!(tips(&by_bytes), tips(&by_dir));
-        assert_eq!(
-            by_bytes.read_dag_named().expect("reads"),
-            by_dir.read_dag_named().expect("reads")
-        );
-        assert_eq!(by_bytes.verify(), Vec::<String>::new());
+        assert_eq!(by_bytes.dag().expect("reads"), by_dir.dag().expect("reads"));
+        assert_eq!(findings(&by_bytes), Vec::<String>::new());
 
         // A REPLICA IS NOT TRUSTED FOR BEING A REPLICA. Bytes that do not hash
         // to the name they were filed under are refused, and so is a parent
@@ -1386,19 +1038,15 @@ mod tests {
     fn a_contained_tip_changes_nothing_and_a_containing_one_fast_forwards() {
         let here = Store::new(scratch("ff-here"), roster());
         let there = Store::new(scratch("ff-there"), roster());
-        let first = here
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &here,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
         there.adopt(&here, &first).expect("adopts");
-        let second = there
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let second = seal(
+            &there,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         here.adopt(&there, &second).expect("fast-forwards");
         assert_eq!(tips(&here), [second.clone()].into_iter().collect());
         here.adopt(&there, &first).expect("a contained tip");
@@ -1410,18 +1058,14 @@ mod tests {
     #[test]
     fn a_tampered_object_is_caught_on_read_and_by_verify() {
         let store = Store::new(scratch("tamper"), roster());
-        let digest = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let digest = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         let path = store.object_path(&digest);
         let text = fs::read_to_string(&path).expect("reads");
         fs::write(&path, text.replace("alpha", "omega")).expect("writes");
@@ -1430,14 +1074,14 @@ mod tests {
         // honest tips, since that file could name any object as its parent.
         let fresh = Store::new(store.root(), roster());
         assert!(fresh.tips().is_err());
-        assert!(store.read_dag_named().is_err());
+        assert!(store.dag().is_err());
         // The limit the parent index states: a handle that verified the object
         // BEFORE it was tampered with keeps the parents it verified.
         assert!(store.tips().is_ok());
         // `verify` REPORTS, twice over, and both are true: the file no longer
         // hashes to its name, and the object resting on it rests on nothing.
         assert_eq!(
-            store.verify(),
+            findings(&store),
             vec![
                 format!(
                     "object {} does not hash to its filename (tampered/corrupt)",
@@ -1447,7 +1091,7 @@ mod tests {
                     "chain broke at {digest}: object {digest} hashes to {} — tampered or \
                      corrupt: `prodrome quarantine {digest}` (`EventStore::quarantine`) sets it \
                      aside so the store answers again",
-                    hex(&Sha256::digest(fs::read(&path).expect("reads"))),
+                    Hash::of_bytes(&fs::read(&path).expect("reads")).as_str(),
                     digest = digest.as_str()
                 ),
             ]
@@ -1458,20 +1102,16 @@ mod tests {
     #[test]
     fn an_unconfirmed_event_dated_behind_its_predecessor_is_a_finding() {
         let store = Store::new(scratch("dating"), roster());
-        store
-            .append(
-                mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let late = store
-            .append(
-                mk_completed("alpha", at(2), "triage", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        seal(
+            &store,
+            mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        );
+        let late = seal(
+            &store,
+            mk_completed("alpha", at(2), "triage", "").expect("valid"),
+        );
         assert_eq!(
-            store.verify(),
+            findings(&store),
             vec![format!(
                 "untrusted event {} is dated {}, behind its predecessor ({})",
                 late.as_str(),
@@ -1482,19 +1122,15 @@ mod tests {
         // The same event from a writer the policy CONFIRMS is a backfill, not a
         // finding.
         let trusted = Store::new(scratch("dating-trusted"), roster());
-        trusted
-            .append(
-                mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        trusted
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        assert_eq!(trusted.verify(), Vec::<String>::new());
+        seal(
+            &trusted,
+            mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        );
+        seal(
+            &trusted,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
+        assert_eq!(findings(&trusted), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
         let _ = fs::remove_dir_all(trusted.root());
     }
@@ -1509,35 +1145,31 @@ mod tests {
     #[test]
     fn a_record_that_binds_is_still_held_to_the_dag_s_clock() {
         let store = Store::new(scratch("dating-record"), roster());
-        store
-            .append(
-                mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        seal(
+            &store,
+            mk_created("alpha", at(10), "bassel", "", "").expect("valid"),
+        );
+        let record = seal(
+            &store,
+            crate::reference::mk_authored(
+                "alpha",
+                at(2),
+                "triage",
+                "todo",
+                at(2),
+                "body",
                 None,
-            )
-            .expect("appends");
-        let record = store
-            .append(
-                crate::reference::mk_authored(
-                    "alpha",
-                    at(2),
-                    "triage",
-                    "todo",
-                    at(2),
-                    "body",
-                    None,
-                    vec![],
-                    "",
-                    "",
-                    "",
-                    None,
-                    vec![],
-                    vec![],
-                    "",
-                )
-                .expect("valid"),
+                vec![],
+                "",
+                "",
+                "",
                 None,
+                vec![],
+                vec![],
+                "",
             )
-            .expect("appends");
+            .expect("valid"),
+        );
         let events = store.events().expect("reads");
         let late = events.last().expect("the record");
         assert!(
@@ -1545,7 +1177,7 @@ mod tests {
             "a content record binds whoever wrote it"
         );
         assert_eq!(
-            store.verify(),
+            findings(&store),
             vec![format!(
                 "untrusted event {} is dated {}, behind its predecessor ({})",
                 record.as_str(),
@@ -1564,18 +1196,14 @@ mod tests {
     #[test]
     fn the_index_follows_the_listing() {
         let store = Store::new(scratch("index"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let second = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        let second = seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
         assert_eq!(tips(&store), [second.clone()].into_iter().collect());
         fs::remove_file(store.object_path(&second)).expect("removes");
         assert_eq!(tips(&store), [first].into_iter().collect());
@@ -1588,12 +1216,10 @@ mod tests {
     #[test]
     fn an_object_nothing_names_is_a_tip() {
         let store = Store::new(scratch("orphan"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
         let other = store
             .write(&mk_sealed(
                 None,
@@ -1601,7 +1227,7 @@ mod tests {
             ))
             .expect("writes");
         assert_eq!(tips(&store), [first, other].into_iter().collect());
-        assert_eq!(store.verify(), Vec::<String>::new());
+        assert_eq!(findings(&store), Vec::<String>::new());
         assert_eq!(store.events().expect("reads").len(), 2);
         let _ = fs::remove_dir_all(store.root());
     }
@@ -1625,9 +1251,7 @@ mod tests {
             for day in 0..crash {
                 let day = u32::try_from(day).expect("a few days") + 1;
                 written.push(
-                    store
-                        .append(mk_reopened("alpha", at(day), "bassel", "").expect("valid"), None)
-                        .expect("appends"),
+                    seal(&store, mk_reopened("alpha", at(day), "bassel", "").expect("valid")),
                 );
             }
             let day = u32::try_from(crash).expect("a few days") + 1;
@@ -1644,7 +1268,7 @@ mod tests {
             let fresh = Store::new(store.root(), roster());
             let tips = fresh.tips();
             let landed = store.object_path(&seal_hash(&next)).exists();
-            let found = store.verify();
+            let found = findings(&store);
             let _ = fs::remove_dir_all(store.root());
             prop_assert_eq!(
                 tips.expect("the tips derive"),
@@ -1690,16 +1314,12 @@ mod tests {
         #[test]
         fn verify_names_every_stray(strays in prop::collection::btree_set(a_stray(), 1..6)) {
             let store = Store::new(scratch("strays"), roster());
-            store
-                .append(mk_created("alpha", at(1), "bassel", "", "").expect("valid"), None)
-                .expect("appends");
-            let tip = store
-                .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"), None)
-                .expect("appends");
+            seal(&store, mk_created("alpha", at(1), "bassel", "", "").expect("valid"));
+            let tip = seal(&store, mk_completed("alpha", at(2), "bassel", "").expect("valid"));
             for file in &strays {
                 fs::write(store.objects_dir().join(file), "stray").expect("writes a stray");
             }
-            let found = store.verify();
+            let found = findings(&store);
             let expected: Vec<String> = strays
                 .iter()
                 .map(|file| {
@@ -1711,7 +1331,7 @@ mod tests {
                 .collect();
             let fresh = Store::new(store.root(), roster());
             let tips = fresh.tips();
-            let read = fresh.read_dag_named().map(|dag| dag.len());
+            let read = fresh.dag().map(|dag| dag.objects().len());
             let _ = fs::remove_dir_all(store.root());
             prop_assert_eq!(found, expected);
             prop_assert_eq!(tips.expect("the tips derive"), [tip].into_iter().collect::<BTreeSet<_>>());
@@ -1723,31 +1343,25 @@ mod tests {
     /// file is damaged: a fresh handle's `tips` refuses, naming the object and
     /// the command that sets it aside, and so does every append. Once it is
     /// quarantined the store answers again — the tips derive, the damaged
-    /// object's parent among them, and an append weaves them — and after that
-    /// append as before it, `verify` is clean but for the receipt,
+    /// object's parent among them, and an append writes a change over what is
+    /// held — and after that append as before it, `verify` is clean but for the receipt,
     /// which stands in for the "chain broke" the tip resting on it would be.
     /// A healthy object is not quarantined: that would be hiding it.
     #[test]
     fn after_quarantine_the_store_answers_and_verify_holds_the_receipt() {
         let store = Store::new(scratch("quarantine"), roster());
-        let first = store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let middle = store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
-        let last = store
-            .append(
-                mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        let first = seal(
+            &store,
+            mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        );
+        let middle = seal(
+            &store,
+            mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        );
+        let last = seal(
+            &store,
+            mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
+        );
         let path = store.object_path(&middle);
         let text = fs::read_to_string(&path).expect("reads");
         fs::write(&path, text.replace("alpha", "omega")).expect("damages");
@@ -1760,10 +1374,7 @@ mod tests {
             "{refusal}"
         );
         assert!(fresh
-            .append(
-                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
-                None
-            )
+            .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .is_err());
         assert!(fresh.quarantine(&first).is_err(), "a healthy object stays");
 
@@ -1787,43 +1398,19 @@ mod tests {
              from a replica, then delete this file",
             middle.as_str()
         );
-        assert_eq!(fresh.verify(), vec![receipt.clone()]);
+        assert_eq!(findings(&fresh), vec![receipt.clone()]);
         let next = fresh
-            .append(
-                mk_completed("alpha", at(4), "bassel", "").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .expect("the store writes again");
-        assert_eq!(tips(&fresh), [next.clone()].into_iter().collect());
-        let mut both = vec![first, last];
-        both.sort();
-        assert_eq!(parents_of(&fresh.load(&next).expect("loads")), both);
-        assert_eq!(fresh.verify(), vec![receipt]);
+        assert_eq!(change(&fresh, &next).genesis, first);
+        assert_eq!(change(&fresh, &next).deps, [last]);
+        assert_eq!(tips(&fresh), [first, next].into_iter().collect());
+        assert_eq!(findings(&fresh), vec![receipt]);
 
         // The repair: the object back from a replica, the receipt deleted.
         fs::write(&path, text).expect("restores");
         fs::remove_dir_all(store.root().join("quarantine")).expect("deletes the receipt");
-        assert_eq!(fresh.verify(), Vec::<String>::new());
-        let _ = fs::remove_dir_all(store.root());
-    }
-
-    #[test]
-    fn linearise_refuses_a_missing_parent_and_a_cycle() {
-        let store = Store::new(scratch("broken"), roster());
-        let event = mk_created("alpha", at(1), "bassel", "", "").expect("valid");
-        let absent = Hash::new("a".repeat(64)).expect("hex");
-        let orphaned = mk_sealed(Some(absent.clone()), event);
-        let digest = seal_hash(&orphaned);
-        let objects: BTreeMap<Hash, Envelope<Todo>> =
-            [(digest.clone(), orphaned)].into_iter().collect();
-        assert_eq!(
-            linearise(&objects).unwrap_err().to_string(),
-            format!(
-                "missing object {}, named as a parent by {}",
-                absent.as_str(),
-                digest.as_str()
-            )
-        );
+        assert_eq!(findings(&fresh), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
     }
 
@@ -1842,14 +1429,9 @@ mod tests {
         use rustix::fs::{flock, FlockOperation};
 
         let store = Store::new(scratch("locked"), roster());
-        store
-            .append(
-                mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
-                None,
-            )
-            .expect("appends");
+        store.init("locked").expect("begins");
         assert_eq!(store.lock_file(), store.root().join(".lock"));
-        assert!(store.lock_file().exists(), "the append created the lock");
+        assert!(store.lock_file().exists(), "the write created the lock");
 
         // A second exclusive holder, the way another process would be.
         let held = File::create(store.lock_file()).expect("the lock file opens");
@@ -1864,12 +1446,9 @@ mod tests {
         );
         drop(held);
         store
-            .append(
-                mk_completed("alpha", at(2), "bassel", "").expect("valid"),
-                None,
-            )
+            .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"))
             .expect("appends once the other writer let go");
-        assert_eq!(store.verify(), Vec::<String>::new());
+        assert_eq!(findings(&store), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
     }
 }
