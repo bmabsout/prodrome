@@ -71,10 +71,8 @@ pub struct Node<P> {
 impl<P: Payload> Node<P> {
     pub fn of(name: Hash, envelope: &Envelope<P>) -> Node<P> {
         let genesis = match envelope {
-            Envelope::Sealed { .. } | Envelope::Woven { .. } => None,
             Envelope::Genesis(_) => Some(name.clone()),
-            Envelope::Change(change) => Some(change.genesis.clone()),
-            Envelope::Snapshot(snapshot) => Some(snapshot.genesis.clone()),
+            other => other.genesis().cloned(),
         };
         Node {
             parents: crate::event::parents_of(envelope),
@@ -83,26 +81,6 @@ impl<P: Payload> Node<P> {
             genesis,
         }
     }
-}
-
-/// The store's read as nodes, in the linearisation's order. A change naming
-/// a legacy root is in the legacy prodrome.
-pub fn nodes_of<P: Payload>(objects: &[(Hash, Envelope<P>)]) -> Vec<Node<P>> {
-    let roots: BTreeSet<&Hash> = objects
-        .iter()
-        .filter(|(_, envelope)| matches!(envelope, Envelope::Sealed { prev: None, .. }))
-        .map(|(name, _)| name)
-        .collect();
-    objects
-        .iter()
-        .map(|(name, envelope)| {
-            let mut node = Node::of(name.clone(), envelope);
-            if node.genesis.as_ref().is_some_and(|g| roots.contains(g)) {
-                node.genesis = None;
-            }
-            node
-        })
-        .collect()
 }
 
 impl<P: Payload> Folded<P> {

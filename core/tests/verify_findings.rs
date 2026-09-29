@@ -33,6 +33,15 @@ fn store(root: &Path) -> Store {
     Store::new(root, Untrusted::of([Actor::new("triage").expect("valid")]))
 }
 
+/// What `verify` says, as the sentences a reader gets.
+fn findings(root: &Path) -> Vec<String> {
+    store(root)
+        .verify()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn name_of(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -66,7 +75,7 @@ fn a_healthy_store_has_no_finding() {
         &root,
         &mk_sealed(Some(Hash::new(genesis).expect("a name")), done),
     );
-    assert_eq!(store(&root).verify(), Vec::<String>::new());
+    assert_eq!(findings(&root), Vec::<String>::new());
 }
 
 #[test]
@@ -124,7 +133,7 @@ fn every_object_finding() {
              object from a replica, then delete this file"
         ),
     ]);
-    assert_eq!(store(&root).verify(), expected);
+    assert_eq!(findings(&root), expected);
 }
 
 #[test]
@@ -140,8 +149,8 @@ fn every_graph_finding() {
     fs::write(root.join("quarantine").join(format!("{aside}.py")), "x").expect("writes");
     write(&root, &created(Some(&aside), "bassel", 3));
 
-    let findings = store(&root).verify();
-    let graph: Vec<&String> = findings
+    let found = findings(&root);
+    let graph: Vec<&String> = found
         .iter()
         .filter(|finding| finding.starts_with("chain broke"))
         .collect();
@@ -164,7 +173,7 @@ fn the_dating_finding() {
     let genesis = write(&root, &created(None, "bassel", 5));
     let behind = write(&root, &created(Some(&genesis), "triage", 3));
     assert_eq!(
-        store(&root).verify(),
+        findings(&root),
         vec![format!(
             "untrusted event {behind} is dated 2026-09-03T12:00:00, behind its predecessor \
              (2026-09-05T12:00:00)"
@@ -178,7 +187,7 @@ fn the_unreadable_directory_findings() {
     fs::remove_dir_all(root.join("objects")).expect("rmdir");
     fs::write(root.join("objects"), "not a directory").expect("writes");
     assert_eq!(
-        store(&root).verify(),
+        findings(&root),
         vec![format!(
             "{}: Not a directory (os error 20)",
             root.join("objects").display()
@@ -188,7 +197,7 @@ fn the_unreadable_directory_findings() {
     let root = scratch("quarantine-io");
     fs::write(root.join("quarantine"), "not a directory").expect("writes");
     assert_eq!(
-        store(&root).verify(),
+        findings(&root),
         vec![format!(
             "{}: Not a directory (os error 20)",
             root.join("quarantine").display()

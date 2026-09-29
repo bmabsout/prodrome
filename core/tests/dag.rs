@@ -34,6 +34,10 @@ fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
 }
 
+fn findings_of(store: &Store) -> Vec<String> {
+    store.verify().iter().map(ToString::to_string).collect()
+}
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// One vector's objects, by name — the map the JSON keyed and the literal
@@ -141,7 +145,7 @@ fn every_dag_vector_derives_the_heads_its_old_files_named() {
             );
         }
         expected.splice(0..0, leftovers);
-        assert_eq!(store.verify(), expected, "seed {seed}: verify");
+        assert_eq!(findings_of(&store), expected, "seed {seed}: verify");
         let _ = fs::remove_dir_all(store.root());
     }
     assert!(forked > 0, "some vectors' old files named two heads");
@@ -159,9 +163,16 @@ fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
         let seed = integer(field(dag, "seed"));
         let objects = objects_of(dag);
         let store = materialise(dag);
-        let read: Vec<(Hash, prodrome::event::Envelope<Todo>)> = store
-            .read_dag_named()
-            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        let read = store.dag().unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        let read: Vec<(Hash, &prodrome::event::Envelope<Todo>)> = read
+            .linearise()
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"))
+            .into_iter()
+            .map(|name| {
+                let object = read.get(&name).expect("the order names objects");
+                (name, object)
+            })
+            .collect();
 
         let order: Vec<&str> = read.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
@@ -207,7 +218,7 @@ fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
         }
 
         let verify = strings(dag, "verify");
-        assert_eq!(store.verify(), verify, "seed {seed}: verify");
+        assert_eq!(findings_of(&store), verify, "seed {seed}: verify");
         findings += verify.len();
         let _ = fs::remove_dir_all(store.root());
     }

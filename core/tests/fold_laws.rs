@@ -36,7 +36,7 @@ use prodrome::fpl::{self, print_term, Env};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy, Untrusted};
 use prodrome::reference::{mk_authored, mk_subtodo, Todo};
-use prodrome::registers::{extend, fold, nodes_of, since, Folded, Node};
+use prodrome::registers::{extend, fold, since, Folded, Node};
 use prodrome::store::EventStore;
 use prodrome::term::Term;
 use prodrome::view;
@@ -620,7 +620,10 @@ fn diverged(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, St
 }
 
 fn nodes_from(store: &Store) -> Vec<Chain> {
-    nodes_of(&store.read_dag_named().expect("the DAG reads"))
+    store
+        .dag()
+        .and_then(|dag| dag.nodes())
+        .expect("the DAG reads")
 }
 
 fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
