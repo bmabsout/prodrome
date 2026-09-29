@@ -540,6 +540,41 @@ pub fn a_log() -> impl Strategy<Value = Vec<Event>> {
     a_schedule(0..25).prop_map(|schedule| realise(&schedule, 0))
 }
 
+/// Two writers over one history: the shared log, then each side's own, dated
+/// after it and carrying the side's note, so that no event is both sides'.
+pub fn two_writers() -> impl Strategy<Value = (Vec<Event>, Vec<Event>, Vec<Event>)> {
+    (a_schedule(0..10), a_schedule(0..8), a_schedule(0..8)).prop_map(|(shared, mine, theirs)| {
+        let noted = |drafts: &[(Draft, i64)], note: &str| -> Vec<Event> {
+            drafts
+                .iter()
+                .map(|(draft, at)| draft.at_with_note(moment(at + WINDOW), note))
+                .collect()
+        };
+        (
+            realise(&shared, 0),
+            noted(&mine, "mine"),
+            noted(&theirs, "theirs"),
+        )
+    })
+}
+
+/// A log, and what a host that retried delivers again: some of its events,
+/// in any order and any number of times.
+pub fn a_replay() -> impl Strategy<Value = (Vec<Event>, Vec<Event>)> {
+    a_log()
+        .prop_flat_map(|log| {
+            let picks = prop::collection::vec(any::<prop::sample::Index>(), 0..=log.len());
+            (Just(log), picks)
+        })
+        .prop_map(|(log, picks)| {
+            let replay = picks
+                .iter()
+                .map(|pick| log[pick.index(log.len())].clone())
+                .collect();
+            (log, replay)
+        })
+}
+
 /// [`a_log`] whose specs are [`a_spec_with_absence`]'s: records and revisions
 /// that price by `Absent`, reference todos with no function, never-seen ones
 /// and each other.
