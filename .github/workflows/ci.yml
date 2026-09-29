@@ -18,11 +18,9 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v23
       - uses: DeterminateSystems/magic-nix-cache-action@v15
       # `cargo test` over the workspace and clippy at -D warnings, both in the
-      # sandbox (checks.prodrome-core, checks.prodrome-clippy).
+      # sandbox (checks.prodrome-workspace), and every package built as a
+      # check: the wasm, and the binary the roadmap steps below link.
       - run: nix flake check --print-build-logs
-      # The browser's artefact, built purely: bindgen's glue and wasm-opt's
-      # rewrite are outside `cargo test`, so a break there shows up here.
-      - run: nix build .#prodrome-wasm --print-build-logs
       # THE ROADMAP IS DATA, ON ITS OWN BRANCH, AND THIS IS THE CHECK THAT THE
       # CODE STILL READS IT. The binary is built from this commit and pointed at
       # the `roadmap-data` branch: `verify` says every object rehashes to its
