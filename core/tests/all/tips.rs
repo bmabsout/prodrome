@@ -18,7 +18,7 @@
 //!
 //! §9.17 b, that two writers' unioned directories FOLD as the Prodrome's own
 //! replica merge does, is about folds and lives with them in
-//! `tests/fold_laws.rs`; §9.17's "no stored byte moves" is `tests/dag.rs`.
+//! `tests/all/fold_laws.rs`; §9.17's "no stored byte moves" is `tests/all/dag.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

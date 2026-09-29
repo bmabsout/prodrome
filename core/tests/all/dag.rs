@@ -10,7 +10,7 @@
 //! writer's `HEAD` and `refs/` named; that the objects alone derive them is
 //! SPEC §9.17, and the second test lays those files out too and says so.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

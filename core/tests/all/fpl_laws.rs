@@ -21,7 +21,7 @@
 //! And law 26: `Least` is a semilattice with `Absent` as its identity; the
 //! generators draw it, so every law above covers it.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 

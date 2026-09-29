@@ -9,7 +9,7 @@
 //! synthetic corpus of `common::corpus()`, read here through `literal::Open` —
 //! the vocabulary that admits any constructor name in keyword form — because
 //! this file is testing §2 and nothing else. The same objects go through the
-//! CLOSED vocabulary of §4, as typed events, in `tests/events.rs`.
+//! CLOSED vocabulary of §4, as typed events, in `tests/all/events.rs`.
 //!
 //! The refusals are the other half of the law: §2 says parsing admits exactly
 //! this grammar, so what a stranger needs to see is the shape of what it turns
@@ -19,7 +19,7 @@
 //! a reader deciding whether the parser is a security boundary should be able
 //! to read the attacks it was written against.
 
-mod common;
+use crate::common;
 
 use prodrome::event::{canonical_envelope, seal_hash};
 use prodrome::literal::{parse_literal, print_literal, Open};
@@ -121,7 +121,7 @@ const NORMALISED: &[(&str, &str)] = &[
 ];
 
 /// What §2 does NOT admit. Every one of these is a refusal — never a crash,
-/// which `tests/fuzz.rs` states as a property over arbitrary text.
+/// which `tests/all/fuzz.rs` states as a property over arbitrary text.
 const REFUSED: &[&str] = &[
     // Not expressions of the grammar at all.
     "",

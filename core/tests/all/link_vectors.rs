@@ -3,7 +3,7 @@
 //! 1e-9, and the refusals — an unknown todo and a loop. Written by hand from
 //! the laws in `fpl_laws.rs`, and frozen like every other vector.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 
