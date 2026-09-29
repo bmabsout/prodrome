@@ -47,10 +47,8 @@ jobs:
           ref: roadmap-data
           path: data
           persist-credentials: false
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
       - run: nix build ./code#prodrome-cli -o result-cli --print-build-logs
 
       # The prompt is assembled from files, and the issue's text only ever
@@ -147,10 +145,8 @@ jobs:
         with:
           ref: roadmap-data
           path: data
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
       - run: nix build ./code#prodrome-cli -o result-cli --print-build-logs
       - run: nix build ./code#prodrome-github -o result-github --print-build-logs
 
