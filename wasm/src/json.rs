@@ -242,7 +242,7 @@ mod tests {
                         "Cancelled" => Outcome::Cancelled(at),
                         other => panic!("unknown env kind {other:?}"),
                     };
-                    (name.clone(), outcome)
+                    (name.clone(), [Some(outcome)].into())
                 })
                 .collect(),
             tended: Default::default(),

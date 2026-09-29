@@ -30,7 +30,7 @@ fn env_of(bounds: &[Value]) -> Env {
                     "Cancelled" => Outcome::Cancelled(at),
                     other => panic!("unknown env kind {other:?}"),
                 };
-                (text_at(bound, "todo").to_owned(), outcome)
+                (text_at(bound, "todo").to_owned(), [Some(outcome)].into())
             })
             .collect(),
         ..Env::new()

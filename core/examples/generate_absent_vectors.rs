@@ -113,6 +113,7 @@ fn bounds(env: &Env) -> Value {
     Value::Tuple(
         env.outcomes
             .iter()
+            .flat_map(|(todo, candidates)| candidates.iter().flatten().map(move |o| (todo, o)))
             .map(|(todo, outcome)| {
                 let kind = match outcome {
                     Outcome::Completed(_) => "Completed",

@@ -17,6 +17,7 @@ pub mod vectors;
 #[path = "terms.rs"]
 pub mod terms;
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{Duration, NaiveDate};
@@ -139,7 +140,7 @@ pub fn reading(path: &str, mine: Option<f64>, theirs: &Value) -> Result<(), Stri
 
 use prodrome::event::{
     mk_cancelled, mk_completed, mk_created, mk_reopened, mk_sealed, mk_spec_revised, mk_tended,
-    mk_woven, seal_hash, Envelope, Hash, TodoEvent,
+    mk_woven, seal_hash, Authored, Envelope, Hash, TodoEvent, TodoId,
 };
 use prodrome::fpl::{self, mk_conj, mk_decay, mk_flat, mk_piecewise, mk_within, Instant};
 use prodrome::literal::Datetime;
@@ -565,6 +566,66 @@ pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {
     nodes
 }
 
+/// A log's one prodrome, folded from the chain its writer built.
+pub fn prodrome_of(log: &[Event]) -> prodrome::registers::Prodrome<Todo> {
+    let state = prodrome::registers::fold(&chain_of(log));
+    state
+        .prodromes()
+        .values()
+        .next()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// §6.1 over a log, read as its chain.
+pub fn env_at(
+    log: &[Event],
+    t: Datetime,
+    policy: &impl prodrome::policy::Policy<Todo>,
+) -> prodrome::fpl::Env {
+    prodrome::fold::env(&prodrome_of(log), fpl::instant_of(t), policy)
+}
+
+/// A chain's one candidate per todo.
+fn only<T>(map: BTreeMap<TodoId, Vec<T>>) -> BTreeMap<TodoId, T> {
+    map.into_iter()
+        .map(|(todo, mut candidates)| {
+            assert_eq!(candidates.len(), 1, "a chain has one candidate");
+            (todo, candidates.remove(0))
+        })
+        .collect()
+}
+
+/// §6.2 over a log, read as its chain.
+pub fn specs_at(
+    log: &[Event],
+    t: Datetime,
+    policy: &impl prodrome::policy::Policy<Todo>,
+) -> BTreeMap<TodoId, Term> {
+    only(prodrome::fold::specs(
+        &prodrome_of(log),
+        fpl::instant_of(t),
+        policy,
+    ))
+}
+
+/// §6.3 over a log, read as its chain.
+pub fn authored_at(log: &[Event], t: Datetime) -> BTreeMap<TodoId, Authored<Todo>> {
+    only(prodrome::fold::content(
+        &prodrome_of(log),
+        fpl::instant_of(t),
+    ))
+}
+
+/// §6.4 over a log, read as its chain.
+pub fn flatten(
+    log: &[Event],
+    t: Datetime,
+    policy: &impl prodrome::policy::Policy<Todo>,
+) -> Result<BTreeMap<TodoId, Term>, prodrome::fpl::FplError> {
+    prodrome::fold::flatten(&prodrome_of(log), fpl::instant_of(t), policy)
+}
+
 /// One §6.7 entry as the vector grammar's `Row(...)`.
 ///
 /// THE SAME TEN FIELDS `prodrome-wasm`'s `wire::json_entry` puts on the wire,
@@ -596,7 +657,6 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
             )
         })
         .collect();
-    let optional = |text: Option<String>| text.map_or(Value::None, Value::Str);
     Value::call(
         "Row",
         vec![
@@ -604,9 +664,9 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
                 "todo".to_owned(),
                 Value::Str(entry.todo.as_str().to_owned()),
             ),
-            ("state".to_owned(), Value::Str(entry.state().to_owned())),
+            ("state".to_owned(), Value::Str(entry.state())),
             ("at".to_owned(), Value::Str(entry.at())),
-            ("claimed".to_owned(), Value::Str(entry.claimed().to_owned())),
+            ("claimed".to_owned(), Value::Str(entry.claimed())),
             (
                 "value".to_owned(),
                 match entry.value() {
@@ -622,7 +682,15 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
             ("conflicts".to_owned(), Value::Tuple(conflicts)),
             (
                 "content".to_owned(),
-                optional(entry.content.as_ref().map(|h| h.as_str().to_owned())),
+                match &entry.content[..] {
+                    [] => Value::None,
+                    [one] => Value::Str(one.as_str().to_owned()),
+                    many => Value::Tuple(
+                        many.iter()
+                            .map(|name| Value::Str(name.as_str().to_owned()))
+                            .collect(),
+                    ),
+                },
             ),
             ("spec".to_owned(), Value::Str(fpl::print_term(entry.spec()))),
             (

@@ -55,9 +55,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent, TodoId};
+use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent};
+use prodrome::fold;
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Instant};
 use prodrome::literal::Datetime;
+use prodrome::policy::Policy;
 use prodrome::registers;
 use prodrome::store::{linearise, tips_of};
 use serde_json::{json, Value};
@@ -70,9 +72,9 @@ mod snapshot;
 mod wire;
 
 use wire::{
-    json_content, json_entry, json_env, json_marker, json_record, json_tended, json_terms, object,
-    parse_closed, parse_env, parse_instant, parse_moment, parse_objects, parse_specs, parse_term,
-    parse_untrusted, strings, History, ObjectIn, Refusal,
+    json_binding, json_candidates, json_entry, json_env, json_marker, json_record, json_tended,
+    json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_objects,
+    parse_specs, parse_term, parse_untrusted, strings, History, ObjectIn, Refusal,
 };
 
 /// THE RECORD SHAPE THIS MODULE WAS BUILT WITH.
@@ -468,46 +470,53 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     let moment = read
         .moment(parse_moment("at", at).map_err(refused)?)
         .map_err(refused)?;
-    let events = read.events();
-
-    let env = prodrome::fold::env_at(&events, moment, &policy);
-    let specs = prodrome::fold::specs_at(&events, moment, &policy);
-    let content = prodrome::fold::authored_at(&events, moment);
-    let flat = prodrome::fold::flatten(&events, moment, &policy).map_err(|e| refused(e.0))?;
-    let known: BTreeSet<&TodoId> = events.iter().map(TodoEvent::todo).collect();
+    let state = registers::fold(&read.nodes());
+    let now = instant_of(moment);
+    let mut env = prodrome::fpl::Env::new();
+    let (mut specs, mut content, mut flat) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+    for prodrome in state.prodromes().values() {
+        let one = fold::env(prodrome, now, &policy);
+        env.outcomes.extend(one.outcomes);
+        env.tended.extend(one.tended);
+        specs.extend(fold::specs(prodrome, now, &policy));
+        content.extend(fold::content(prodrome, now));
+        flat.extend(fold::flatten(prodrome, now, &policy).map_err(|e| refused(e.0))?);
+    }
     let functions = Value::Object(
-        prodrome::fold::link_specs(&flat, known)
+        fold::link_specs(&flat, state.todos().map(|(todo, _)| todo))
             .into_iter()
             .map(|(todo, term)| (todo, crate::json::to_json(&term)))
             .collect(),
     );
-    let past = prodrome::fold::history(&events, &policy);
 
-    let bindings = Value::Object(
-        past.bindings()
-            .iter()
-            .map(|(todo, timeline)| {
-                (
-                    todo.as_str().to_owned(),
-                    Value::Array(
-                        timeline
-                            .iter()
-                            .map(|(at, binding)| {
-                                json!({
-                                    "at": iso(*at),
-                                    "binding": binding.map_or(Value::Null, |b| json!({
-                                        "kind": b.kind(),
-                                        "at": iso(b.at()),
-                                    })),
-                                })
-                            })
-                            .collect(),
-                    ),
-                )
-            })
-            .collect(),
-    );
-    let history = json!({ "bindings": bindings, "tended": json_tended(past.tended()) });
+    // Each todo's binding writes in causal order, `null` where a `Reopened`
+    // cleared it, and every binding tending: what `series_knots` reads back.
+    let mut bindings = serde_json::Map::new();
+    let mut tended = BTreeMap::new();
+    for (todo, stream) in state.todos() {
+        let mut timeline = Vec::new();
+        for stamp in stream.iter().filter(|s| policy.standing(&s.event).binds()) {
+            for write in fold::Write::of(&stamp.event) {
+                match write {
+                    fold::Write::State(binding) => timeline.push(json!({
+                        "at": iso(instant_of(stamp.event.at())),
+                        "binding": binding.map_or(Value::Null, json_binding),
+                    })),
+                    fold::Write::Tend(at) => {
+                        tended
+                            .entry(todo.as_str().to_owned())
+                            .or_insert_with(BTreeSet::new)
+                            .insert(at);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !timeline.is_empty() {
+            bindings.insert(todo.as_str().to_owned(), Value::Array(timeline));
+        }
+    }
+    let history = json!({ "bindings": bindings, "tended": json_tended(&tended) });
     let stream = Value::Object(
         read.streams()
             .iter()
@@ -528,8 +537,8 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     printed(&object(vec![
         ("at", Value::String(iso(instant_of(moment)))),
         ("env", json_env(&env)),
-        ("specs", json_terms(&specs)),
-        ("content", json_content(&content)),
+        ("specs", json_candidates(&specs, crate::json::to_json)),
+        ("content", json_candidates(&content, json_record)),
         ("flatten", json_terms(&flat)),
         ("functions", functions),
         ("history", history),
@@ -553,30 +562,23 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
         .map(datetime_of)
         .transpose()
         .map_err(|e| refused(format!("at: {e}")))?;
-    let state = registers::fold(&read.nodes(), moment, &policy);
+    let state = registers::fold(&read.nodes());
     let conflicts = Value::Object(
-        registers::conflicts_of(&state)
-            .iter()
-            .map(|(todo, by_kind)| {
-                (
-                    todo.as_str().to_owned(),
-                    Value::Object(
-                        by_kind
-                            .iter()
-                            .map(|(kind, frontier)| {
-                                (
-                                    kind.as_str().to_owned(),
-                                    strings(
-                                        frontier
-                                            .writes()
-                                            .iter()
-                                            .map(|write| write.at.as_str().to_owned()),
-                                    ),
-                                )
-                            })
-                            .collect(),
-                    ),
-                )
+        state
+            .todos()
+            .filter_map(|(todo, stream)| {
+                let found =
+                    fold::Registers::read(stream, moment.map(instant_of), &policy).conflicts();
+                (!found.is_empty()).then(|| {
+                    let by_kind = found
+                        .into_iter()
+                        .map(|(kind, names)| {
+                            let names = names.iter().map(|name| name.as_str().to_owned());
+                            (kind.as_str().to_owned(), strings(names))
+                        })
+                        .collect();
+                    (todo.as_str().to_owned(), Value::Object(by_kind))
+                })
             })
             .collect(),
     );
@@ -624,7 +626,7 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
     listed.sort_by(|a, b| prodrome::view::list_order(a, b));
     let records: serde_json::Map<String, Value> = rows
         .iter()
-        .filter_map(|row| row.content.as_ref())
+        .flat_map(|row| &row.content)
         .filter_map(|name| match read.objects[name].event() {
             Some(TodoEvent::Authored(record)) => {
                 Some((name.as_str().to_owned(), json_record(record)))
