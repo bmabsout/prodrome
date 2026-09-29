@@ -109,23 +109,25 @@
         # version compiled into both, so a drift is a loud failure at bindgen
         # time, and pinning only one of them would make that failure a
         # `nix flake update` away.
-        wasmArgs = common // {
+        wasmArgs = profile: common // {
           src = rustSrc [ ./core/src ./wasm/src ];
           nativeBuildInputs = [ pkgs.lld ];
           doCheck = false;
           buildPhaseCargoCommand = ''
             cargo build --offline --frozen \
-              --profile wasm-release --target wasm32-unknown-unknown -p prodrome-wasm
+              --profile ${profile} --target wasm32-unknown-unknown -p prodrome-wasm
           '';
         };
 
+        bindgen = pkgs.wasm-bindgen-cli_0_2_127;
+
         prodrome-wasm =
           let
-            bindgen = pkgs.wasm-bindgen-cli_0_2_127;
+            wasmArgs' = wasmArgs "wasm-release";
           in
-          craneLib.mkCargoDerivation (wasmArgs // {
+          craneLib.mkCargoDerivation (wasmArgs' // {
             pname = "prodrome-wasm";
-            cargoArtifacts = craneLib.buildDepsOnly (wasmArgs // { pname = "prodrome-wasm"; });
+            cargoArtifacts = craneLib.buildDepsOnly (wasmArgs' // { pname = "prodrome-wasm"; });
 
             nativeBuildInputs = [
               pkgs.lld
@@ -162,6 +164,25 @@
               license = with lib.licenses; [ mit asl20 ];
             };
           });
+
+        # THE CORE FOR THE BROWSER, AS A CHECK: that it compiles for wasm32
+        # and that bindgen makes both glues of it, in the dev profile, with no
+        # wasm-opt. Fat LTO and one codegen unit buy the published module its
+        # size and cost the check most of its time; they are the published
+        # package's concern, and Pages builds that. No wasm32 artefact is
+        # shared with `prodrome-wasm`: cargo keeps each profile's apart.
+        prodrome-wasm-check = craneLib.mkCargoDerivation (wasmArgs "dev" // {
+          pname = "prodrome-wasm-check";
+          cargoArtifacts = craneLib.buildDepsOnly (wasmArgs "dev" // { pname = "prodrome-wasm-check"; });
+          nativeBuildInputs = [ pkgs.lld bindgen ];
+          doInstallCargoArtifacts = false;
+          installPhaseCommand = ''
+            for target in web nodejs; do
+              wasm-bindgen --target "$target" --out-dir "$out/$target" --out-name prodrome \
+                target/wasm32-unknown-unknown/debug/prodrome_wasm.wasm
+            done
+          '';
+        });
 
         # TYPST FOR THE BROWSER (`nix build .#prodrome-typst-wasm`) — an
         # OPTIONAL EXTRA, outside the core's workspace and its lock file.
@@ -236,8 +257,8 @@
         # TypeScript typechecked by nixpkgs' `tsc` and bundled by its
         # `esbuild`, so nothing comes from npm; `viewer/build.sh` is the whole
         # recipe, and `viewer/assemble.sh` puts a store's objects beside it.
-        prodrome-viewer = pkgs.stdenv.mkDerivation {
-          pname = "prodrome-viewer";
+        viewer = { pname, wasm }: pkgs.stdenv.mkDerivation {
+          inherit pname;
           version = "0.1.0";
           src = lib.fileset.toSource {
             root = ./.;
@@ -246,7 +267,7 @@
           nativeBuildInputs = [ pkgs.esbuild pkgs.typescript ];
           buildPhase = ''
             runHook preBuild
-            sh viewer/build.sh "$out" ${prodrome-wasm}/web ${prodrome-typst-wasm}/web \
+            sh viewer/build.sh "$out" ${wasm}/web ${prodrome-typst-wasm}/web \
               ${pkgs.libertinus}/share/fonts ${pkgs.source-serif}/share/fonts
             runHook postBuild
           '';
@@ -256,6 +277,8 @@
             license = with lib.licenses; [ mit asl20 ];
           };
         };
+
+        prodrome-viewer = viewer { pname = "prodrome-viewer"; wasm = prodrome-wasm; };
 
         # THE CORE AND THE CLI IN RELEASE, COMPILED ONCE. `prodrome-github`
         # links the same two crates with the same features, so both packages
@@ -366,7 +389,11 @@
             grep -q '<svg' item.html
             touch $out
           '';
-          inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-viewer;
+          # The wasm and the viewer as checks are the cheap wasm build: the
+          # published pair differs only in the profile and in wasm-opt.
+          prodrome-wasm = prodrome-wasm-check;
+          prodrome-viewer = viewer { pname = "prodrome-viewer-check"; wasm = prodrome-wasm-check; };
+          inherit prodrome-cli prodrome-github prodrome-typst-wasm;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's
