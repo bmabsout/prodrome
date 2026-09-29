@@ -36,7 +36,7 @@ use prodrome::fpl::{self, print_term, Env};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy, Untrusted};
 use prodrome::reference::{mk_authored, mk_subtodo, Todo};
-use prodrome::registers::{extend, fold, nodes_of, since, Folded, Node};
+use prodrome::registers::{extend, fold, since, Folded, Node};
 use prodrome::store::EventStore;
 use prodrome::term::Term;
 use prodrome::view;
@@ -44,7 +44,7 @@ use proptest::prelude::*;
 
 use common::{
     a_draft, a_log, a_log_with_absence, a_schedule, authored_at, chain_of, env_at, far, flatten,
-    moment, realise, specs_at, Draft, TODOS, WINDOW,
+    moment, realise, seal, specs_at, Draft, TODOS, WINDOW,
 };
 
 /// These laws are about the FOLDS, not about a record's fields, so the payload
@@ -601,17 +601,17 @@ fn diverged(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, St
     let guard = Replicas(root.clone());
     let here = Store::new(root.join("here"), roster());
     for event in shared {
-        here.append(event.clone(), None).expect("appends");
+        seal(&here, event.clone());
     }
     let there = Store::new(root.join("there"), roster());
     for tip in here.tips().expect("the tips derive") {
         there.adopt(&here, &tip).expect("adopts");
     }
     for event in mine {
-        here.append(event.clone(), None).expect("appends");
+        seal(&here, event.clone());
     }
     for event in theirs {
-        there.append(event.clone(), None).expect("appends");
+        seal(&there, event.clone());
     }
     for tip in there.tips().expect("the tips derive") {
         here.adopt(&there, &tip).expect("adopts");
@@ -620,7 +620,10 @@ fn diverged(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, St
 }
 
 fn nodes_from(store: &Store) -> Vec<Chain> {
-    nodes_of(&store.read_dag_named().expect("the DAG reads"))
+    store
+        .dag()
+        .and_then(|dag| dag.nodes())
+        .expect("the DAG reads")
 }
 
 fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
@@ -739,7 +742,7 @@ proptest! {
                 "a merge carries no write and settles nothing"
             );
             let settle = mk_completed("alpha", far(), "bassel", "settled").expect("valid");
-            store.append(settle, None).expect("appends");
+            seal(&store, settle);
             let alpha = TodoId::new("alpha").expect("valid");
             let mut left = expected;
             left.remove(&(Kind::State, alpha));
@@ -953,7 +956,7 @@ proptest! {
         let before = nodes_from(&store);
         let claim = claim.at(moment(when));
         let todo = claim.todo().clone();
-        store.append(claim, None).expect("appends over every tip");
+        seal(&store, claim);
         let after = nodes_from(&store);
         let (mut was, is) = (frontiers(&before), frontiers(&after));
         was.entry(todo.clone()).or_insert_with(|| [vec![], vec![], vec![]]);
@@ -1037,15 +1040,15 @@ fn clones(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, Stor
     let guard = Replicas(root.clone());
     let here = Store::new(root.join("here"), roster());
     for event in shared {
-        here.append(event.clone(), None).expect("appends");
+        seal(&here, event.clone());
     }
     let there = Store::new(root.join("there"), roster());
     copy_files(&here, there.root());
     for event in mine {
-        here.append(event.clone(), None).expect("appends");
+        seal(&here, event.clone());
     }
     for event in theirs {
-        there.append(event.clone(), None).expect("appends");
+        seal(&there, event.clone());
     }
     (guard, here, there)
 }
@@ -1093,7 +1096,7 @@ proptest! {
 
         if unioned.tips().expect("derives").len() > 1 {
             let settle = mk_completed("alpha", far(), "bassel", "settled").expect("valid");
-            let woven = unioned.append(settle.clone(), None).expect("weaves");
+            let woven = seal(&unioned, settle.clone());
             prop_assert_eq!(unioned.tips().expect("derives"), [woven.clone()].into_iter().collect());
             let named: Vec<prodrome::event::Hash> =
                 adopted.tips().expect("derives").into_iter().collect();

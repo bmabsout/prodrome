@@ -35,7 +35,7 @@ use prodrome::literal::{parse_literal, Call, Datetime, Table, Value};
 /// crate, and `Signature::Fields` throughout, so a field order is checked
 /// rather than assumed.
 pub const VECTORS: Table = Table(&[
-    // --- the seven roots ----------------------------------------------------
+    // --- the eight roots ----------------------------------------------------
     ("Folds", &["logs"]),
     ("Dags", &["dags"]),
     ("Fpl", &["terms"]),
@@ -43,6 +43,7 @@ pub const VECTORS: Table = Table(&[
     ("View", &["policy", "untrusted", "cases"]),
     ("Links", &["specs", "env", "cases"]),
     ("Recurs", &["untrusted", "events", "at", "cases"]),
+    ("Changes", &["cases"]),
     // --- one case of each ---------------------------------------------------
     (
         "FoldCase",
@@ -92,6 +93,13 @@ pub const VECTORS: Table = Table(&[
     ("LinkCase", &["term", "linked", "samples", "refused"]),
     // A term that reads the tendings, and its readings against them.
     ("RecurCase", &["term", "samples"]),
+    // A store of changes: what it starts from, what is written, and what it reads.
+    (
+        "ChangeCase",
+        &[
+            "name", "dag", "base", "steps", "objects", "verify", "at", "prices",
+        ],
+    ),
     // --- what a case is made of ---------------------------------------------
     // One todo's outcome: §6.1's environment as a tuple instead of a map.
     ("Bound", &["todo", "kind", "at"]),
@@ -112,6 +120,10 @@ pub const VECTORS: Table = Table(&[
     // Why a term does not link: `unknown` with the todo, or `cycle` with the
     // loop, its first todo repeated at the end.
     ("Refused", &["kind", "todos"]),
+    // One write to a store, as the handle writing into `genesis` does it.
+    ("Step", &["op", "genesis", "event", "answer", "writes"]),
+    // One todo's state and value, in its prodrome.
+    ("Price", &["genesis", "todo", "state", "value"]),
     // One `fulfillment` sample: the moment and the number.
     ("Sample", &["now", "value"]),
     // One knot of a series (§7 breakpoints).

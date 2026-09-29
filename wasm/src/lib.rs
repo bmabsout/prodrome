@@ -32,11 +32,10 @@
 //! | `link`           | §7.2: every ref in a term bound to the todo it names     |
 //! | `term_json`      | §2 → §7: a stored term's print, as the JSON shape above  |
 //!
-//! `store` is not reachable from here except for [`prodrome::store::linearise`] and
-//! [`prodrome::store::tips_of`], which are pure: the rest of that module is
-//! file-backed and a browser has no `events/` directory. The objects arrive over
-//! `/api/chain` instead, and [`verify_objects`] is `EventStore::verify`'s
-//! findings asked of a set in memory.
+//! `store` is file-backed and a browser has no `events/` directory, so the
+//! objects arrive over `/api/chain` instead and are read as a
+//! [`prodrome::dag::Dag`]: [`verify_objects`] is its findings, asked of a set
+//! in memory.
 //!
 //! NO CLOCK, anywhere below. §1 forbids one in the core, and a browser's clock
 //! is the least trustworthy in the system; every moment is an argument — the
@@ -55,13 +54,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use prodrome::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent};
+use prodrome::dag::{Dag, Finding, Unread};
+use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
 use prodrome::fold;
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Instant};
 use prodrome::literal::Datetime;
-use prodrome::policy::Policy;
+use prodrome::policy::{Everything, Policy};
 use prodrome::registers;
-use prodrome::store::{linearise, tips_of};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
@@ -156,6 +155,13 @@ impl Row {
         self.hash == self.computed
     }
 
+    fn tampered(&self) -> String {
+        format!(
+            "does not hash to its own name — this browser computed {}",
+            self.computed
+        )
+    }
+
     /// The four fields `json_link` puts on the wire, read from the object's own
     /// bytes; an object with no event leaves them "" and is kinded by its name.
     fn describe(&mut self, envelope: &Object) {
@@ -190,30 +196,15 @@ impl Row {
 /// §3's `verify`, for the set of objects a browser was handed.
 ///
 /// `objects` is `[{hash, text}]` — every object's claimed name beside the exact
-/// canonical print that name is a hash of. The TIPS ARE DERIVED from them
-/// (`prodrome::store::tips_of` over the objects that verified), exactly as a
-/// store derives its own, and the answer's `tips` is that set: nobody has to
+/// canonical print that name is a hash of. They are read as one
+/// [`prodrome::dag::Dag`], and the answer's `tips` are its tips: nobody has to
 /// tell a replica where its heads are.
 ///
-/// What is checked is `EventStore::verify`'s list, less the findings that are
-/// about a DIRECTORY and cannot be asked of a set in memory (a file that will
-/// not read, a `HEAD` or `refs/` left from before tips were derived):
-///
-/// 1. every object rehashes to the name it claims;
-/// 2. every object PARSES as an envelope — which the SubtleCrypto path never
-///    could, so a malformed `Woven` or an unknown constructor is now caught in
-///    the tab;
-/// 3. the walk from every tip, over the parents the objects THEMSELVES name,
-///    reaches genesis without a gap;
-/// 4. no cycle, and the objects go into one causal order (`linearise`);
-/// 5. nothing sent is left off that walk — which, with derived tips, only an
-///    object that failed 1 or 2 (and so names no parents anybody can read)
-///    or one caught in a cycle can be.
-///
-/// Each finding's wording is the store's where the store has one and
-/// a page's own where the page already had one, so the sentence a
-/// reader gets does not depend on which checker produced it — only the line
-/// that says which one ran does.
+/// The findings are the `Dag`'s, less the ones about a DIRECTORY, which a set
+/// in memory has none of. A page's own wording stands where it had one: an
+/// object whose bytes do not hash to its name, and a parent that was not sent.
+/// The walk from the tips gives each row its depth, and what it does not
+/// reach (only an object that is not one, or one caught in a cycle) is said.
 #[wasm_bindgen]
 pub fn verify_objects(objects: &str) -> Result<String, JsError> {
     let sent = parse_objects(objects).map_err(refused)?;
@@ -221,41 +212,48 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
     let mut problems: Vec<String> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
     let mut index: BTreeMap<String, usize> = BTreeMap::new();
-    let mut parsed: BTreeMap<Hash, Object> = BTreeMap::new();
-
+    let mut prints = Vec::new();
     for ObjectIn { hash, text } in &sent {
         if index.contains_key(hash) {
             problems.push(format!("object {hash} was sent twice"));
             continue;
         }
+        index.insert(hash.clone(), rows.len());
         let mut row = Row::blank(hash.clone(), name_of(text));
-        // The store's order: the bytes first, then the grammar. Reporting a
-        // parse failure for a tampered object would name the wrong fault.
-        if !row.hash_ok() {
-            row.problem = format!(
-                "does not hash to its own name — this browser computed {}",
-                row.computed
-            );
-            problems.push(format!("object {hash} {}", row.problem));
-        } else {
-            match parse_envelope(text) {
-                Ok(envelope) => {
-                    row.describe(&envelope);
-                    if let Ok(name) = Hash::new(hash.clone()) {
-                        parsed.insert(name, envelope);
-                    }
-                }
-                Err(error) => {
-                    row.problem = format!("failed to parse: {error}");
-                    problems.push(format!("object {hash} {}", row.problem));
-                }
+        match Hash::new(hash.clone()) {
+            Ok(name) => prints.push((name, Ok(text.as_bytes().to_vec()))),
+            Err(_) => {
+                row.problem = row.tampered();
+                problems.push(format!("object {hash} {}", row.problem));
             }
         }
-        index.insert(hash.clone(), rows.len());
         rows.push(row);
     }
+    let dag: Dag<Record> = Dag::from_prints(prints);
+    for (name, object) in dag.objects() {
+        rows[index[name.as_str()]].describe(object);
+    }
+    for finding in dag.verify(&Everything) {
+        match finding {
+            Finding::Unread { name, why } => {
+                let row = &mut rows[index[name.as_str()]];
+                row.problem = match why {
+                    Unread::Tampered(_) => row.tampered(),
+                    _ => format!("failed to parse: {}", why.refusal(&name)),
+                };
+                problems.push(format!("object {} {}", name.as_str(), row.problem));
+            }
+            Finding::Broken { at, why: None } => problems.push(format!(
+                "object {} is named as a parent but was not sent",
+                at.as_str()
+            )),
+            Finding::Broken { .. } => {}
+            other => problems.push(other.to_string()),
+        }
+    }
 
-    let tips: Vec<String> = tips_of(&parsed)
+    let tips: Vec<String> = dag
+        .tips()
         .into_iter()
         .map(|tip| tip.as_str().to_owned())
         .collect();
@@ -269,16 +267,9 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
     while cursor < queue.len() {
         let (name, depth) = queue[cursor].clone();
         cursor += 1;
-        if seen.contains(&name) {
-            continue;
-        }
-        let Some(at) = index.get(&name).copied() else {
-            problems.push(format!(
-                "object {name} is named as a parent but was not sent"
-            ));
+        let Some(at) = index.get(&name).copied().filter(|_| seen.insert(name)) else {
             continue;
         };
-        seen.insert(name);
         rows[at].reachable = true;
         rows[at].depth = Some(depth);
         order.push(at);
@@ -302,21 +293,12 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
         );
     }
 
-    // The causal order, from the core's own `linearise` — which is also where a
-    // cycle is found. Asked only when every named parent is present: its
-    // missing-object refusal would otherwise repeat, in different words, what
-    // the walk above already reported.
-    let complete = parsed
-        .values()
-        .flat_map(parents_of)
-        .all(|parent| parsed.contains_key(&parent));
-    let mut linearisation: Vec<String> = Vec::new();
-    if complete {
-        match linearise(&parsed) {
-            Ok(names) => linearisation = names.iter().map(|n| n.as_str().to_owned()).collect(),
-            Err(error) => problems.push(error.to_string()),
-        }
-    }
+    let linearisation: Vec<String> = dag
+        .linearise()
+        .unwrap_or_default()
+        .iter()
+        .map(|name| name.as_str().to_owned())
+        .collect();
 
     let orphans: Vec<usize> = (0..rows.len()).filter(|at| !rows[*at].reachable).collect();
     for at in &orphans {
@@ -355,48 +337,43 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
 /// question each is asked: one is "is this store healthy", whose answer is a
 /// list of findings; the other is "what does this store believe", which has no
 /// honest answer over objects that do not hash to their names.
-/// `EventStore::read_dag_named` draws the same line, in the same words.
+/// `EventStore::dag` draws the same line.
 struct Read {
-    order: Vec<Hash>,
-    objects: BTreeMap<Hash, Object>,
+    dag: Dag<Record>,
+    nodes: Vec<Node>,
 }
 
 impl Read {
     fn of(objects: &str) -> Result<Read, Refusal> {
-        let sent = parse_objects(objects)?;
-        let mut parsed: BTreeMap<Hash, Object> = BTreeMap::new();
-        for ObjectIn { hash, text } in &sent {
-            if name_of(text) != *hash {
-                return Err(format!(
-                    "object {hash} does not hash to its own name (tampered/corrupt)"
-                ));
-            }
-            let name = Hash::new(hash.clone()).map_err(|e| format!("object {hash}: {e}"))?;
-            let envelope =
-                parse_envelope(text).map_err(|e| format!("object {hash} failed to parse: {e}"))?;
-            parsed.insert(name, envelope);
+        let mut prints = Vec::new();
+        for ObjectIn { hash, text } in parse_objects(objects)? {
+            let tampered =
+                || format!("object {hash} does not hash to its own name (tampered/corrupt)");
+            let name = Hash::new(hash.clone()).map_err(|_| tampered())?;
+            prints.push((name, Ok(text.into_bytes())));
         }
-        let order = linearise(&parsed).map_err(|e| e.to_string())?;
-        Ok(Read {
-            order,
-            objects: parsed,
-        })
+        let dag = Dag::from_prints(prints);
+        if let Some((name, why)) = dag.unread().iter().next() {
+            return Err(match why {
+                Unread::Tampered(_) => format!(
+                    "object {} does not hash to its own name (tampered/corrupt)",
+                    name.as_str()
+                ),
+                _ => format!(
+                    "object {} failed to parse: {}",
+                    name.as_str(),
+                    why.refusal(name)
+                ),
+            });
+        }
+        let nodes = dag.nodes().map_err(|e| e.to_string())?;
+        Ok(Read { dag, nodes })
     }
 
     /// The events, in the linearisation's order — merges dropped, since a
     /// merge is structure and carries no event to fold.
-    fn events(&self) -> Vec<Event> {
-        self.order
-            .iter()
-            .filter_map(|name| self.objects[name].event().cloned())
-            .collect()
-    }
-
-    fn nodes(&self) -> Vec<Node> {
-        self.order
-            .iter()
-            .map(|name| Node::of(name.clone(), &self.objects[name]))
-            .collect()
+    fn events(&self) -> impl Iterator<Item = &Event> {
+        self.nodes.iter().filter_map(|node| node.event.as_ref())
     }
 
     /// Per todo, its events in causal order with the object that carries each —
@@ -404,11 +381,11 @@ impl Read {
     /// one pass.
     fn streams(&self) -> BTreeMap<String, Vec<(Hash, Event)>> {
         let mut out: BTreeMap<String, Vec<(Hash, Event)>> = BTreeMap::new();
-        for name in &self.order {
-            if let Some(event) = self.objects[name].event() {
+        for node in &self.nodes {
+            if let Some(event) = &node.event {
                 out.entry(event.todo().as_str().to_owned())
                     .or_default()
-                    .push((name.clone(), event.clone()));
+                    .push((node.name.clone(), event.clone()));
             }
         }
         out
@@ -423,7 +400,6 @@ impl Read {
             Some(instant) => instant,
             None => self
                 .events()
-                .iter()
                 .map(|event| instant_of(event.at()))
                 .max()
                 .unwrap_or_else(|| {
@@ -470,7 +446,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     let moment = read
         .moment(parse_moment("at", at).map_err(refused)?)
         .map_err(refused)?;
-    let state = registers::fold(&read.nodes());
+    let state = registers::fold(&read.nodes);
     let now = instant_of(moment);
     let mut env = prodrome::fpl::Env::new();
     let (mut specs, mut content, mut flat) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
@@ -562,7 +538,7 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
         .map(datetime_of)
         .transpose()
         .map_err(|e| refused(format!("at: {e}")))?;
-    let state = registers::fold(&read.nodes());
+    let state = registers::fold(&read.nodes);
     let conflicts = Value::Object(
         state
             .todos()
@@ -620,14 +596,14 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
     let moment = read
         .moment(parse_moment("at", at).map_err(refused)?)
         .map_err(refused)?;
-    let rows = prodrome::view::entries(&read.nodes(), moment, &policy)
+    let rows = prodrome::view::entries(&read.nodes, moment, &policy)
         .map_err(|e| refused(e.to_string()))?;
     let mut listed: Vec<&prodrome::view::Entry> = rows.iter().collect();
     listed.sort_by(|a, b| prodrome::view::list_order(a, b));
     let records: serde_json::Map<String, Value> = rows
         .iter()
         .flat_map(|row| &row.content)
-        .filter_map(|name| match read.objects[name].event() {
+        .filter_map(|name| match read.dag.get(name).and_then(Envelope::event) {
             Some(TodoEvent::Authored(record)) => {
                 Some((name.as_str().to_owned(), json_record(record)))
             }
@@ -640,8 +616,8 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
             let at = iso(instant_of(event.at));
             created
                 .entry(event.todo.as_str().to_owned())
-                .and_modify(|(_, text)| *text = event.text.clone())
-                .or_insert((at, event.text));
+                .and_modify(|(_, text)| text.clone_from(&event.text))
+                .or_insert((at, event.text.clone()));
         }
     }
     let created: serde_json::Map<String, Value> = created

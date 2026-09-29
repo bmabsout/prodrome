@@ -540,6 +540,41 @@ pub fn a_log() -> impl Strategy<Value = Vec<Event>> {
     a_schedule(0..25).prop_map(|schedule| realise(&schedule, 0))
 }
 
+/// Two writers over one history: the shared log, then each side's own, dated
+/// after it and carrying the side's note, so that no event is both sides'.
+pub fn two_writers() -> impl Strategy<Value = (Vec<Event>, Vec<Event>, Vec<Event>)> {
+    (a_schedule(0..10), a_schedule(0..8), a_schedule(0..8)).prop_map(|(shared, mine, theirs)| {
+        let noted = |drafts: &[(Draft, i64)], note: &str| -> Vec<Event> {
+            drafts
+                .iter()
+                .map(|(draft, at)| draft.at_with_note(moment(at + WINDOW), note))
+                .collect()
+        };
+        (
+            realise(&shared, 0),
+            noted(&mine, "mine"),
+            noted(&theirs, "theirs"),
+        )
+    })
+}
+
+/// A log, and what a host that retried delivers again: some of its events,
+/// in any order and any number of times.
+pub fn a_replay() -> impl Strategy<Value = (Vec<Event>, Vec<Event>)> {
+    a_log()
+        .prop_flat_map(|log| {
+            let picks = prop::collection::vec(any::<prop::sample::Index>(), 0..=log.len());
+            (Just(log), picks)
+        })
+        .prop_map(|(log, picks)| {
+            let replay = picks
+                .iter()
+                .map(|pick| log[pick.index(log.len())].clone())
+                .collect();
+            (log, replay)
+        })
+}
+
 /// [`a_log`] whose specs are [`a_spec_with_absence`]'s: records and revisions
 /// that price by `Absent`, reference todos with no function, never-seen ones
 /// and each other.
@@ -550,6 +585,25 @@ pub fn a_log_with_absence() -> impl Strategy<Value = Vec<Event>> {
             realise(&drafts, 0)
         },
     )
+}
+
+/// The legacy writer: `event` sealed on every tip of `store`, as every store
+/// before Draft A was written.
+pub fn seal<Pol: prodrome::policy::Policy<Todo>>(
+    store: &prodrome::store::EventStore<Todo, Pol>,
+    event: Event,
+) -> Hash {
+    let on: Vec<Hash> = store.tips().expect("the tips derive").into_iter().collect();
+    let object = if on.len() > 1 {
+        mk_woven(on, Some(event)).expect("distinct tips")
+    } else {
+        mk_sealed(on.into_iter().next(), event)
+    };
+    let name = seal_hash(&object);
+    let print = prodrome::event::canonical_envelope(&object);
+    store
+        .adopt_objects(&[(name.clone(), print)].into(), &name)
+        .expect("writes")
 }
 
 /// A log as the chain a single writer builds: each object sealed on the one

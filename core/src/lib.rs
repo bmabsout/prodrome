@@ -25,7 +25,7 @@
 //! use prodrome::literal::Datetime;
 //! use prodrome::policy::Untrusted;
 //! use prodrome::reference::Todo;
-//! use prodrome::registers::{fold, nodes_of};
+//! use prodrome::registers::fold;
 //! use prodrome::store::EventStore;
 //! use prodrome::view::entries;
 //!
@@ -41,28 +41,31 @@
 //! // lifecycle events are claims.
 //! let store = EventStore::<Todo>::new(&dir, Untrusted::none());
 //!
+//! // A prodrome begins with a genesis, and every write names it.
+//! store.init("quick start")?;
+//!
 //! // An event carries the instant its writer stamped on it. The store has no
 //! // clock: `at` is data, and nothing here reads the machine's.
 //! let at = Datetime::new(2026, 9, 8, 9, 0, 0, 0)?;
-//! store.append(mk_created("todo-1", at, "bassel", "publish the crate", "")?, None)?;
+//! store.append(mk_created("todo-1", at, "bassel", "publish the crate", "")?)?;
 //!
 //! // A spec is an FPL term — what this todo is worth as a function of time.
 //! let deadline = instant_of(Datetime::new(2026, 9, 15, 17, 0, 0, 0)?);
 //! let spec = mk_decay(0.55, 0.05, deadline, delta_from_hours(72.0), None)?;
-//! store.append(mk_spec_revised("todo-1", at, "bassel", spec, "")?, None)?;
+//! store.append(mk_spec_revised("todo-1", at, "bassel", spec, "")?)?;
 //!
-//! // Read the DAG back: every object rehashed on the way in, in causal order.
-//! let objects = store.read_dag_named()?;
-//! assert_eq!(objects.len(), 2);
+//! // Read the DAG back: every object rehashed on the way in.
+//! let dag = store.dag()?;
+//! assert_eq!(dag.objects().len(), 3);
 //! assert!(store.verify().is_empty(), "no finding against this store");
 //!
 //! // Fold at an instant, and price what the fold believes. The fold keeps each
 //! // prodrome's todos apart; this store is one.
 //! let now = Datetime::new(2026, 9, 14, 9, 0, 0, 0)?;
 //! let policy = store.policy();
-//! let nodes = nodes_of(&objects);
+//! let nodes = dag.nodes()?;
 //! let state = fold(&nodes);
-//! let prodrome = &state.prodromes()[&None];
+//! let prodrome = state.prodromes().values().next().expect("one prodrome");
 //! let env = env(prodrome, instant_of(now), policy);
 //! let functions = flatten(prodrome, instant_of(now), policy)?;
 //! let todo = TodoId::new("todo-1")?;
@@ -90,7 +93,8 @@
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `genesis`, `change`, `snapshot` — Draft A's objects
-//! - `store`    — §3: objects on disk, heads, linearisation, verify, adopt/merge
+//! - `dag`      — §3: the DAG as a value: tips, closure, linearisation, verify
+//! - `store`    — §3: the files around a `Dag`: the lock, placement, quarantine
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
@@ -106,6 +110,7 @@ pub mod breaks;
 /// composes into one evaluable term instead of a lookup per node per sample.
 pub mod chain;
 pub mod change;
+pub mod dag;
 pub mod event;
 pub mod fold;
 pub mod fpl;

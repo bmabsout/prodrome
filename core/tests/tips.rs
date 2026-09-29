@@ -25,13 +25,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use prodrome::dag::Dag;
 use prodrome::event::{
     canonical_envelope, mk_created, mk_sealed, mk_woven, parents_of, seal_hash, Envelope, Hash,
 };
 use prodrome::literal::Datetime;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
-use prodrome::store::{tips_of, EventStore};
+use prodrome::store::EventStore;
 use proptest::prelude::*;
 
 type Object = Envelope<Todo>;
@@ -69,6 +70,15 @@ fn realise(drawn: &[Vec<usize>]) -> (Vec<Hash>, Objects) {
         objects.insert(name, object);
     }
     (names, objects)
+}
+
+/// The tips of objects collected in the order given.
+fn tips_of<'a>(objects: impl IntoIterator<Item = (&'a Hash, &'a Object)>) -> BTreeSet<Hash> {
+    objects
+        .into_iter()
+        .map(|(name, object)| (name.clone(), object.clone()))
+        .collect::<Dag<Todo>>()
+        .tips()
 }
 
 /// Everything `seeds` rest on, and the seeds: a set closed under parents,
@@ -181,7 +191,7 @@ proptest! {
         write(merged.root(), &a);
         write(merged.root(), &b);
         prop_assert_eq!(merged.tips().expect("derives"), tips_of(&union));
-        prop_assert_eq!(merged.verify(), Vec::<String>::new());
+        prop_assert!(merged.verify().is_empty(), "{:?}", merged.verify());
     }
 
     /// THE TIPS COVER, AND NONE IS STALE. Over a set closed under parents
@@ -209,7 +219,7 @@ proptest! {
             covered.extend(beneath);
         }
         prop_assert_eq!(covered, a.keys().cloned().collect::<BTreeSet<Hash>>());
-        prop_assert_eq!(store.read_dag_named().expect("reads").len(), a.len());
+        prop_assert_eq!(store.dag().expect("reads").objects().len(), a.len());
     }
 
     /// §9.17 c — THE LISTING DOES NOT MATTER. The same objects, handed over in any
