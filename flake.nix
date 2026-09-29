@@ -257,12 +257,24 @@
           };
         };
 
+        # THE CORE AND THE CLI IN RELEASE, COMPILED ONCE. `prodrome-github`
+        # links the same two crates with the same features, so both packages
+        # start from this target directory: the CLI's binary is already built
+        # and the mirror compiles only its own crate.
+        cliArtifacts = craneLib.cargoBuild (common // {
+          pname = "prodrome-cli";
+          src = rustSrc [ ./core/src ./cli/src ];
+          inherit cargoArtifacts;
+          cargoExtraArgs = "--locked -p prodrome-cli";
+          doCheck = false;
+        });
+
         # THE BINARY (`nix build .#prodrome-cli`): what CI points at the
         # roadmap. Its tests ran in `prodrome-workspace`, not again here.
         prodrome-cli = craneLib.buildPackage (common // {
           pname = "prodrome-cli";
           src = rustSrc [ ./core/src ./cli/src ];
-          inherit cargoArtifacts;
+          cargoArtifacts = cliArtifacts;
           cargoExtraArgs = "--locked -p prodrome-cli";
           doCheck = false;
           meta = {
@@ -278,7 +290,7 @@
         prodrome-github = craneLib.buildPackage (common // {
           pname = "prodrome-github";
           src = rustSrc [ ./core/src ./cli/src ./github/src ];
-          inherit cargoArtifacts;
+          cargoArtifacts = cliArtifacts;
           cargoExtraArgs = "--locked -p prodrome-github";
           doCheck = false;
           meta = {
