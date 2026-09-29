@@ -9,6 +9,8 @@ rust-version.workspace = true
 readme = "../README.md"
 keywords = ["event-sourcing", "content-addressed", "database", "temporal", "fuzzy-logic"]
 categories = ["database-implementations", "data-structures", "date-and-time"]
+# One integration-test binary, `tests/all/`, instead of one per file.
+autotests = false
 
 [features]
 # THE REFERENCE PAYLOAD, on by default. `prodrome::reference` is the record
@@ -23,6 +25,10 @@ reference = []
 [lib]
 name = "prodrome"
 path = "src/lib.rs"
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

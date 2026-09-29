@@ -24,7 +24,7 @@
 //! about a frontier may depend on this side having constructed the graph in
 //! memory.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

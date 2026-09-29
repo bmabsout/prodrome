@@ -4,7 +4,7 @@
 //! same readings from the compiled term against no environment (§9.13).
 //! Written by hand from the laws, and frozen like every other vector.
 
-mod common;
+use crate::common;
 
 use common::env_at;
 use common::vectors::{each, field, moment, strings, text, text_at, vectors};

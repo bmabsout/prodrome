@@ -1,0 +1,26 @@
+//! Every integration suite of the core, as one test binary: one link instead
+//! of one per file, which is most of what compiling the tests cost.
+
+// Beside `all/` rather than in it: the examples include it too.
+#[path = "../common/mod.rs"]
+mod common;
+
+mod calibration;
+mod chain;
+mod change;
+mod change_vectors;
+mod conformance_view;
+mod dag;
+mod events;
+mod fold_laws;
+mod folds;
+mod fpl_laws;
+mod fpl_vectors;
+mod fuzz;
+mod link_vectors;
+mod literals;
+mod recur_vectors;
+mod registers;
+mod series_vectors;
+mod tips;
+mod verify_findings;
