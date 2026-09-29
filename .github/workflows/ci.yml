@@ -1,12 +1,13 @@
 # One gate, and it is the same command a developer runs: the checks live in
-# flake.nix, so CI needs no Rust toolchain of its own, no cache of crates and
-# no network during the build — the dependency tree is vendored from the
-# committed Cargo.lock.
+# flake.nix, so CI needs no Rust toolchain of its own and no network during the
+# build. Magic Nix Cache keeps every store path in this repository's Actions
+# cache, so a run rebuilds only what its commit changed. A pull request runs
+# once, as a pull request; main runs on push.
 name: ci
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -14,10 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
       # `cargo test` over the workspace and clippy at -D warnings, both in the
       # sandbox (checks.prodrome-core, checks.prodrome-clippy).
       - run: nix flake check --print-build-logs
