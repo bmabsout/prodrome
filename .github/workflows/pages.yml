@@ -45,7 +45,10 @@ jobs:
         with:
           ref: main
       - uses: DeterminateSystems/nix-installer-action@v23
-      - uses: DeterminateSystems/magic-nix-cache-action@v15
+      - uses: cachix/cachix-action@v17
+        with:
+          name: bmabsout
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       # The app: prodrome-wasm, prodrome-typst-wasm, the fonts and the
       # TypeScript, with no data in it.
       - run: nix build .#prodrome-viewer -o result-viewer --print-build-logs

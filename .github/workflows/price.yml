@@ -48,7 +48,9 @@ jobs:
           path: data
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@v23
-      - uses: DeterminateSystems/magic-nix-cache-action@v15
+      - uses: cachix/cachix-action@v17
+        with:
+          name: bmabsout
       - run: nix build ./code#prodrome-cli -o result-cli --print-build-logs
 
       # The prompt is assembled from files, and the issue's text only ever
@@ -146,7 +148,9 @@ jobs:
           ref: roadmap-data
           path: data
       - uses: DeterminateSystems/nix-installer-action@v23
-      - uses: DeterminateSystems/magic-nix-cache-action@v15
+      - uses: cachix/cachix-action@v17
+        with:
+          name: bmabsout
       - run: nix build ./code#prodrome-cli -o result-cli --print-build-logs
       - run: nix build ./code#prodrome-github -o result-github --print-build-logs
 
