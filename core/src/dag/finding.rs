@@ -29,6 +29,28 @@ pub enum Finding {
         at: Datetime,
         behind: Datetime,
     },
+    /// A change or snapshot naming what is not a genesis this store holds.
+    Stranger {
+        object: Hash,
+        genesis: Hash,
+    },
+    Crossing {
+        object: Hash,
+        parent: Hash,
+    },
+    Unwritten {
+        change: Hash,
+        dep: Hash,
+    },
+    Redundant {
+        change: Hash,
+        dep: Hash,
+        beneath: Hash,
+    },
+    Incomplete {
+        snapshot: Hash,
+        missing: Hash,
+    },
 }
 
 /// Why a named print is not an object.
@@ -100,6 +122,43 @@ impl fmt::Display for Finding {
                 name.as_str(),
                 at.isoformat(),
                 behind.isoformat()
+            ),
+            Finding::Stranger { object, genesis } => write!(
+                f,
+                "object {} names genesis {}, which the store does not hold as a genesis \
+                 (SPEC Draft A)",
+                object.as_str(),
+                genesis.as_str()
+            ),
+            Finding::Crossing { object, parent } => write!(
+                f,
+                "object {} rests on {}, of another genesis (SPEC Draft A)",
+                object.as_str(),
+                parent.as_str()
+            ),
+            Finding::Unwritten { change, dep } => write!(
+                f,
+                "change {} depends on {}, which writes no register its event writes \
+                 (SPEC Draft A)",
+                change.as_str(),
+                dep.as_str()
+            ),
+            Finding::Redundant {
+                change,
+                dep,
+                beneath,
+            } => write!(
+                f,
+                "change {} depends on {}, which its dep {} already rests on (SPEC Draft A)",
+                change.as_str(),
+                dep.as_str(),
+                beneath.as_str()
+            ),
+            Finding::Incomplete { snapshot, missing } => write!(
+                f,
+                "snapshot {} attests {}, which the store does not hold (SPEC Draft A)",
+                snapshot.as_str(),
+                missing.as_str()
             ),
         }
     }

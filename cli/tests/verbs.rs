@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use prodrome::event::{mk_created, Hash};
+use prodrome::event::{canonical_envelope, mk_created, mk_sealed, seal_hash};
 use prodrome::literal::Datetime;
 use prodrome::policy::Untrusted;
 use prodrome_cli::command::Cli;
@@ -304,11 +304,19 @@ fn verify_fails_a_tampered_object() {
 fn quarantine_sets_a_damaged_object_aside_and_the_store_writes_again() {
     let root = seeded();
     let store = Store::new(&root, Untrusted::none());
+    // A tip that is neither the genesis nor what names a todo, so the store
+    // still knows `publish` once it is set aside.
     let tip = store
         .tips()
         .expect("the tips derive")
         .into_iter()
-        .next()
+        .find(|tip| {
+            store
+                .load(tip)
+                .expect("loads")
+                .event()
+                .is_some_and(|event| event.kind_name() != "Created")
+        })
         .expect("a tip");
     let victim = root.join("objects").join(format!("{}.py", tip.as_str()));
     std::fs::write(&victim, "Sealed(prev=None, event=None)").expect("damages");
@@ -334,27 +342,33 @@ fn quarantine_sets_a_damaged_object_aside_and_the_store_writes_again() {
     assert_eq!(said(&root, &done).len(), 64, "the store writes again");
 }
 
+/// Weaving is a legacy store's: a store of changes has nothing to weave, and
+/// a legacy store's two heads are settled into one.
 #[test]
-fn weave_settles_two_heads_and_is_a_no_op_on_one() {
-    let root = seeded();
-    assert!(said(&root, &["weave"]).contains("nothing to weave"));
+fn weave_settles_a_legacy_store_s_two_heads_and_is_a_no_op_on_changes() {
+    assert!(said(&seeded(), &["weave"]).contains("nothing to weave"));
 
-    // A second branch: an append onto something that is not the tip, which is
-    // what two replicas that both wrote look like once they have exchanged
-    // objects.
+    // Two histories on one root, the way two replicas wrote before Draft A.
+    let root = a_store();
     let store = Store::new(&root, Untrusted::none());
-    let order = store
-        .dag()
-        .and_then(|dag| dag.linearise())
-        .expect("the store reads");
-    let elder: Hash = order[0].clone();
-    let at = Datetime::new(2026, 9, 10, 11, 0, 0, 0).expect("an instant");
-    store
-        .append(
-            mk_created("a-second-branch", at, "bassel", "written elsewhere", "").expect("an event"),
-            Some(&[elder]),
+    let at = |hour| Datetime::new(2026, 9, 10, hour, 0, 0, 0).expect("an instant");
+    let root_object: prodrome::event::Envelope<prodrome::reference::Todo> = mk_sealed(
+        None,
+        mk_created("publish", at(9), "bassel", "publish the crate", "").expect("an event"),
+    );
+    let elder = seal_hash(&root_object);
+    let branches = ["a-first-branch", "a-second-branch"].map(|todo| {
+        mk_sealed(
+            Some(elder.clone()),
+            mk_created(todo, at(11), "bassel", "written elsewhere", "").expect("an event"),
         )
-        .expect("appends onto an elder object");
+    });
+    for object in [&root_object].into_iter().chain(&branches) {
+        let name = seal_hash(object);
+        store
+            .adopt_objects(&[(name.clone(), canonical_envelope(object))].into(), &name)
+            .expect("writes");
+    }
     assert_eq!(
         store.tips().expect("the tips derive").len(),
         2,
@@ -369,6 +383,7 @@ fn weave_settles_two_heads_and_is_a_no_op_on_one() {
         "and the store is one history again"
     );
     assert!(store.verify().is_empty(), "{:?}", store.verify());
+    assert!(said(&root, &["weave"]).contains("nothing to weave"));
 
     let text = said(&root, &["list", "--at", "2026-09-10T12:00:00"]);
     assert!(text.contains("a-second-branch"), "{text}");

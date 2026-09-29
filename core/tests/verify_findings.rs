@@ -6,12 +6,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use prodrome::change::mk_change;
 use prodrome::event::{
-    canonical_envelope, mk_completed, mk_created, mk_sealed, seal_hash, Actor, Envelope, Hash,
+    canonical_envelope, mk_cancelled, mk_completed, mk_created, mk_reopened, mk_sealed, seal_hash,
+    Actor, Envelope, Hash, TodoEvent,
 };
+use prodrome::genesis::mk_genesis;
 use prodrome::literal::Datetime;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
+use prodrome::snapshot::mk_snapshot;
 use prodrome::store::EventStore;
 use sha2::{Digest, Sha256};
 
@@ -203,4 +207,125 @@ fn the_unreadable_directory_findings() {
             root.join("quarantine").display()
         )]
     );
+}
+
+fn change(genesis: &str, deps: &[&str], event: TodoEvent<Todo>) -> Envelope<Todo> {
+    let hash = |name: &&str| Hash::new((*name).to_owned()).expect("a name");
+    Envelope::Change(
+        mk_change(hash(&genesis), deps.iter().map(hash).collect(), event).expect("a change"),
+    )
+}
+
+#[test]
+fn every_draft_a_finding() {
+    let root = scratch("draft-a");
+    let genesis = |label| Envelope::Genesis(mk_genesis(label, &"0".repeat(32)).expect("a genesis"));
+    let mine = write(&root, &genesis("mine"));
+    let theirs = write(&root, &genesis("theirs"));
+    let done = write(
+        &root,
+        &change(
+            &mine,
+            &[],
+            mk_completed("alpha", at(1), "bassel", "").expect("valid"),
+        ),
+    );
+    let dropped = write(
+        &root,
+        &change(
+            &mine,
+            &[],
+            mk_cancelled("alpha", at(2), "bassel", "").expect("valid"),
+        ),
+    );
+    let reopened = write(
+        &root,
+        &change(
+            &mine,
+            &[&done],
+            mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
+        ),
+    );
+    let absent = name_of(b"never written");
+
+    let redundant = write(
+        &root,
+        &change(
+            &mine,
+            &[&done, &reopened],
+            mk_completed("alpha", at(4), "bassel", "").expect("valid"),
+        ),
+    );
+    let other_todo = write(
+        &root,
+        &change(
+            &mine,
+            &[&done],
+            mk_completed("beta", at(4), "bassel", "").expect("valid"),
+        ),
+    );
+    let crossing = write(
+        &root,
+        &change(
+            &theirs,
+            &[&dropped],
+            mk_reopened("alpha", at(4), "bassel", "").expect("valid"),
+        ),
+    );
+    let stranger = write(
+        &root,
+        &change(
+            &done,
+            &[],
+            mk_created("gamma", at(4), "bassel", "", "").expect("valid"),
+        ),
+    );
+    let snapshot = mk_snapshot(
+        Hash::new(mine.clone()).expect("a name"),
+        vec![Hash::new(absent.clone()).expect("a name")],
+        None,
+    )
+    .expect("a snapshot");
+    let incomplete = write(&root, &Envelope::Snapshot(snapshot));
+
+    let mut by_object = vec![
+        (
+            redundant.clone(),
+            vec![format!(
+                "change {redundant} depends on {done}, which its dep {reopened} already rests \
+                 on (SPEC Draft A)"
+            )],
+        ),
+        (
+            other_todo.clone(),
+            vec![format!(
+                "change {other_todo} depends on {done}, which writes no register its event \
+                 writes (SPEC Draft A)"
+            )],
+        ),
+        (
+            crossing.clone(),
+            vec![format!(
+                "object {crossing} rests on {dropped}, of another genesis (SPEC Draft A)"
+            )],
+        ),
+        (
+            stranger.clone(),
+            vec![format!(
+                "object {stranger} names genesis {done}, which the store does not hold as a \
+                 genesis (SPEC Draft A)"
+            )],
+        ),
+        (
+            incomplete.clone(),
+            vec![format!(
+                "snapshot {incomplete} attests {absent}, which the store does not hold \
+                 (SPEC Draft A)"
+            )],
+        ),
+    ];
+    by_object.sort();
+    let mut expected = vec![format!("chain broke at {absent}: missing object {absent}")];
+    expected.extend(by_object.into_iter().flat_map(|(_, found)| found));
+    assert_eq!(findings(&root), expected);
 }
