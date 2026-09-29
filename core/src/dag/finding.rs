@@ -66,13 +66,11 @@ pub enum Unread {
 impl Unread {
     /// What a read of the object refuses with; a tampered file's names the way out.
     pub fn refusal(&self, name: &Hash) -> ProdromeError {
-        let name = name.as_str();
         match self {
             Unread::Io(error) | Unread::Unparsed(error) => error.clone(),
             Unread::Tampered(computed) => ProdromeError::Store(format!(
-                "object {name} hashes to {} — tampered or corrupt: `prodrome quarantine {name}` \
-                 (`EventStore::quarantine`) sets it aside so the store answers again",
-                computed.as_str()
+                "object {name} hashes to {computed} — tampered or corrupt: `prodrome quarantine \
+                 {name}` (`EventStore::quarantine`) sets it aside so the store answers again"
             )),
             Unread::NotText => ProdromeError::Store(format!("object {name} is not UTF-8")),
         }
@@ -83,18 +81,15 @@ impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Finding::Io(error) | Finding::Cycle(error) => write!(f, "{error}"),
-            Finding::Unread { name, why } => {
-                let name = name.as_str();
-                match why {
-                    Unread::Io(_) => write!(f, "object {name} could not be read"),
-                    Unread::Tampered(_) => write!(
-                        f,
-                        "object {name} does not hash to its filename (tampered/corrupt)"
-                    ),
-                    Unread::NotText => write!(f, "object {name} failed to parse: not UTF-8"),
-                    Unread::Unparsed(error) => write!(f, "object {name} failed to parse: {error}"),
-                }
-            }
+            Finding::Unread { name, why } => match why {
+                Unread::Io(_) => write!(f, "object {name} could not be read"),
+                Unread::Tampered(_) => write!(
+                    f,
+                    "object {name} does not hash to its filename (tampered/corrupt)"
+                ),
+                Unread::NotText => write!(f, "object {name} failed to parse: not UTF-8"),
+                Unread::Unparsed(error) => write!(f, "object {name} failed to parse: {error}"),
+            },
             Finding::Garbage(file) => write!(
                 f,
                 "objects/{file} is not an object: a temp an interrupted write left, or a stray \
@@ -109,39 +104,31 @@ impl fmt::Display for Finding {
                 "quarantine/{file} failed its hash and was set aside (SPEC §3): restore the \
                  object from a replica, then delete this file"
             ),
-            Finding::Broken { at, why } => {
-                let refusal = match why {
-                    Some(why) => why.refusal(at),
-                    None => ProdromeError::Store(format!("missing object {}", at.as_str())),
-                };
-                write!(f, "chain broke at {}: {refusal}", at.as_str())
+            Finding::Broken { at, why: None } => {
+                write!(f, "chain broke at {at}: missing object {at}")
+            }
+            Finding::Broken { at, why: Some(why) } => {
+                write!(f, "chain broke at {at}: {}", why.refusal(at))
             }
             Finding::Dated { name, at, behind } => write!(
                 f,
-                "untrusted event {} is dated {}, behind its predecessor ({})",
-                name.as_str(),
+                "untrusted event {name} is dated {}, behind its predecessor ({})",
                 at.isoformat(),
                 behind.isoformat()
             ),
             Finding::Stranger { object, genesis } => write!(
                 f,
-                "object {} names genesis {}, which the store does not hold as a genesis \
-                 (SPEC Draft A)",
-                object.as_str(),
-                genesis.as_str()
+                "object {object} names genesis {genesis}, which the store does not hold as a \
+                 genesis (SPEC Draft A)"
             ),
             Finding::Crossing { object, parent } => write!(
                 f,
-                "object {} rests on {}, of another genesis (SPEC Draft A)",
-                object.as_str(),
-                parent.as_str()
+                "object {object} rests on {parent}, of another genesis (SPEC Draft A)"
             ),
             Finding::Unwritten { change, dep } => write!(
                 f,
-                "change {} depends on {}, which writes no register its event writes \
-                 (SPEC Draft A)",
-                change.as_str(),
-                dep.as_str()
+                "change {change} depends on {dep}, which writes no register its event writes \
+                 (SPEC Draft A)"
             ),
             Finding::Redundant {
                 change,
@@ -149,16 +136,13 @@ impl fmt::Display for Finding {
                 beneath,
             } => write!(
                 f,
-                "change {} depends on {}, which its dep {} already rests on (SPEC Draft A)",
-                change.as_str(),
-                dep.as_str(),
-                beneath.as_str()
+                "change {change} depends on {dep}, which its dep {beneath} already rests on \
+                 (SPEC Draft A)"
             ),
             Finding::Incomplete { snapshot, missing } => write!(
                 f,
-                "snapshot {} attests {}, which the store does not hold (SPEC Draft A)",
-                snapshot.as_str(),
-                missing.as_str()
+                "snapshot {snapshot} attests {missing}, which the store does not hold \
+                 (SPEC Draft A)"
             ),
         }
     }
