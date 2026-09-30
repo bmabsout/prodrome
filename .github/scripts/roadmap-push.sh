@@ -8,7 +8,7 @@
 # that loses a race with another workflow run merges and tries again. A store
 # is its objects, each file named by its own hash and never rewritten, so two
 # runs' appends are disjoint sets of new files and the merge cannot conflict;
-# the store derives two tips from the union, and its next append joins them.
+# the union is the store, and nothing has to join it.
 set -euo pipefail
 
 message=$1

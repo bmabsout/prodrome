@@ -122,8 +122,8 @@ trigger, and nothing from a pull request is ever checked out.
 **What gets pushed.** Only `roadmap-data`, only after `prodrome verify`
 passes, and only new files under `roadmap/objects/`: an object is named by the
 hash of its bytes and never rewritten. Two runs racing to push append
-disjoint sets of files, so the loser merges and pushes again; the store then
-has two tips, which its next append joins.
+disjoint sets of files, so the loser merges and pushes again; the union is
+the store, and nothing has to join it.
 
 ## Determinism
 

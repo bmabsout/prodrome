@@ -4,9 +4,8 @@
 //! Every instant written here is read off the payload (`created_at`,
 //! `updated_at`, `closed_at`), never off a clock, and nothing here reaches a
 //! network. So the same delivery, applied to the same store, always means the
-//! same events — which is what lets a replay be recognised and append nothing:
-//! an event whose canonical print the store already holds is not written
-//! again.
+//! same events — which is what lets a replay append nothing: `append` writes
+//! nothing for an event its prodrome already holds (SPEC §3).
 //!
 //! The payload is the JSON a workflow finds at `$GITHUB_EVENT_PATH`. Two event
 //! names are read, `issues` and `issue_comment`, and told apart by the payload
@@ -21,15 +20,16 @@
 //! written as [`BOT`], which a reader passes to `--untrusted` to see it as the
 //! CLAIM it is (§5).
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
+use prodrome::dag::Dag;
 use prodrome::event::{
-    canonical, mk_completed, mk_created, mk_reopened, mk_spec_revised, TodoEvent, TodoId,
+    mk_completed, mk_created, mk_reopened, mk_spec_revised, Envelope, TodoEvent, TodoId,
 };
 use prodrome::fpl::{self, datetime_of, mk_ref};
 use prodrome::literal::{Datetime, ProdromeError};
 use prodrome::reference::{mk_authored, mk_source, Todo};
+use prodrome::registers::{self, Folded, Genesis};
 use prodrome::term::Term;
 use serde_json::Value;
 
@@ -413,16 +413,21 @@ fn record(issue: &Issue, at: Datetime, spec: Option<Term>) -> Result<TodoEvent<T
 
 /// What the store already says, as far as a delivery needs to know.
 struct Known<'a> {
-    events: &'a [TodoEvent<Todo>],
-    prints: BTreeSet<String>,
+    dag: &'a Dag<Todo>,
+    events: Vec<TodoEvent<Todo>>,
+    state: Folded<Todo>,
+    genesis: Genesis,
 }
 
 impl<'a> Known<'a> {
-    fn of(events: &'a [TodoEvent<Todo>]) -> Known<'a> {
-        Known {
-            events,
-            prints: events.iter().map(canonical).collect(),
-        }
+    fn of(dag: &'a Dag<Todo>) -> Result<Known<'a>, Error> {
+        let nodes = dag.nodes()?;
+        Ok(Known {
+            dag,
+            events: nodes.iter().filter_map(|node| node.event.clone()).collect(),
+            state: registers::fold(&nodes),
+            genesis: dag.geneses().first().and_then(|genesis| dag.key(genesis)),
+        })
     }
 
     fn has_item(&self, todo: &str) -> bool {
@@ -481,8 +486,8 @@ impl std::fmt::Display for Skip {
     }
 }
 
-/// The events a delivery means against what the store holds, before the
-/// store's replays are taken out: `Err(Skip)` when it means none.
+/// The events a delivery means against what the store holds: `Err(Skip)`
+/// when it means none.
 fn meant(
     delivery: &Delivery,
     proposal: Option<&str>,
@@ -630,12 +635,13 @@ fn require_target(price: &Price, todo: &str, known: &Known<'_>) -> Result<(), Er
 ///
 /// DATED NO EARLIER THAN WHAT IT IS WRITTEN ON. A reader who names the bot
 /// untrusted holds its events to §3's clock rule — never dated behind an
-/// ancestor — and the model takes minutes, in which other deliveries land. So
-/// the claim is dated at the latest instant among the issue's last update,
-/// every event the store holds, and the events this delivery writes before
-/// it. That reads the store, so a replay is recognised by what it claims
-/// instead of by its bytes: a claim of the same price and note for this item,
-/// dated at or after this delivery's instant, is this one already applied.
+/// ancestor — and the model takes minutes, in which this item may be
+/// repriced. So the claim is dated at the latest instant among the issue's
+/// last update, everything its deps rest on, and the events this delivery
+/// writes before it. A replay after a maintainer's repricing would be dated
+/// past it, so a replay is recognised by what it claims: a claim of the same
+/// price and note for this item, dated at or after this delivery's instant,
+/// is this one already applied.
 fn proposed(
     issue: &Issue,
     reply: &str,
@@ -666,9 +672,13 @@ fn proposed(
     if applied {
         return Ok(Vec::new());
     }
+    let draft = mk_spec_revised(&todo, issue.updated_at, BOT, spec.clone(), &note)?;
+    let deps = registers::deps_for(&known.state, &known.genesis, &draft);
     let at = known
-        .events
+        .dag
+        .closure(deps)
         .iter()
+        .filter_map(|name| known.dag.get(name).and_then(Envelope::event))
         .chain(before)
         .map(TodoEvent::at)
         .fold(issue.updated_at, std::cmp::max);
@@ -687,8 +697,7 @@ fn rationale_of(reply: &str) -> String {
     rest.chars().take(NOTE_LIMIT).collect()
 }
 
-/// The events a delivery appends to a store holding `events`: what it means,
-/// less what the store already holds.
+/// The events a delivery means against a store holding `dag`.
 ///
 /// # Errors
 ///
@@ -697,15 +706,9 @@ fn rationale_of(reply: &str) -> String {
 pub fn plan(
     delivery: &Delivery,
     proposal: Option<&str>,
-    events: &[TodoEvent<Todo>],
+    dag: &Dag<Todo>,
 ) -> Result<Result<Vec<TodoEvent<Todo>>, Skip>, Error> {
-    let known = Known::of(events);
-    Ok(meant(delivery, proposal, &known)?.map(|meant| {
-        meant
-            .into_iter()
-            .filter(|event| !known.prints.contains(&canonical(event)))
-            .collect()
-    }))
+    meant(delivery, proposal, &Known::of(dag)?)
 }
 
 /// `prodrome-github PAYLOAD.json [--proposal FILE] [--store DIR]`.
@@ -747,19 +750,20 @@ pub fn apply(store: &Store, payload: &Path, proposal: Option<&Path>) -> Result<O
     apply_delivery(store, &delivery, reply.as_deref())
 }
 
-/// Plan one delivery against the store and append what it means: the
-/// digests written, one per line, or why there are none.
+/// Plan one delivery against the store and append what it means: the digest
+/// of each event, one per line, or why there are none. A replay answers the
+/// digests it answered the first time, and writes nothing.
 pub fn apply_delivery(
     store: &Store,
     delivery: &Delivery,
     proposal: Option<&str>,
 ) -> Result<Outcome, Error> {
-    match plan(delivery, proposal, &store.events()?)? {
+    match plan(delivery, proposal, &store.dag()?)? {
         Err(skip) => Ok(Outcome::said(format!("nothing to append: {skip}"))),
-        Ok(fresh) if fresh.is_empty() => Ok(Outcome::said("nothing to append: already applied")),
-        Ok(fresh) => {
-            let mut written = Vec::with_capacity(fresh.len());
-            for event in fresh {
+        Ok(meant) if meant.is_empty() => Ok(Outcome::said("nothing to append: already applied")),
+        Ok(meant) => {
+            let mut written = Vec::with_capacity(meant.len());
+            for event in meant {
                 written.push(store.append(event)?.as_str().to_owned());
             }
             Ok(Outcome::said(written.join("\n")))
