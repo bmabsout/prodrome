@@ -125,8 +125,12 @@ pub enum Command {
         name: String,
     },
 
-    /// Join every head into one `Woven` carrying no event — what settles a
-    /// store two branches both appended to.
+    /// Attest the store: a `Snapshot` of its tips, chained to the last one,
+    /// whose name commits to everything written so far (§3).
+    Snapshot,
+
+    /// Join a legacy store's heads into one `Woven` carrying no event. A
+    /// store of changes has nothing to weave.
     Weave,
 }
 
