@@ -122,14 +122,7 @@ pub fn parse_env(json_text: &str) -> Result<fpl::Env, Refusal> {
     let raw: EnvIn = serde_json::from_str(json_text).map_err(|e| format!("env: {e}"))?;
     let mut env = fpl::Env::new();
     for (name, bound) in raw.outcomes {
-        let candidates: Candidates = match bound {
-            Bound::One(entry) => [Some(entry.outcome()?)].into(),
-            Bound::Many(entries) => entries
-                .iter()
-                .map(|entry| entry.as_ref().map(EnvEntry::outcome).transpose())
-                .collect::<Result<_, _>>()?,
-        };
-        env.outcomes.insert(name, candidates);
+        env.outcomes.insert(name, bound.candidates()?);
     }
     env.tended = parse_tended("env.tended", raw.tended)?;
     Ok(env)
@@ -168,6 +161,18 @@ enum Bound {
     Many(Vec<Option<EnvEntry>>),
 }
 
+impl Bound {
+    fn candidates(&self) -> Result<Candidates, Refusal> {
+        match self {
+            Bound::One(entry) => Ok([Some(entry.outcome()?)].into()),
+            Bound::Many(entries) => entries
+                .iter()
+                .map(|entry| entry.as_ref().map(EnvEntry::outcome).transpose())
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EnvEntry {
     pub kind: String,
@@ -188,20 +193,21 @@ impl EnvEntry {
 }
 
 /// The environment as a FUNCTION OF TIME (§6.5), as `fold`'s `history` emits
-/// it and `series_knots` reads it back: `bindings`, per todo, the chain's
-/// writes in causal order, `null` where a `Reopened` cleared the binding; and
-/// `tended`, per todo, every tending, which as a grow-only set is its own
-/// history. The same two-halves rule as [`parse_env`]: either may be left out,
-/// and nothing else is admitted.
+/// it and `series_knots` reads it back: `bindings`, per todo, its outcome at
+/// each instant the reading changes, ascending — `null` for open, and a
+/// conflict as its candidates, as in [`parse_env`]; and `tended`, per todo,
+/// every tending, which as a grow-only set is its own history. The same
+/// two-halves rule as [`parse_env`]: either may be left out, and nothing else
+/// is admitted.
 ///
 /// It is a separate argument from `env` and not a convenience over it: a knot
 /// at a past instant must be evaluated against the environment AS OF that
 /// instant (`view.series_of` does exactly this), and a single `env` snapshot
 /// would bind a dependency before it was completed.
 #[derive(Debug, Deserialize)]
-pub struct HistoryEntry {
-    pub at: String,
-    pub binding: Option<EnvEntry>,
+struct HistoryEntry {
+    at: String,
+    binding: Option<Bound>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,7 +220,7 @@ struct HistoryIn {
 }
 
 pub struct History {
-    bindings: BTreeMap<String, Vec<(Instant, Option<Outcome>)>>,
+    bindings: BTreeMap<String, Vec<(Instant, Candidates)>>,
     tended: BTreeMap<String, BTreeSet<Instant>>,
 }
 
@@ -227,7 +233,10 @@ impl History {
             let mut timeline = Vec::with_capacity(entries.len());
             for entry in entries {
                 let at = parse_instant("history.at", &entry.at)?;
-                let binding = entry.binding.map(|b| b.outcome()).transpose()?;
+                let binding = match entry.binding {
+                    Some(bound) => bound.candidates()?,
+                    None => [None].into(),
+                };
                 timeline.push((at, binding));
             }
             bindings.insert(todo, timeline);
@@ -238,21 +247,14 @@ impl History {
         })
     }
 
-    /// The environment at `t`: per todo, the last write dated at or before it,
-    /// and the tendings dated at or before it. The timeline is in CHAIN order
-    /// and is never sorted — §6's ordering rule holds on this side of the
-    /// boundary too.
+    /// The environment at `t`: per todo, the reading in force at `t`, and the
+    /// tendings dated at or before it.
     pub fn at(&self, t: Instant) -> fpl::Env {
         let mut env = fpl::Env::new();
         for (todo, timeline) in &self.bindings {
-            let mut current = None;
-            for (at, binding) in timeline {
-                if *at <= t {
-                    current = *binding;
-                }
-            }
-            if let Some(outcome) = current {
-                env.bind(todo.clone(), outcome);
+            let current = timeline.iter().rev().find(|(at, _)| *at <= t);
+            if let Some((_, candidates)) = current.filter(|(_, c)| *c != [None].into()) {
+                env.outcomes.insert(todo.clone(), candidates.clone());
             }
         }
         for (todo, tendings) in &self.tended {
@@ -303,6 +305,16 @@ fn json_outcome(candidates: &Candidates) -> Value {
                 .map(|binding| binding.map_or(Value::Null, json_binding))
                 .collect(),
         ),
+    }
+}
+
+/// An outcome in [`History`]'s shape: `null` for open, else as [`json_env`]
+/// writes it.
+pub fn json_reading(candidates: &Candidates) -> Value {
+    if *candidates == Candidates::from([None]) {
+        Value::Null
+    } else {
+        json_outcome(candidates)
     }
 }
 
@@ -677,6 +689,22 @@ mod tests {
         assert_eq!(past.at(instant_of(at(4))).outcomes.len(), 1);
         assert_eq!(past.at(instant_of(at(5))).tended["brush"].len(), 1);
         assert!(History::parse(r#"{"a": []}"#).is_err());
+    }
+
+    /// A conflict in the history crosses as its candidates, and `null` is
+    /// open again from its instant on.
+    #[test]
+    fn the_history_crosses_a_conflict() {
+        let past = History::parse(
+            r#"{"bindings": {"a": [
+                {"at": "2026-09-02T12:00:00",
+                 "binding": [null, {"kind": "Completed", "at": "2026-09-02T12:00:00"}]},
+                {"at": "2026-09-06T12:00:00", "binding": null}]}}"#,
+        )
+        .expect("a history");
+        assert!(past.at(instant_of(at(1))).outcomes.is_empty());
+        assert_eq!(past.at(instant_of(at(4))).outcomes["a"].len(), 2);
+        assert!(past.at(instant_of(at(7))).outcomes.is_empty());
     }
 
     /// A conflict crosses as its candidates: the state joined by `|`, the
