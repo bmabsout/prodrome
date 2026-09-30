@@ -342,13 +342,45 @@ fn quarantine_sets_a_damaged_object_aside_and_the_store_writes_again() {
     assert_eq!(said(&root, &done).len(), 64, "the store writes again");
 }
 
+/// A snapshot names the store as it stands: asked again with nothing new it
+/// is the same one, and after a write it is a new one chained to it.
+#[test]
+fn snapshot_attests_the_store_and_chains() {
+    let root = seeded();
+    let first = said(&root, &["snapshot"]);
+    assert_eq!(first.len(), 64, "{first}");
+    assert_eq!(
+        said(&root, &["snapshot"]),
+        first,
+        "nothing new, nothing written"
+    );
+    said(
+        &root,
+        &[
+            "reopen",
+            "ship-the-cli",
+            "--actor",
+            "bassel",
+            "--at",
+            "2026-09-11T09:00:00",
+        ],
+    );
+    let second = said(&root, &["snapshot"]);
+    assert_ne!(second, first);
+    let print = std::fs::read_to_string(root.join("objects").join(format!("{second}.py")))
+        .expect("the snapshot");
+    assert!(print.contains(&format!("previous='{first}'")), "{print}");
+    let outcome = prodrome(&root, &["verify"]).expect("verify answers");
+    assert!(outcome.ok, "{}", outcome.text);
+}
+
 /// Weaving is a legacy store's: a store of changes has nothing to weave, and
 /// a legacy store's two heads are settled into one.
 #[test]
 fn weave_settles_a_legacy_store_s_two_heads_and_is_a_no_op_on_changes() {
     assert!(said(&seeded(), &["weave"]).contains("nothing to weave"));
 
-    // Two histories on one root, the way two replicas wrote before Draft A.
+    // Two histories on one root, the way two replicas wrote before changes.
     let root = a_store();
     let store = Store::new(&root, Untrusted::none());
     let at = |hour| Datetime::new(2026, 9, 10, hour, 0, 0, 0).expect("an instant");

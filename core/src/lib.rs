@@ -92,7 +92,7 @@
 //! - `literal`  — §2: the grammar, its printer (Python `repr` rules) and parser
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
-//! - `genesis`, `change`, `snapshot` — Draft A's objects
+//! - `genesis`, `change`, `snapshot` — §3: a prodrome, a change, an attestation
 //! - `dag`      — §3: the DAG as a value: tips, closure, linearisation, verify
 //! - `store`    — §3: the files around a `Dag`: the lock, placement, quarantine
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form

@@ -345,7 +345,7 @@ impl<P: Payload> TodoEvent<P> {
 }
 
 /// The stored object (§3). `Sealed` and `Woven` are the legacy envelopes,
-/// read forever and written by no writer under Draft A.
+/// read forever and written by no `append` (SPEC §3).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Envelope<P> {
     Sealed {

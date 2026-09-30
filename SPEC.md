@@ -46,7 +46,7 @@ equal values print byte-identically.
   that order; `timedelta()` for zero.
 - Tuples: `(a, b)`, `(a,)`, `()`.
 - Constructor calls `Name(field=value, …)`: every field, in declared order,
-  keyword form. The admitted names are the vocabulary of §4 and §7 plus
+  keyword form. The admitted names are the vocabulary of §3, §4 and §7 plus
   `datetime` and `timedelta`. §4's half is the core's kinds UNION the host
   payload's — its record kind and the constructors that kind's fields nest —
   so the whitelist is a union and is still a whitelist; where the two would
@@ -60,10 +60,11 @@ fuzzed.
 **The vector vocabulary.** `conformance/*.py` — the evidence §9 is checked
 against — is one expression of THIS grammar, printed by this printer and read
 by this parser, against a SECOND whitelist that is disjoint from a store's:
-`Folds`, `Dags`, `Fpl`, `Series`, `View`, `Links`, `Recurs`; `FoldCase`,
-`DagCase`, `FplCase`, `SeriesCase`, `ViewCase`, `LinkCase`, `RecurCase`;
-`Bound`, `Spec`, `Content`, `Object`, `Parents`, `Conflict`, `RowConflict`,
-`Refused`, `Sample`, `Knot`, `Asked`, `Row`; and, for an explanation's
+`Folds`, `Dags`, `Fpl`, `Series`, `View`, `Links`, `Recurs`, `Changes`;
+`FoldCase`, `DagCase`, `FplCase`, `SeriesCase`, `ViewCase`, `LinkCase`,
+`RecurCase`, `ChangeCase`; `Bound`, `Open`, `Spec`, `Content`, `Object`,
+`Parents`, `Conflict`, `RowConflict`, `Refused`, `Step`, `Price`, `Sample`,
+`Knot`, `Asked`, `Row`; and, for an explanation's
 decoration, `Node`, `NoteEntry`, `One`, `Many`, `Maps`, `Fields`, `Pair`. A
 STORE's parse admits none of these and a VECTOR's parse admits none of §4's
 or §7's: two vocabularies, one grammar, one parser, and neither can widen the
@@ -77,17 +78,43 @@ since this grammar has tuples and no mapping.
 
 ## 3. Objects and the DAG
 
-> **Draft A** (below §10, NOT in force) proposes naming a change by its
-> genesis, its event and the register frontiers it supersedes rather than by
-> the tips it was written on. Nothing in this section changes until it lands.
+- An **object** is one of five constructors.
+  - `Genesis(label, nonce)` begins a prodrome. `label` is the host's name for
+    it and `nonce` is 32 lowercase hex characters drawn once, so two
+    prodromes a host labels alike are two. It has no parents and no event,
+    and its name is the prodrome's identity.
+  - `Change(genesis, deps, event)` is an event, named by its prodrome and by
+    the writes it supersedes. `deps` are object names, sorted, distinct and
+    possibly empty; `event` is required, since a change without one would be
+    a merge and there are none.
+  - `Snapshot(genesis, tips, previous)` attests a state of one prodrome.
+    `tips` are sorted, distinct and non-empty, and `previous` is a snapshot's
+    name or `''`.
+  - `Sealed(prev, event)` and `Woven(parents, event)` are the LEGACY
+    envelopes, read forever: `append` writes neither, and `merge` writes a
+    `Woven` only over a legacy store's tips. A `Sealed` has one parent,
+    `prev == ""` at a legacy root; a `Woven` has two or more, sorted and
+    distinct, and its `event` may be `None`: a merge is structure.
 
-- An **envelope** is `Sealed(prev, event)`, one parent with `prev == ""` at
-  genesis, or `Woven(parents, event)`, two or more parents, sorted and
-  distinct, where `event` may be `None`: a merge is structure.
-  `parents_of(Sealed("", …))` is `()`.
-- An object's **name** is `sha256(utf8(print(envelope)))` in lowercase hex.
+  `parents_of` is a `Change`'s `deps`, a `Snapshot`'s `tips` plus a non-empty
+  `previous`, a `Sealed`'s `prev` (none at a root), a `Woven`'s `parents`,
+  and nothing for a `Genesis`. Every rule below that reads parents reads
+  these.
+- An object's **name** is `sha256(utf8(print(object)))` in lowercase hex.
   The file `objects/<name>.py` holds exactly that print, and a loader
-  re-hashes the bytes before parsing them.
+  re-hashes the bytes before parsing them. `event_id(e) =
+  sha256(utf8(print(e)))` names an EVENT apart from where it was written; it
+  is never stored.
+- **Every object has exactly one genesis.** A `Change` or a `Snapshot` names
+  it; a `Genesis` is its own; a legacy object's is the `Sealed("", …)` root
+  it rests on, or, where a legacy store already joined two roots, the least
+  such root by name, whose one prodrome every legacy object is in. No `deps`
+  or snapshot edge crosses geneses. So a store may hold several prodromes, a
+  union of two stores of different geneses is DISJOINT, and every fold,
+  register and entry factors into per-genesis ones, a todo keyed by
+  `(genesis, todo)` (§6). A `Change` may depend on legacy writes, whose
+  global ancestry overstates what it depends on; that is safe, since a
+  later write can only settle more than the chain says, never less.
 - **A write is durable.** The print goes to a randomly named temp file in
   `objects/`, created exclusively (never a fixed `<name>.tmp`, which two
   writers of one object would share), and is synced to disk before it is
@@ -96,22 +123,55 @@ since this grammar has tuples and no mapping.
   or the whole one, never an empty file under a name that promises content,
   and at worst a temp that `verify` reports.
 - **Tips are derived.** `tips()` is the set of objects no object names as a
-  parent (as a `Sealed`'s `prev` or among a `Woven`'s parents): a function of
-  the object set alone, in any order it is listed. A store on disk is its
-  `objects/` and nothing else, so two copies that each only added objects are
-  merged by uniting the files — a `git merge` of two clones is this union and
-  cannot conflict. A store under git needs `objects/** -text -diff` in the
-  `.gitattributes` that governs it, so that no line-ending conversion or text
-  merge rewrites the bytes a name is the hash of. A store written before 0.9
-  also holds `HEAD` (one tip) and `refs/` (one file per head while there were
-  several); nothing reads them, the objects derive exactly what they named
-  (§9.17), and `verify` reports them as leftovers to delete.
-- **Appending** seals on every tip: none is genesis, one is a `Sealed`, more
-  is a `Woven` carrying the event, so the next write after a union joins it.
+  parent: a function of the object set alone, in any order it is listed. A
+  store on disk is its `objects/` and nothing else, so two copies that each
+  only added objects are merged by uniting the files — a `git merge` of two
+  clones is this union and cannot conflict. A store under git needs
+  `objects/** -text -diff` in the `.gitattributes` that governs it, so that
+  no line-ending conversion or text merge rewrites the bytes a name is the
+  hash of. A store written before 0.9 also holds `HEAD` (one tip) and
+  `refs/` (one file per head while there were several); nothing reads them,
+  the objects derive exactly what they named (§9.17), and `verify` reports
+  them as leftovers to delete.
+- **`init(label)`** writes a prodrome's `Genesis`, once.
+- **Appending writes a `Change`**, never a `Woven`, into the writer's
+  genesis; a store of several geneses is written through a handle that
+  names one.
+  - If the genesis holds an object whose event prints byte-identically to
+    `event`, `append(event)` writes nothing and answers the first such
+    object in the linearisation, even one since superseded. Appending is
+    IDEMPOTENT: replaying a delivery whose claim was overridden brings
+    nothing back, and a host that means to assert it again, having seen the
+    override, says something new — a new `at`, a new note.
+  - Otherwise it writes `Change(genesis, deps, event)`. `deps` are the
+    union, over the registers `event` writes (§6.6), of each register's
+    frontier in the writer's genesis, less any write another of them rests
+    on, so they are an antichain. The frontiers are folded STRUCTURALLY:
+    under the policy where everything binds, and at no moment, because a
+    name records what its writer held and never a reader's policy or moment.
+    `Created` and `Tended` write no register, so their `deps` are `()`.
+
+  A register is one todo's, so `deps` never leave a todo: a store of changes
+  is a disjoint union of per-todo DAGs, and changes to different todos are
+  concurrent. A change's name is a function of its genesis, its event and
+  the part of the past it supersedes, and of nothing else: two replicas that
+  agree about a register write byte-identical changes over it, whatever
+  else each holds. Two that disagree may each write one event over their own
+  frontier; those are TWINS, two objects with one `event_id`, each
+  superseding only what its own deps reach, and a register reads them as
+  one candidate (§6).
+- **`snapshot()`** writes `Snapshot(genesis, tips, previous)`: the genesis's
+  tips, and as `previous` the last snapshot among them; with nothing written
+  since that one, it is the answer and nothing is written. Its closure is
+  exactly what it attests: an object is in it iff it existed when the
+  snapshot was written, because a name cannot be computed before what it
+  hashes, and on a `previous` chain each closure contains the one before. No
+  fold reads a snapshot, and no change depends on one. When to write one is
+  the host's call.
 - **Linearisation** is Kahn's algorithm over parents with a min-heap on the
-  name: deterministic, and arbitrary between incomparable objects, which is
-  what registers make visible (§6.6). A missing parent or a cycle is a
-  refusal.
+  name: deterministic, and arbitrary between incomparable objects. It orders
+  a todo's `stream` (§6.7) and numbers objects for the ancestry index, and
+  decides no value (law 25). A missing parent or a cycle is a refusal.
 - `ancestors(x)` is the transitive parent closure; `concurrent(a, b)` holds
   when neither is an ancestor of the other.
 - **`verify`** reports an object not hashing to its name, a missing parent, a
@@ -123,26 +183,35 @@ since this grammar has tuples and no mapping.
   object would otherwise be reported as, and an event the
   policy does not `confirm` (§5) dated before any of its ancestors — a writer
   whose stamp the host forces cannot legitimately be dated behind what it was
-  written on top of, where a backfill can. There is no unreachable object and
-  no stale head to report: every object is a tip or beneath one, and no tip
-  rests on another.
+  written on top of, where a backfill can; a change's ancestors are what its
+  deps rest on, so it cannot be dated behind what it was written OVER. It
+  also reports an object naming a genesis the store does not hold, an edge
+  between geneses, a dep another dep of the same change rests on, a dep that
+  writes no register its change's event writes, and an object a snapshot
+  attests that the store lacks. There is no unreachable object and no stale
+  head to report: every object is a tip or beneath one, and no tip rests on
+  another.
 - **`quarantine(name)`** moves `objects/<name>.py` to `quarantine/<name>.py`
   when its bytes do not hash to `name`, and refuses a file that does (that
   file is the object, even one this reader cannot parse). A read refuses a
   file failing its hash rather than guess what it held — `tips()` among them,
   and so every append — and its refusal names the object and this operation
   (`prodrome quarantine <name>`). Set aside, the store is what it holds
-  without it: `tips()` answers (the object's parents may be tips again, and
-  the next append weaves them in), and `verify` reports the receipt until
-  the object is restored from a replica and the quarantined file deleted.
+  without it: `tips()` answers (the object's parents may be tips again), and
+  `verify` reports the receipt until the object is restored from a replica
+  and the quarantined file deleted.
 - **`adopt(source, tip)`** copies in everything `tip` rests on that the store
-  lacks, verifying all of it before writing any, and writing parents before
-  children, since an object belongs to the store as soon as its file exists.
-  Placement falls out of the derivation: a tip already contained changes
-  nothing; a tip containing every tip fast-forwards; otherwise it is a second
-  tip. The source may be another store or a map of prints that arrived over a
-  wire (`adopt_objects`); only where the bytes are read from differs.
-  **`merge(parents)`** writes a `Woven` over them, every tip by default.
+  lacks, a change's or a snapshot's genesis included, verifying all of it
+  before writing any, and writing parents before children, since an object
+  belongs to the store as soon as its file exists. Placement falls out of the
+  derivation: a tip already contained changes nothing; a tip containing every
+  tip fast-forwards; otherwise it is a second tip. The source may be another
+  store or a map of prints that arrived over a wire (`adopt_objects`); only
+  where the bytes are read from differs. A change's bytes say nothing of
+  which store holds it, so moving its file between two stores of one genesis
+  changes no name (law 29).
+- **`merge(parents)`** writes a `Woven` over them, every legacy tip by
+  default: a legacy store's join, which a store of changes never needs.
 
 ## 4. Events
 
@@ -213,6 +282,20 @@ and a fold that hid its writes would be an outage that reports success. It
 record from a named actor binds and is still shown as that actor's. The empty
 set is the policy under which everything binds and nothing is a claim.
 
+**Naming is structural, belief is not.** A change's `deps` (§3) are read
+under the policy where everything binds, because a name records what its
+writer held. A reading's registers still fold only what its policy binds
+(§6): a claim neither joins a confirmed frontier nor removes a write from
+one, whatever its deps, so an untrusted change cannot settle a conflict
+between trusted writes in the confirmed reading. A LATER binding write that
+descends from it does, since its writer held everything the claim names.
+Each reading has its own candidates — the confirmed reading's are the
+binding writes, and a register none of whose writes binds is unwritten
+there; the claimed reading's are all of them — so a claim never moves a
+confirmed price (law 11), and one more urgent than the confirmed answer is
+SHOWN (§6.7). Twins cannot differ in standing: standing is a function of the
+event, and twins carry one.
+
 **Both readings stay in the database** (§6.7): the CONFIRMED one, under the
 host's policy, and the CLAIMED one, under the policy where everything binds. A
 store that kept only the filtered reading could not show a claim at all, and
@@ -220,72 +303,100 @@ showing one is the whole point of storing it.
 
 ## 6. Folds
 
-Every fold takes the linearised events, a moment `t` and a §5 POLICY, and reads
-the events with `at <= t` in causal order.
+Every fold is a projection of one todo's REGISTERS (6) at a moment `t` under
+a §5 POLICY. A write joins its register when it is dated at or before `t`
+and the policy binds it — a content record joins whoever wrote it — and what
+it supersedes is ancestry alone: no clock and no linearisation picks a
+winner. A register's reading is its CANDIDATES, the distinct events of its
+frontier, so twins (§3) are one candidate; one candidate is a value, and
+more is a conflict. Every fold factors per genesis (§3), a todo keyed by
+`(genesis, todo)`; in a store of one genesis that key reads as the todo.
 
-1. `env_at(events, t, policy)`, the environment, in two halves. `outcomes :
-   TodoId → Completed(at) | Cancelled(at)`: the last binding write wins and
-   `Reopened` clears. `tended : TodoId → set of instants`: the instant of
-   every binding `Tended`, a grow-only set folded by union, so nothing
-   removes a tending and no order among them matters. Only events the policy
-   says `Binds` write either half.
-2. `specs_at`: the latest spec per todo, from a record's payload (whoever
-   wrote it) or a `SpecRevised` the policy binds.
-3. `authored_at`: the latest record per todo, whoever wrote it — no policy
-   parameter: content renders, and §6.7 marks the row instead.
-4. `flatten(events, t, policy) : TodoId → Term`: one function per todo. Its
-   head is `checklist(first spec ever, first checklist length ever)`; at every
-   moment a spec, a checklist length or the bound state changed there is a
-   `Piece(at, term)`: a flat 1.0 while resolved, else `checklist(spec in
-   force, items in force)`; assembled by `mk_piecewise`. "Spec" and "items"
-   are the payload's two readings (§4) and the whole of what a record
-   contributes. A `Tended` puts no piece: it is care and not a transition,
-   and the terms that read tendings read them from the environment (§7.3),
-   so no stored function changes meaning. The head extends to
-   −∞: a todo's function is total over time, and before anything was recorded
-   about a half its unit is the earliest recorded demand of that half. A
-   completion recorded before its record therefore stands against the demand
-   the record says it had. Consequence: the prefix law (§9.2) is exact for
-   every moment after a todo's first spec and first checklist are recorded; a
-   late first half re-heads the curve before it. Absent when there was never
-   a spec or a checklist. `checklist(own, n)` is `own` when `n == 0`;
-   `Conj(n × Flat(0.5))` when `own` is `None`; else `OffsetBy(own, Conj(…))`.
-5. `history(events, policy)`: the environment as a function of time; per
-   todo, the sequence of `(at, binding | None)`, and every binding tending,
-   a grow-only set being its own history; `history.at(t)` equals
-   `env_at(events, t)`, the tendings dated at or before `t` included.
-6. **Registers** over nodes `(name, parents, event)`: one register per `(kind
-   ∈ {state, spec, content}, todo)` holds its frontier, the writes no later
-   write descends from. One write is a value; more is a conflict. A `Tended`
+1. `env(t, policy)`, the environment, in two halves. `outcomes : TodoId →
+   set of candidate bindings`: the candidates of the todo's state register,
+   each `Completed(at)` or `Cancelled(at)`, with "open" a candidate where a
+   `Reopened` is one; a todo whose one candidate is open is unbound.
+   `tended : TodoId → set of instants`: the instant of every binding
+   `Tended`, a grow-only set folded by union, so nothing removes a tending
+   and no order among them matters. Only events the policy says `Binds`
+   write either half.
+2. `specs(t, policy)`: the candidate specs of each todo's spec register,
+   written by a record's payload (whoever wrote it) or a `SpecRevised` the
+   policy binds.
+3. `content(t)`: the candidate records of each todo's content register,
+   whoever wrote them — no policy parameter: content renders, and §6.7 marks
+   the row instead.
+4. `flatten(t, policy) : TodoId → Term`: one function per todo. Its head is
+   `checklist(first spec ever, first checklist length ever)`, from the writes
+   no other write to their register precedes; at every moment a spec, a
+   checklist length or the bound state changed there is a `Piece(at, term)`:
+   a flat 1.0 while resolved, else `checklist(spec in force, items in
+   force)`; assembled by `mk_piecewise`. "Spec" and "items" are the
+   payload's two readings (§4) and the whole of what a record contributes. A
+   `Tended` puts no piece: it is care and not a transition, and the terms
+   that read tendings read them from the environment (§7.3), so no stored
+   function changes meaning. The head extends to −∞: a todo's function is
+   total over time, and before anything was recorded about a half its unit
+   is the earliest recorded demand of that half. A completion recorded
+   before its record therefore stands against the demand the record says it
+   had. Consequence: the prefix law (§9.2) is exact for every moment after a
+   todo's first spec and first checklist are recorded; a late first half
+   re-heads the curve before it. Absent when there was never a spec or a
+   checklist. `checklist(own, n)` is `own` when `n == 0`; `Conj(n ×
+   Flat(0.5))` when `own` is `None`; else `OffsetBy(own, Conj(…))`.
+
+   **A conflict prices as its most urgent world.** A WORLD of todo `x` picks
+   one candidate from each of `x`'s written state, spec and content
+   registers; its log is the log less the other candidates of those
+   registers. The term in each piece is `Least` (§7) over the worlds in force
+   at that piece's instant, each world's term as above, so one world is the
+   term above byte for byte. Low is urgent, so a conflict rises and never
+   sinks, and nothing picks a winner. Taking the most urgent spec and the
+   most urgent state separately could build a combination no writer wrote; a
+   world is always a reading some writer's view contains. The worlds are the
+   product of the three candidate counts, and a conflict is shown and
+   settled by the next write, so they are few.
+5. `history(policy)`: the environment as a function of time. `history.at(t)`
+   is the registers folded at `t`, which change only at the instants writes
+   are dated; the tendings, a grow-only set, are their own history. No
+   causal order enters it.
+6. **Registers** over nodes `(name, parents, event, genesis)`: one register
+   per `(genesis, kind ∈ {state, spec, content}, todo)` holds its frontier,
+   the writes to it that no later write to it descends from. A `Tended`
    writes no register: it joins the tendings, a grow-only set kept beside the
    frontiers, so concurrent tendings are their union and never a conflict.
-   `extend(state, nodes)` is a monoid action. Projections pick the write
-   latest in the linearisation, so on any DAG `env_of` (the tendings with
-   it), `specs_of` and `content_of` equal folds 1–3, and `conflicts_of` names
-   the rest.
+   `extend(state, nodes)` is a monoid action. A write that descends from a
+   conflict settles it, and nothing else does: a merge settles nothing.
+   Ancestry is indexed within each `(genesis, todo)` for changes, whose deps
+   never leave a todo, and over every legacy object for legacy objects, so
+   only a mixed store pays for both. `conflicts_of` names each register whose
+   frontier holds more than one write.
 7. **The entry.** `entries(nodes, t, policy) : [Entry]`, one row per todo
-   any event mentions, ordered by id. It is the composition of the folds and
-   §7, stated once so every consumer performs it once. With `confirmed =
-   fold(nodes, t, policy)`: `outcome = env_of(confirmed)[todo]`; `claim =
-   env_at(events, t, everything-binds)[todo]` where it names a different
-   outcome than
-   `outcome`, absent where they agree; `spec = flatten(…)[todo]`, `Absent`
+   any event mentions, per genesis and by id. It is the composition of the
+   folds and §7, stated once so every consumer performs it once. With
+   `confirmed` the registers under the policy: `outcome` is the todo's
+   candidate bindings, one member where nothing conflicts; `claim` is the
+   candidate bindings under everything-binds, where their kinds differ from
+   `outcome`'s, absent where they agree; `spec = flatten(…)[todo]`, `Absent`
    (§7) where the todo has none, and `value` the fulfillment at `t` of
    `link(spec, specs)` (§7.2) under `confirmed`'s environment, where `specs`
-   is `flatten(…)` with `Absent` for every other todo the nodes mention — so
-   `value` is a number, `absent` where it reads `∅`, or, where `spec` does
-   not link, the `LinkError`;
-   `content = chosen_of(confirmed, content)[todo]`, the name of the winning
-   object and never the record — a consumer that wants the payload looks the
-   object up, because what a record MEANS is the host's; `conflicts = conflicts_of(confirmed)[todo]`;
-   `stream` is every node whose event names the todo, in causal order. A todo
-   whose events are all dated after `t` is still a row, open and `absent`:
-   `t` asks what is believed, not what exists. A LIST of entries is in one
-   order, defined here and by no host: ascending in value, ties by id, then
-   every row with no number, `absent` or not linking, by id.
+   is `flatten(…)` over the todo's prodrome with `Absent` for every other
+   todo it mentions — so `value` is a number, `absent` where it reads `∅`,
+   or, where `spec` does not link, the `LinkError`, and under a conflict it
+   is the least over worlds; `content` is the names of the candidate content
+   records, sorted, and never the records — a consumer that wants the
+   payload looks the object up, because what a record MEANS is the host's;
+   `conflicts = conflicts_of(confirmed)[todo]`; `stream` is every node whose
+   event names the todo, in causal order — the one reading the linearisation
+   orders, and since deps never leave a todo, Kahn's algorithm over the
+   todo's own objects. A todo whose events are all dated after `t` is still
+   a row, open and `absent`: `t` asks what is believed, not what exists. A
+   LIST of entries is in one order, defined here and by no host: ascending
+   in value, ties by `(genesis, id)`, then every row with no number, `absent`
+   or not linking, by `(genesis, id)`.
    `confidence` says whether the
-   answer is the confirmed reading whole: a claim refused, a winning content
-   record the policy does not `confirm`, or both. Checked against `conformance/view/*.py` — SEEDED, not
+   answer is the confirmed reading whole: a claim refused, a candidate
+   content record the policy does not `confirm`, or both. Checked against `conformance/view/*.py` — SEEDED, not
    taken from the reference like the rest of `conformance/`: random logs
    drawn from this crate's own generator (`core/tests/common/mod.rs`'s
    `a_log`, the one `core/tests/all/fold_laws.rs`'s properties draw from too)
@@ -304,7 +415,8 @@ Flat(value) | Decay(start, end, end_date, lead_up, start_date?) | Curve(points)
 | Conj(terms, p) | Offset(delta, a) | Gate(gate, body) | Shift(delta, a)
 | Within(window, p, a) | Importance(w, a) | After(event, anchor, term, pending, needs?)
 | Recur(todo, anchor, term, pending) | Periodic(period, anchor, term)
-| Piecewise(head, pieces) | OffsetBy(delta, term) | Ref(todo) | Absent
+| Piecewise(head, pieces) | OffsetBy(delta, term) | Least(terms) | Ref(todo)
+| Absent
 ```
 
 Semantics `⟦t⟧(now, env) ∈ [0, 1] ∪ {∅}`. `∅` is NO VALUE: a note, a
@@ -327,9 +439,17 @@ lowers anything it is composed with.
   `Shift`: `⟦a⟧(now + δ)`. `Within`: the power mean of those of the 65
   samples over `[now, now + window]` that have a value, `∅` when none does.
   `Importance`: `⟦a⟧^w`. `Offset`, `Shift` and `Importance` take `∅` to `∅`.
+- `Least`: the minimum of the members that have a value, `∅` when none does,
+  so `Absent` is its identity, as for `Conj`. It has at least one member,
+  and `Least([t])` is `t`. It is commutative, associative and idempotent: a
+  semilattice. It is how a conflict prices (§6.4), since min cannot be
+  written with the other constructors — `Conj`'s `p → −∞` limit is min, but
+  `inf` is not storable, and `Gate` is a max.
 - `After`: unbound, `⟦pending⟧(now)`; `Completed(done)`, `⟦term⟧(now − (done
   − anchor))`; `Cancelled`, 1.0, whatever `term` reads. A binding counts only
-  when `done <= now`. `pending` may be `Absent`, as `Recur`'s may.
+  when `done <= now`. `pending` may be `Absent`, as `Recur`'s may. Where the
+  environment holds several candidate bindings of `event` (§6.1), `After`
+  reads the minimum over them of the reading under each.
 - `Recur`: with `s = last_tended(env, todo, now)`, the latest tending of
   `todo` at or before `now`: none, `⟦pending⟧(now)`; else `⟦term⟧(now − (s −
   anchor))` — `After`'s slide, from the last pass (§7.3).
@@ -345,7 +465,7 @@ lowers anything it is composed with.
 - **Normal form** (`mk_piecewise`): no pieces means the head; nested pieces
   are spliced; no adjacent equal pieces; instants strictly increasing.
   `Absent` is a leaf and `normalize` leaves it where it is. `normalize`
-  pushes `Conj`, `Offset`, `Gate`, `Importance` and `OffsetBy`
+  pushes `Conj`, `Least`, `Offset`, `Gate`, `Importance` and `OffsetBy`
   under `Piecewise` over the merged partition, translates instants under
   `Shift`, and leaves `Within`, `After`, `Recur` and `Periodic` in place: a
   window, a lookup and a fold of time onto one cycle do not commute with a
@@ -363,7 +483,8 @@ lowers anything it is composed with.
   shape carrying those two at every node.
 - **Breakpoints**: the slope changes and jumps of the exact fragment (`Flat`,
   `Decay`, `Curve`, `Absent`, `Piecewise` of exact parts, `Offset`, `Shift`,
-  constant composites). `Absent` is exact and has none. A series with a knot
+  `Least` of exact parts, constant composites). `Absent` is exact and has
+  none; a `Least`'s include the instants where two of its members cross. A series with a knot
   at each and a second knot before each jump is the curve; a knot is `∅`
   where the term has no value, and no line is drawn to or from one. Other
   terms are sampled and say so.
@@ -403,6 +524,9 @@ snapshot says about `e`:
   compile(term)))])`. `x·(1 − |1|) + max(0, 1) = 1` for every `x`: the moot
   constant is a graded offset at δ = 1, and writing it as one keeps the mooted
   demand in the tree where a reader can still see what was dropped.
+- A CONFLICT, several candidate bindings of `e` (§6.1) — `Least` of the link
+  compiled under each candidate, so the compiled term reads what §7's
+  `After` reads and law 13 holds as stated.
 
 So each link contributes ONE graded offset δ ∈ [0, 1] — its MOOT GRADE, 1
 where the upstream was cancelled and 0 everywhere else — applied with §7's
@@ -485,14 +609,15 @@ the free monad over `TermF`, with todo ids as its variables. A rebuilt
 `Piecewise` goes back through `mk_piecewise`, so a spec that is a schedule,
 landing in a piece, is spliced like any nested schedule. A closed term is its
 own link, untouched. `specs` is each todo's OWN function; for a store it is
-`flatten`'s (§6.4) over every todo the store knows, and `Absent` for a known
+`flatten`'s (§6.4) over every todo of the term's prodrome — an unqualified
+`Ref(todo)` names that todo in its own genesis (§3) — and `Absent` for a known
 todo with none — a record whose `spec` is `None`, or a todo only ever
 created — so `Ref(x)` means x's whole function, its revisions and its
 lifecycle, a completed child reads 1.0 from its completion, and a reference
 to an unpriced todo links and reads `∅`, which a conjunction passes over.
 
 **Refusals are values.** `LinkError::Unknown(x)` where `specs` holds no `x`:
-for a store, an id it has never seen.
+for a store, an id its prodrome has never seen.
 `LinkError::Cycle(path)` where the references loop: the substitution keeps the
 path of references it is expanding, and meeting one already on it is the
 cycle, reported with that path, its first todo repeated at the end. So `link`
@@ -563,18 +688,22 @@ parameter — a constructor name, a field order, a vocabulary, a parse, a print,
 since one store holds one record shape; `Standing = Binds | Claims` and
 `Policy`, §5's standing as a parameter — one function of an event, carried by
 value like the payload and for the same reason, since one store reads under one
-policy; `Envelope = Sealed | Woven`;
+policy; `Envelope = Genesis | Change | Snapshot | Sealed | Woven`, each
+object's genesis beside it (§3);
 `TodoEvent`; `Term` as `Fix TermF`, `Absent` among its leaves; a value as
 `[0, 1] ∪ {∅}`, `∅` never a number (`Option`); `Closed` (§7.2), a term with
 no `Ref`, which is what every evaluator takes, and `LinkError = Unknown |
 Cycle`;
-`Env`, the environment, outcomes beside the grow-only tendings (§6.1, §7.3);
+`Env`, the environment, each todo's candidate outcomes beside the grow-only
+tendings (§6.1, §7.3);
 `Explanation = Cofree TermF Annotation`; `Compiled` (§7.1), a term with every
 `After` and `Recur` resolved beside the `Link`s it resolved, whose readers
 take no environment because a compiled term cannot consult one, and
 `ChainError`, whose
-`Cycle` carries the path; `Frontier`, a non-empty ordered set
-of writes; `Folded`; `Breaks`; `Entry` (§6.7), whose function is always
+`Cycle` carries the path; `Frontier`, an ordered set of writes, empty for
+an unwritten register, and its candidates; `Folded`; `Breaks`; `Entry`
+(§6.7), keyed by genesis and todo, whose outcome is a candidate set, whose
+function is always
 there (`Absent` where the todo has none), whose value is a number, `∅` or a
 `LinkError`, and whose `Confidence` is a sum with no "provisional for no
 reason" inhabitant. Smart constructors validate; records are data; engine
@@ -592,13 +721,15 @@ Against `conformance/*.py` and on generated inputs:
    recorded late, re-heads its curve before it. With both halves recorded,
    exact.
 3. Independent events commute; a uniform shift of every `at` changes no
-   winner.
-4. `history.at(t) == env_at(t)`.
+   reading.
+4. `history.at(t) == env(t)`: by definition, since both are the registers
+   folded at `t` (§6.5).
 5. `mk_piecewise` is a normal form: unit, join, idempotent, no adjacent
    repeats. `normalize` preserves every reading, leaves nothing buried, and is
    idempotent.
-6. Registers equal the folds on any DAG; conflicts are exactly the registers
-   both branches wrote; a merge settles nothing; a descending write settles.
+6. The folds are the register projections (§6), so there are not two
+   implementations to compare; conflicts are exactly the registers both
+   branches wrote; a merge settles nothing; a descending write settles.
 7. Interpolation between series knots equals evaluation on the exact
    fragment: a line between two numbers, `∅` between two `∅`s, and a pair
    with one absent end only ever the second before a jump.
@@ -629,8 +760,8 @@ say the parameter cannot do anything but select.
     sub-log of the events it binds under the policy that binds everything —
     and that stays true under any permutation of the log, since filtering
     commutes with reordering. Which events count is a function of the event
-    SET; law 3 is the other half, that only which of them WINS is a function
-    of the order.
+    SET; law 25 is the other half, that no linear extension of the DAG reads
+    differently.
 
 Law 13 quantifies over the ENVIRONMENT, and it is what makes §7.1's compiler an
 optimisation rather than a second evaluator.
@@ -669,9 +800,9 @@ Laws 15 and 16 are §7.3's: care is a set, and recurrence reads it as of now.
     outcome, spec, content record, function or register at any moment, and
     every entry keeps its state, its function and its content — an open todo
     stays open. The tendings are a grow-only set: `history.at(t)` holds the
-    ones dated at or before `t` (law 4), the registers' tendings are the
-    folds' on any DAG (law 6), a merge of two histories folds to the union of
-    their tendings, and a tending writes no register, so never a conflict.
+    ones dated at or before `t` (law 4), a merge of two histories folds to
+    the union of their tendings, and a tending writes no register, so never
+    a conflict.
     `last_tended(env, x, now)` is the latest tending at or before `now`, and
     a tending dated later changes nothing it answers. On
     `core/tests/all/fold_laws.rs`'s generators, which draw `Tended` among the
@@ -698,8 +829,7 @@ files.
     directory derive exactly them. (b) Two writers who each append to a copy
     of one store, and whose object directories are then united (a `git
     merge`), read, fold and view exactly as the Prodrome's own replica merge
-    of the two stores (`adopt` of the other's tips), and the next `append`
-    writes the same `Woven` a `merge` carrying that event would. (c)
+    of the two stores (`adopt` of the other's tips). (c)
     Derivation does not depend on the order objects are listed or files were
     written. And NO STORED BYTE MOVES: for every `conformance/dag.py` store,
     laid out with the `HEAD` and `refs/` its writer left, the derived tips are
@@ -738,135 +868,72 @@ number.
     (law 9) changed exactly where this law says they must: their unpriced
     rows now read `value='absent'` and `spec='Absent()'`.
 
+Laws 19–29 are §3's change identity and §6's candidates. Each names the
+property test under `core/tests/all/` that checks it, on the generators the
+laws above draw from, extended to diverging writers, replays, conflicts and
+several geneses. `conformance/change.py`, written BY HAND from laws 19–21,
+23, 24 and 28 like `link.py`, pins exact prints and names, a replay that
+writes nothing, a twin pair, a conflict priced as its most urgent world, two
+geneses united, a snapshot chain and a mixed store over a
+`conformance/dag.py` one (`change_vectors.rs`).
+
+19. **A name is its genesis, event and view.** `append(event)` writes a
+    function of its genesis, `event`, and the structural frontiers of the
+    registers `event` writes. Adding objects that write other registers, and
+    do not carry `event` (law 20), changes no name.
+    `change.rs::name_ignores_other_registers`.
+20. **Append is idempotent.** Appending an event whose print the genesis
+    holds writes nothing and answers the first object carrying it. Replaying
+    any sequence of appends onto the store they produced leaves its object
+    set unchanged, the replay after a rejection included (§3).
+    `change.rs::replay_is_a_no_op`,
+    `change.rs::replay_after_rejection_writes_nothing`.
+21. **Independence is structural.** `deps` never leave a todo, so changes to
+    different todos are concurrent, and a store written todo by todo is the
+    store written in time order. `change.rs::deps_name_one_todo`,
+    `registers.rs::deps_name_one_todo`.
+22. **No stored byte moves.** Every `conformance/dag.py` store, and every
+    generated store of `Sealed` and `Woven`, derives, linearises and
+    verifies exactly as before, and reads exactly as before wherever no
+    register has two candidates. `dag.py`'s `env` changed exactly where law
+    24 says it must: at a todo whose state is in conflict, it is the
+    candidate set. The existing `dag.rs`, `tips.rs`, `fold_laws.rs` and
+    vector suites.
+23. **Geneses are disjoint.** Every object has one genesis, and no edge
+    crosses geneses. The files of two prodromes united verify clean, and
+    fold, and view, to the union of the per-genesis folds keyed by
+    `(genesis, todo)`. `change.rs::no_edge_crosses_geneses`.
+24. **A conflict prices as its most urgent candidate.** With one candidate
+    per register, every reading is as it was, bit for bit. Otherwise an
+    entry's value is the least over its worlds. Agreeing twins are one
+    candidate. `fold_laws.rs::one_candidate_reads_as_before`,
+    `fold_laws.rs::conflict_is_its_most_urgent_world`,
+    `registers.rs::agreeing_twins_are_one_candidate`.
+25. **The linearisation decides no value.** Folding any linear extension of
+    the DAG gives the same entries; only `stream`'s order may differ.
+    `fold_laws.rs::any_linear_extension_folds_alike`.
+26. **`Least` is a semilattice with `Absent` as identity.** It is
+    commutative, associative and idempotent, and `Least([t]) = t`.
+    `normalize` and `compile` preserve its reading (laws 5, 13), and it
+    round-trips (law 1). `fpl_laws.rs::least_is_a_semilattice`, with `Least`
+    drawn by `a_term()` so laws 1, 5, 13 and 14 cover it.
+27. **A claim settles nothing it is not trusted to.** A claiming change,
+    whatever its deps, leaves every confirmed frontier as it was, and the
+    confirmed price under a conflict is the least over binding candidates
+    only. `fold_laws.rs::claim_never_settles`.
+28. **A snapshot attests its closure.** Its name changes if any object in
+    its closure does, `verify` reports an object it attests that the store
+    lacks, and on a `previous` chain each closure contains the one before.
+    `change.rs::snapshot_commits_to_closure`,
+    `change.rs::snapshot_chain_grows`.
+29. **Placement is not identity.** Moving a change's file between two stores
+    of one genesis changes no name. A change re-proposed over the same
+    frontier is the same object, and over a moved frontier it has the same
+    `event_id`. Checked against two plain stores, a base and a store staged
+    over it: `change.rs::accept_is_a_same_name_move`,
+    `change.rs::reproposal_is_recognised`.
+
 ## 10. Non-goals
 
 A clock in the merge; a second evaluator; a rendering as a source of truth;
 multi-tenancy; a hosted service.
-
----
-
-## Draft A. Change identity — PROPOSED, NOT IN FORCE
-
-> **DRAFT.** This section is a proposal under review
-> (`docs/design-change-identity.md`). No implementation reads it, no vector
-> checks it, and §1–§10 above are the contract until it is folded into them
-> and this section is deleted. Where it says "§3 gains", §3 has not.
-
-**A1. Objects (amends §2, §3).** Three new constructors.
-- `Genesis(label, nonce)` starts a prodrome. `nonce` is 32 hex characters
-  drawn once. It has no parents and no event.
-- `Change(genesis, deps, event)`. `deps` is sorted, distinct and possibly
-  empty, and `event` is required.
-- `Snapshot(genesis, tips, previous)`. `tips` is sorted, distinct and
-  non-empty, and `previous` is a snapshot's name or `''`.
-
-`parents_of` a `Change` is its `deps`, and of a `Snapshot` its `tips` plus a
-non-empty `previous`. `Sealed` and `Woven` stay readable, and a writer under
-this draft writes neither. `event_id(e) = sha256(utf8(print(e)))` names an
-event apart from where it was written, and is never stored.
-
-**A2. Genesis (amends §3).** Every object has exactly one genesis. A
-`Change` or `Snapshot` names it. A legacy object's genesis is the
-`Sealed("", …)` root it rests on, or the least such by name where a legacy
-store already joined two roots. No `deps` or snapshot edge crosses geneses.
-A store may hold several geneses, and every fold, register and entry factors
-into per-genesis ones, keyed by `(genesis, todo)`. An unqualified `Ref(todo)`
-resolves within its own genesis.
-
-**A3. Dependencies (amends §3's appending).** `append(event)` computes `deps`
-as the union, over the registers `event` writes (§6.6), of each register's
-frontier within the writer's genesis. The frontier is folded STRUCTURALLY:
-under the policy where everything binds, and at no moment. `Created` and
-`Tended` write no register and have `deps = ()`. A register is one todo's, so
-`deps` never leave a todo.
-
-**A4. Idempotence (amends §3's appending).** If the genesis holds an object
-whose event prints byte-identically to `event`, `append` writes nothing and
-answers the first such object in the linearisation, even one since
-superseded.
-
-**A5. No merges (amends §3).** `append` never writes a `Woven`. Tips stay
-derived and are no longer read to write. `merge` stays for legacy stores.
-
-**A6. Candidates (amends §6).** A register's reading is its CANDIDATES: the
-distinct events of its frontier, so writes carrying one event are one
-candidate. Nothing projects a winner. In the confirmed reading only binding
-writes are candidates, and a claim neither joins a frontier nor removes from
-one, whatever its deps.
-- `env`'s outcome for a todo is its candidate bindings, where "open" is a
-  candidate if `Reopened` is one.
-- `specs` and `content` are the candidate specs and records.
-- `After(x, …)` reads the minimum over `x`'s candidate bindings.
-
-A WORLD of todo `x` picks one candidate from each of `x`'s written state,
-spec and content registers. Its log is the log minus the other candidates of
-those registers. `flatten[x]` is `Least` over the worlds, each flattened as
-§6.4 says. The entry's `value` is therefore the least over worlds, and its
-`content` is the candidate names, sorted. The linearisation decides no value
-and orders only `stream`.
-
-**A7. `Least(terms)` (amends §7).** The minimum of the members that have a
-value, and `∅` when none does. `Absent` is its identity and `Least([t]) =
-t`. `normalize` pushes it under `Piecewise`. It is exact when its members
-are, with the crossings among its breakpoints. The compiler writes a
-conflicted `After` as `Least` of the per-candidate compiled terms.
-
-**A8. Snapshots (amends §3).** A snapshot's closure is exactly what it
-attests. An object is in it iff it existed when the snapshot was written. On
-a `previous` chain each closure contains the one before. No fold reads a
-snapshot, and no change depends on one.
-
-**A9. `verify` (amends §3).** It also reports:
-- a `Change` whose `deps` are unsorted, repeated, or not an antichain;
-- a dep of another genesis, of another todo, or writing no register its
-  event writes;
-- a `Snapshot` whose closure is incomplete or crosses geneses;
-- a legacy store that joined two roots.
-
-The clock rule is unchanged and reads the narrower ancestors.
-
-**A10. Laws (amend §9).** The checking property test is named after each
-law.
-
-19. **A name is its genesis, event and view.** Adding objects that write
-    other registers (and do not carry `event`) changes no name `append` would
-    write. `change.rs::name_ignores_other_registers`.
-20. **Append is idempotent.** Replaying any sequence of appends onto the
-    store they produced leaves its object set unchanged, including a replay
-    after a rejection. `change.rs::replay_is_a_no_op`,
-    `change.rs::replay_after_rejection_writes_nothing`.
-21. **Independence is structural.** `deps` name one todo, and changes to
-    different todos commute. `change.rs::deps_name_one_todo`,
-    `fold_laws.rs::disjoint_todos_commute`.
-22. **No stored byte moves.** Legacy stores derive, linearise and verify as
-    before, and read as before wherever no register has two candidates.
-    `conformance/dag.py`'s `env` changes exactly at state conflicts (law
-    24). The existing suites.
-23. **Geneses are disjoint.** No edge crosses geneses, and a fold of a
-    union is the union of per-genesis folds.
-    `change.rs::no_edge_crosses_geneses`,
-    `fold_laws.rs::union_folds_per_genesis`.
-24. **A conflict prices as its most urgent candidate.** With one candidate
-    per register, the reading is today's, bit for bit. Otherwise the value is
-    the least over worlds. `fold_laws.rs::one_candidate_reads_as_before`,
-    `fold_laws.rs::conflict_is_its_most_urgent_world`,
-    `registers.rs::agreeing_twins_are_one_candidate`.
-25. **The linearisation decides no value.** Any linear extension folds to
-    the same entries. `fold_laws.rs::any_linear_extension_folds_alike`.
-26. **`Least` is a semilattice with `Absent` as identity**, preserved by
-    `normalize` and `compile`, and it round-trips.
-    `fpl_laws.rs::least_is_a_semilattice`, with `Least` drawn by `a_term()`.
-27. **A claim settles nothing it is not trusted to.** A claiming change
-    leaves every confirmed frontier as it was.
-    `fold_laws.rs::claim_never_settles`.
-28. **A snapshot attests its closure.** `change.rs::snapshot_commits_to_closure`,
-    `change.rs::snapshot_chain_grows`.
-29. **Placement is not identity.** Moving a change between stores of one
-    genesis changes no name. A re-proposal over the same frontier is the same
-    object, and over a moved one it has the same `event_id`.
-    `change.rs::accept_is_a_same_name_move`,
-    `change.rs::reproposal_is_recognised`.
-
-Law 6 becomes definitional: the folds ARE the register projections, and its
-surviving content is "a descending write settles, a merge settles nothing".
-Law 17(b)'s `Woven` clause holds only for legacy stores.

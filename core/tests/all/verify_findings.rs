@@ -217,7 +217,7 @@ fn change(genesis: &str, deps: &[&str], event: TodoEvent<Todo>) -> Envelope<Todo
 }
 
 #[test]
-fn every_draft_a_finding() {
+fn every_change_identity_finding() {
     let root = scratch("draft-a");
     let genesis = |label| Envelope::Genesis(mk_genesis(label, &"0".repeat(32)).expect("a genesis"));
     let mine = write(&root, &genesis("mine"));
@@ -293,34 +293,34 @@ fn every_draft_a_finding() {
             redundant.clone(),
             vec![format!(
                 "change {redundant} depends on {done}, which its dep {reopened} already rests \
-                 on (SPEC Draft A)"
+                 on (SPEC §3)"
             )],
         ),
         (
             other_todo.clone(),
             vec![format!(
                 "change {other_todo} depends on {done}, which writes no register its event \
-                 writes (SPEC Draft A)"
+                 writes (SPEC §3)"
             )],
         ),
         (
             crossing.clone(),
             vec![format!(
-                "object {crossing} rests on {dropped}, of another genesis (SPEC Draft A)"
+                "object {crossing} rests on {dropped}, of another genesis (SPEC §3)"
             )],
         ),
         (
             stranger.clone(),
             vec![format!(
                 "object {stranger} names genesis {done}, which the store does not hold as a \
-                 genesis (SPEC Draft A)"
+                 genesis (SPEC §3)"
             )],
         ),
         (
             incomplete.clone(),
             vec![format!(
                 "snapshot {incomplete} attests {absent}, which the store does not hold \
-                 (SPEC Draft A)"
+                 (SPEC §3)"
             )],
         ),
     ];

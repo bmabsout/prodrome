@@ -1,4 +1,4 @@
-//! Draft A over `conformance/change.py`: each case's writes, EXACTLY — every
+//! SPEC §3 over `conformance/change.py`: each case's writes, EXACTLY — every
 //! answer, every object's print and name — and what the store then verifies
 //! and prices. Written by hand from the laws `change.rs` checks.
 

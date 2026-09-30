@@ -21,8 +21,8 @@
 //! | ---------------- | ------------------------------------------------------- |
 //! | `verify_objects` | §3: do these bytes hash to these names, form one DAG, and end at which tips |
 //! | `lifecycle`      | §4: spell one lifecycle event, through its own `mk_*`    |
-//! | `seal`           | §3: seal an event onto these heads — the name and the bytes |
-//! | `merge_object`   | §3: join these heads — structure, so no event and no actor |
+//! | `seal`           | §3: a legacy store's write onto these heads — the name and the bytes |
+//! | `merge_object`   | §3: a legacy store's join of these heads — no event, no actor |
 //! | `fold`           | §6.1–6.5: what does the chain believe at an instant      |
 //! | `registers`      | §6.6: which registers have more than one live write      |
 //! | `entries`        | §6.7: every todo as the folds see it, composed ONCE      |
@@ -57,7 +57,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use prodrome::dag::{Dag, Finding, Unread};
 use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
 use prodrome::fold;
-use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Instant};
+use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Candidates, Instant};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy};
 use prodrome::registers;
@@ -71,7 +71,7 @@ mod snapshot;
 mod wire;
 
 use wire::{
-    json_binding, json_candidates, json_entry, json_env, json_marker, json_record, json_tended,
+    json_candidates, json_entry, json_env, json_marker, json_reading, json_record, json_tended,
     json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_objects,
     parse_specs, parse_term, parse_untrusted, strings, History, ObjectIn, Refusal,
 };
@@ -133,6 +133,7 @@ struct Row {
     problem: String,
     reachable: bool,
     depth: Option<usize>,
+    root: bool,
 }
 
 impl Row {
@@ -148,6 +149,7 @@ impl Row {
             problem: String::new(),
             reachable: false,
             depth: None,
+            root: false,
         }
     }
 
@@ -166,6 +168,10 @@ impl Row {
     /// bytes; an object with no event leaves them "" and is kinded by its name.
     fn describe(&mut self, envelope: &Object) {
         self.parents = parents_of(envelope);
+        self.root = matches!(
+            envelope,
+            Envelope::Genesis(_) | Envelope::Sealed { prev: None, .. }
+        );
         match envelope.event() {
             Some(event) => {
                 self.kind = event.kind_name().to_owned();
@@ -278,12 +284,12 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
         }
     }
 
-    // A genesis object has no parents AND said so itself: an object that did
-    // not parse names none either, and calling that a beginning would turn a
-    // tampered tip into a clean chain of one.
+    // A genesis object says so itself: an object that did not parse names no
+    // parents either, and calling that a beginning would turn a tampered tip
+    // into a clean chain of one. A change with no deps is no beginning.
     let genesis: Vec<String> = order
         .iter()
-        .filter(|at| rows[**at].parents.is_empty() && rows[**at].problem.is_empty())
+        .filter(|at| rows[**at].root && rows[**at].problem.is_empty())
         .map(|at| rows[*at].hash.clone())
         .collect();
     if genesis.is_empty() && problems.is_empty() && !rows.is_empty() {
@@ -465,19 +471,19 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
             .collect(),
     );
 
-    // Each todo's binding writes in causal order, `null` where a `Reopened`
-    // cleared it, and every binding tending: what `series_knots` reads back.
+    // Each todo's state register read at every instant a binding write is
+    // dated, where the reading changes, and every binding tending: what
+    // `series_knots` reads back.
     let mut bindings = serde_json::Map::new();
     let mut tended = BTreeMap::new();
     for (todo, stream) in state.todos() {
-        let mut timeline = Vec::new();
+        let mut instants = BTreeSet::new();
         for stamp in stream.iter().filter(|s| policy.standing(&s.event).binds()) {
             for write in fold::Write::of(&stamp.event) {
                 match write {
-                    fold::Write::State(binding) => timeline.push(json!({
-                        "at": iso(instant_of(stamp.event.at())),
-                        "binding": binding.map_or(Value::Null, json_binding),
-                    })),
+                    fold::Write::State(_) => {
+                        instants.insert(instant_of(stamp.event.at()));
+                    }
                     fold::Write::Tend(at) => {
                         tended
                             .entry(todo.as_str().to_owned())
@@ -486,6 +492,15 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
                     }
                     _ => {}
                 }
+            }
+        }
+        let mut timeline = Vec::new();
+        let mut before = Candidates::from([None]);
+        for at in instants {
+            let reading = fold::Registers::read(stream, Some(at), &policy).outcomes();
+            if reading != before {
+                timeline.push(json!({ "at": iso(at), "binding": json_reading(&reading) }));
+                before = reading;
             }
         }
         if !timeline.is_empty() {
@@ -880,4 +895,37 @@ pub fn series_knots(term: &str, from: &str, to: &str, history: &str) -> Result<S
         ),
         ("exact", Value::Bool(series.exact)),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use prodrome::change::mk_change;
+    use prodrome::event::{canonical_envelope, mk_created, seal_hash, Envelope};
+    use prodrome::genesis::mk_genesis;
+    use prodrome::literal::Datetime;
+    use serde_json::{json, Value};
+
+    /// A store of changes begins at its `Genesis`: a change with no deps
+    /// names no parents, and is no beginning.
+    #[test]
+    fn a_store_of_changes_begins_at_its_genesis() {
+        let at = Datetime::new(2026, 9, 10, 9, 0, 0, 0).expect("an instant");
+        let genesis: super::Object =
+            Envelope::Genesis(mk_genesis("roadmap", &"0".repeat(32)).expect("a genesis"));
+        let root = seal_hash(&genesis);
+        let created = mk_created("a", at, "bassel", "a todo", "").expect("an event");
+        let created: super::Object =
+            Envelope::Change(mk_change(root.clone(), vec![], created).expect("a change"));
+        let sent: Vec<Value> = [&genesis, &created]
+            .into_iter()
+            .map(|object| {
+                json!({ "hash": seal_hash(object).as_str(), "text": canonical_envelope(object) })
+            })
+            .collect();
+        let answer = super::verify_objects(&Value::from(sent).to_string())
+            .unwrap_or_else(|_| panic!("verify answers"));
+        let answer: Value = serde_json::from_str(&answer).expect("JSON");
+        assert_eq!(answer["genesis"], json!([root.as_str()]));
+        assert_eq!(answer["ok"], json!(true), "{answer}");
+    }
 }

@@ -158,7 +158,7 @@ impl<P> Dag<P> {
     }
 
     /// Every prodrome's genesis: each `Genesis`, and the least legacy root,
-    /// whose prodrome every legacy object is in (Draft A, A2).
+    /// whose prodrome every legacy object is in (§3).
     pub fn geneses(&self) -> BTreeSet<Hash> {
         let genesis = self
             .objects
@@ -242,7 +242,7 @@ impl<P: Payload> Dag<P> {
 
     /// §3's findings: every print that is not an object, by name, then every
     /// parent no object is, or else a cycle, or else the dating rule; then
-    /// Draft A's, object by object.
+    /// §3's genesis, deps and snapshot rules, object by object.
     pub fn verify(&self, policy: &impl Policy<P>) -> Vec<Finding> {
         let mut findings: Vec<Finding> = self
             .unread
@@ -287,7 +287,7 @@ impl<P: Payload> Dag<P> {
         findings
     }
 
-    /// Draft A: an object names a genesis the store holds, and rests on
+    /// §3: an object names a genesis the store holds, and rests on
     /// nothing of another.
     fn genesis_findings(&self, name: &Hash, object: &Envelope<P>) -> Vec<Finding> {
         let stranger = object.genesis().filter(|genesis| {
@@ -313,7 +313,7 @@ impl<P: Payload> Dag<P> {
             .collect()
     }
 
-    /// Draft A: each dep writes a register the change's event writes, and no
+    /// §3: each dep writes a register the change's event writes, and no
     /// dep rests on another.
     fn deps_findings(&self, name: &Hash, change: &Change<P>) -> Vec<Finding> {
         let written = registers(Some(&change.event));

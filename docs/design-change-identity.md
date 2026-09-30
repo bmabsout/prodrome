@@ -1,9 +1,8 @@
 # Design: a change is named by what it says and what it supersedes
 
-Status: DESIGN, 2026-09-28, not implemented. The contract it proposes is
-SPEC.md's "Draft A", which amends §3, §5, §6, §7 and §9 and is not in force
-until an implementation lands it. This page is the reasoning. A second
-session builds it (the plan is at the end).
+Status: IMPLEMENTED, 2026-09-30. The contract it proposed, "Draft A", is
+folded into SPEC.md's §3, §5, §6, §7 and §9 (laws 19–29). This page is the
+reasoning. The overlay (F) is later work.
 
 Reviewed once. The first round's four open questions are settled: the
 agreeing-twins rule is in, `Created` and `Tended` depend on nothing, terms
