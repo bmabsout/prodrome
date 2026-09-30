@@ -328,6 +328,8 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
             Ok(Outcome::said(format!("set aside in {}", aside.display())))
         }
 
+        Command::Snapshot => Ok(Outcome::said(store.snapshot()?.as_str())),
+
         Command::Weave => {
             let heads = store.dag()?.tips_in(&None);
             if heads.len() < 2 {
