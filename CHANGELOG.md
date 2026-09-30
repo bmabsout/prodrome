@@ -25,6 +25,15 @@ And the object store is durable and its fsck honest, which are PATCH fixes
 under this file's rule: no stored byte changes, and a healthy store reads and
 verifies exactly as it did.
 
+And change identity (`docs/design-change-identity.md`, SPEC §3): a change is
+named by its prodrome, its event and the writes it supersedes, never by
+where it was written, so appending is idempotent, changes to different todos
+are independent, and a conflict prices as its most urgent candidate. A MINOR
+change under this file's rule: `Genesis`, `Change`, `Snapshot` and `Least`
+are new constructors and no stored object changes; a legacy store derives,
+linearises and verifies as it did, and reads as it did wherever no register
+holds two candidates. The API breaks where a register had a winner.
+
 ### Added
 
 - **`Absent`, a new leaf of `TermF` (SPEC §7):** `∅` at every instant,
@@ -98,7 +107,7 @@ verifies exactly as it did.
   gh-7`, or `/price accept`, which re-issues `pricing-bot`'s latest proposal.
   Anyone else's `/price` is ignored before it is parsed. `--proposal FILE`
   records a pricing reply's `/price` line as a claim by `pricing-bot`, dated no
-  earlier than the store's latest event, so it keeps §3's clock rule for a
+  earlier than what its deps rest on, so it keeps §3's clock rule for a
   reader who names the bot untrusted. Deterministic and offline: every
   instant comes off the payload, and a delivery already applied appends
   nothing. Pinned by fixture payloads and two properties — replaying what was
@@ -112,6 +121,36 @@ verifies exactly as it did.
 - `docs/github-agent.md`: the flow and its trust boundaries.
 - `Price::DEFAULT_START`, `DEFAULT_END` and `DEFAULT_LEAD_UP_DAYS` in
   `prodrome-cli`, so `--deadline` and `/price … --deadline` write one decay.
+- **Three objects (SPEC §3):** `Genesis(label, nonce)` begins a prodrome and
+  its name is the prodrome's identity; `Change(genesis, deps, event)` is an
+  event over the frontiers of the registers it writes, so its deps never
+  leave its todo; `Snapshot(genesis, tips, previous)` attests everything its
+  tips rest on, chained to the snapshot before. Modules `genesis`, `change`
+  and `snapshot`, and `event::event_id`, an event's name apart from where it
+  was written.
+- **`EventStore::init(label)`** writes a store's `Genesis`, once;
+  **`snapshot()`** writes a `Snapshot` of the genesis's tips, or answers the
+  last one when nothing is new; `in_genesis(genesis)` names the prodrome a
+  handle writes into, for a store that holds several. `prodrome init` writes
+  the genesis, and **`prodrome snapshot`** is new.
+- **`Least(terms)`, a new node of `TermF` (SPEC §7):** the minimum of the
+  members that have a value, `Absent` its identity; exact, its breakpoints
+  including the crossings; `fpl::mk_least` and `least_of`, and
+  `{"kind": "least"}` in prodrome-wasm's JSON.
+- **`dag::Dag`**, the DAG as a value: tips, closure, linearisation, the
+  geneses and each object's, the nodes the registers read, and `verify` as
+  `dag::Finding`s. `registers::deps_for` is what `append` depends on.
+- `verify` reports five new findings, each by name: an object naming a
+  genesis the store does not hold, an edge between geneses, a dep another
+  dep rests on, a dep writing no register its change's event writes, and an
+  object a snapshot attests that the store lacks.
+- **SPEC laws 19–29** and their evidence: `core/tests/all/change.rs` (a name
+  is its genesis, event and view; replaying writes nothing; deps name one
+  todo; geneses are disjoint; a snapshot attests its closure; placement is
+  not identity, over two plain stores), `fold_laws.rs` (one candidate reads
+  as before, a conflict is its most urgent world, any linear extension folds
+  alike, a claim settles nothing), `fpl_laws.rs` (`Least` is a
+  semilattice), and `conformance/change.py`, NEW and written by hand.
 
 ### Changed (breaking)
 
@@ -138,6 +177,40 @@ verifies exactly as it did.
   `children`, and `transpose` is gone. `Term::cata`, `try_cata`, `para` and
   `any` fold a term, `breaks::Breaks` is a monoid whose `Default` is its
   identity (`exact: true`), and `breaks::constant` is gone.
+
+- **`append(event)` writes a `Change` (SPEC §3)**, and nothing when the
+  prodrome already holds an event that prints the same, answering the first
+  object carrying it; its `parents` argument and the sealing on every tip
+  are gone. A store needs a genesis to append to: `init` one, or a legacy
+  store's root is its genesis. `merge` stays, for a legacy store's tips.
+- **A register reads as its candidates (SPEC §6):** the distinct events of
+  its frontier, twins one. `Folded::chosen`, `chosen_of` and the
+  linearisation's pick are gone, and so are the sequential folds
+  (`chronological`, `env_at`, `specs_at`, `authored_at`), `fold::Binding`,
+  `fold::Env` and `evaluation_env`: `fold::env`, `specs`, `content` and
+  `flatten` project a todo's registers at an instant, keyed by `(genesis,
+  todo)`, and answer `fpl::Env`, whose outcomes are `fpl::Candidates`.
+  `After` reads the least of its candidates, and `flatten` writes `Least`
+  over a conflict's worlds.
+- **`view::Entry`** carries its `genesis`, its `outcome` and `claim` as
+  candidate sets, and `content` as the candidate records' names;
+  `list_order` breaks ties by `(genesis, id)`.
+- `store::tips_of` and `linearise` are `Dag` methods; `registers::nodes_of`
+  is `Dag::nodes`; `read_dag`, `read_dag_named`, `read_dag_at`,
+  `objects_from` and `read_chain` are gone.
+- prodrome-wasm: an outcome in conflict crosses as the array of its
+  candidates, `null` for open, in `fold`'s `env` and in an entry (`state`
+  joined by `|`). `fold`'s `history.bindings` is each todo's state register
+  read at every instant the reading changes, ascending, where it was every
+  binding write in chain order; `series_knots` reads either. Over the pinned
+  DAG, no knot moves. `verify_objects`' `genesis` lists `Genesis` objects
+  and legacy roots, never a change with no deps. No export is added or
+  removed.
+- prodrome-github leaves a replay to `append` rather than filtering the
+  prints the store holds, and dates a claim past what its deps rest on
+  rather than past every event in the store.
+- `conformance/dag.py`: the `env` of seeds 9, 27 and 34, whose state is in
+  conflict, reads as the candidate set (law 22). Nothing else moves.
 
 ### Fixed
 
@@ -178,6 +251,10 @@ verifies exactly as it did.
   is `None` reads as `Absent` at the todo, and `flatten` is unchanged, so an
   old store reads as before except that a `Ref` to an unpriced todo now
   links. Every reference vector answers what it answered.
+- `Genesis`, `Change`, `Snapshot` and `Least` are new constructors, and
+  `Sealed` and `Woven` are read as ever. A store with none of the new
+  objects derives, linearises and verifies exactly as it did, and reads as
+  it did wherever no register holds two candidates.
 
 ## [0.9.0] - 2026-09-27
 
