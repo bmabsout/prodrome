@@ -327,36 +327,33 @@ fn a_proposal_is_a_claim_until_a_maintainer_accepts_it() {
     assert!(shown.contains("confirmed"), "{shown}");
 }
 
+/// The claim is dated past what its deps rest on — the maintainer's
+/// repricing of this item — and not past a later write about another item.
 #[test]
 fn a_proposal_is_never_dated_behind_what_it_is_written_on() {
     let root = a_store();
     github(&root, "issues-opened.json");
-    // A later delivery lands while the model is thinking ...
+    // The item is repriced while the model is thinking, and another item
+    // after that ...
+    github(&root, "comment-price-flat.json");
     github(&root, "comment-unmirrored-issue.json");
-    // ... and the claim about the earlier issue is recorded after it.
-    said(
-        &root,
-        &[
-            "github",
-            &fixture("issues-opened.json"),
-            "--proposal",
-            &fixture("proposal.md"),
-        ],
+    // ... and the claim about the earlier issue is recorded after the first.
+    let proposed = [
+        "github",
+        &fixture("issues-opened.json"),
+        "--proposal",
+        &fixture("proposal.md"),
+    ];
+    let claim = said(&root, &proposed);
+    let print = std::fs::read_to_string(root.join("objects").join(format!("{claim}.py")))
+        .expect("the claim");
+    assert!(
+        print.contains(&format!("at=datetime(2026, 9, 21, 9, 0, 0), actor='{BOT}'")),
+        "{print}"
     );
     let verdict = prodrome(&root, &["verify", "--untrusted", BOT]).expect("verify answers");
     assert!(verdict.ok, "{}", verdict.text);
-    assert_eq!(
-        said(
-            &root,
-            &[
-                "github",
-                &fixture("issues-opened.json"),
-                "--proposal",
-                &fixture("proposal.md"),
-            ],
-        ),
-        "nothing to append: already applied"
-    );
+    assert_eq!(said(&root, &proposed), "nothing to append: already applied");
 }
 
 #[test]

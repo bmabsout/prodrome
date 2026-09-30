@@ -1,6 +1,7 @@
-//! Draft A's laws 19, 20, 21, 23 and 28 on stores of changes: a name is its
-//! genesis, event and view; append is idempotent; deps never leave a todo;
-//! geneses are disjoint; a snapshot attests its closure.
+//! SPEC laws 19, 20, 21, 23, 28 and 29 on stores of changes: a name is
+//! its genesis, event and view; append is idempotent; deps never leave a todo;
+//! geneses are disjoint; a snapshot attests its closure; placement is not
+//! identity.
 
 use crate::common;
 
@@ -12,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::{a_draft, a_log, a_replay, a_schedule, moment, realise, two_writers, Draft, WINDOW};
 use prodrome::dag::{Dag, Finding};
 use prodrome::event::{
-    canonical, canonical_envelope, seal_hash, Actor, Envelope, Hash, TodoEvent, TodoId,
+    canonical, canonical_envelope, event_id, seal_hash, Actor, Envelope, Hash, TodoEvent, TodoId,
 };
 use prodrome::fold::{Kind, Registers, Write};
 use prodrome::genesis::mk_genesis;
@@ -94,6 +95,13 @@ fn dag(store: &Store) -> Dag<Todo> {
 
 fn names(store: &Store) -> BTreeSet<Hash> {
     dag(store).objects().keys().cloned().collect()
+}
+
+fn file(store: &Store, name: &Hash) -> PathBuf {
+    store
+        .root()
+        .join("objects")
+        .join(format!("{}.py", name.as_str()))
 }
 
 fn findings(store: &Store) -> Vec<String> {
@@ -357,5 +365,63 @@ proptest! {
             before = Some((snapshot.clone(), names(&store)));
         }
         prop_assert_eq!(findings(&store), Vec::<String>::new());
+    }
+
+    /// Law 29 — PLACEMENT IS NOT IDENTITY. Changes written in a staging store
+    /// that holds the base are accepted by moving their files into the base:
+    /// every name stands, the base verifies clean, and they are the objects
+    /// the base would have written itself.
+    #[test]
+    fn accept_is_a_same_name_move((shared, mine, _) in two_writers()) {
+        let scratch = Scratch::new();
+        let base = scratch.store("base", "one");
+        append(&base, &shared);
+        let own = scratch.union("own", &[&base]);
+        let staged = append(&own, &mine);
+        let held = names(&base);
+        let moved: BTreeSet<Hash> = names(&own).difference(&held).cloned().collect();
+        for name in &moved {
+            fs::rename(file(&own, name), file(&base, name)).expect("moves");
+        }
+        prop_assert_eq!(names(&base), held.union(&moved).cloned().collect::<BTreeSet<_>>());
+        prop_assert_eq!(findings(&base), Vec::<String>::new());
+
+        let direct = scratch.store("direct", "one");
+        append(&direct, &shared);
+        prop_assert_eq!(append(&direct, &mine), staged);
+        prop_assert_eq!(names(&direct), names(&base));
+    }
+
+    /// Law 29 — A RE-PROPOSAL IS RECOGNISED. Rejected, a proposal leaves the
+    /// staging store and a receipt keeps its name and `event_id`. Proposed
+    /// again over the same frontier it is the same object; over a frontier the
+    /// base moved, a twin with the same `event_id`.
+    #[test]
+    fn reproposal_is_recognised(
+        shared in a_log(),
+        (draft, roll, at, later) in (a_draft(), 3u8..7, 0i64..WINDOW, 0i64..WINDOW),
+    ) {
+        let scratch = Scratch::new();
+        let base = scratch.store("base", "one");
+        append(&base, &shared);
+        let own = scratch.union("own", &[&base]);
+        let proposal = Draft { actor: "triage", roll, ..draft.clone() }
+            .at_with_note(moment(at), "proposed");
+        let p = own.append(proposal.clone()).expect("proposes");
+        let receipt = (p.clone(), event_id(&proposal));
+        fs::remove_file(file(&own, &p)).expect("rejects");
+
+        prop_assert_eq!(own.append(proposal.clone()).expect("re-proposes"), receipt.0.clone());
+
+        let meanwhile = Draft { actor: "bassel", roll, ..draft }
+            .at_with_note(moment(at.max(later)), "meanwhile");
+        base.append(meanwhile).expect("the base moves on");
+        let moved = scratch.union("moved", &[&base]);
+        let twin = moved.append(proposal).expect("re-proposes");
+        prop_assert_ne!(&twin, &receipt.0);
+        let Envelope::Change(change) = moved.load(&twin).expect("loads") else {
+            panic!("an append writes a change")
+        };
+        prop_assert_eq!(event_id(&change.event), receipt.1);
     }
 }

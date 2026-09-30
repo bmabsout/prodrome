@@ -1,6 +1,6 @@
 //! §6.7 — the entry: one todo as the folds see it at a moment.
 //!
-//! See ../../SPEC.md and Draft A. Not a fifth fold: every field is a
+//! See ../../SPEC.md §6.7. Not a fifth fold: every field is a
 //! projection of the todo's [`Registers`] or §7's evaluator over them, composed
 //! once here so every consumer performs it once.
 //!

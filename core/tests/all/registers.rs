@@ -1,4 +1,4 @@
-//! SPEC §6.6 and Draft A, on `conformance/dag.py` and `conformance/folds.py`:
+//! SPEC §6.6, on `conformance/dag.py` and `conformance/folds.py`:
 //! each DAG's conflicts, named by the exact objects that wrote them, and its
 //! environment at a far moment, a state conflict read as its candidates; and
 //! the structure the registers stand on — the monoid action, frontiers,

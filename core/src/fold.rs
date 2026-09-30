@@ -1,7 +1,7 @@
 //! §6.1–6.5 — belief at a moment: each todo's stream folded into its
 //! registers, and every reading a projection of them.
 //!
-//! See ../../SPEC.md and Draft A. ORDER IS CAUSAL, TIME IS DATA (§1): a write
+//! See ../../SPEC.md §6. ORDER IS CAUSAL, TIME IS DATA (§1): a write
 //! joins its register when it is dated by the moment asked and the policy
 //! admits it, and what it supersedes is ancestry alone. No clock and no
 //! linearisation picks a winner; a conflict is its candidates.

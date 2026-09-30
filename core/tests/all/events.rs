@@ -225,10 +225,10 @@ fn name(byte: char) -> Hash {
     Hash::new(byte.to_string().repeat(64)).expect("hex")
 }
 
-/// Draft A's objects print every field in declared order, `''` for an unset
+/// §3's new objects print every field in declared order, `''` for an unset
 /// `previous`.
 #[test]
-fn the_new_objects_print_as_draft_a_declares() {
+fn the_new_objects_print_as_declared() {
     let genesis: Envelope<Todo> =
         Envelope::Genesis(mk_genesis("suzatary", &"9f".repeat(16)).expect("a genesis"));
     assert_eq!(
@@ -271,7 +271,7 @@ fn the_new_objects_print_as_draft_a_declares() {
 }
 
 #[test]
-fn the_new_constructors_refuse_what_draft_a_forbids() {
+fn the_new_constructors_refuse_what_section_3_forbids() {
     let event = common::events().remove(0);
     assert!(mk_genesis("x", "9F".repeat(16).as_str()).is_err());
     assert!(mk_change(name('0'), vec![name('a'), name('a')], event.clone()).is_err());
@@ -334,7 +334,7 @@ fn a_new_object() -> impl Strategy<Value = Envelope<Todo>> {
 }
 
 proptest! {
-    /// Law 1 over Draft A's objects.
+    /// Law 1 over §3's new objects.
     #[test]
     fn a_new_object_prints_and_parses_back(object in a_new_object()) {
         let text = canonical_envelope(&object);

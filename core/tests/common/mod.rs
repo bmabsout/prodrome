@@ -588,7 +588,7 @@ pub fn a_log_with_absence() -> impl Strategy<Value = Vec<Event>> {
 }
 
 /// The legacy writer: `event` sealed on every tip of `store`, as every store
-/// before Draft A was written.
+/// before changes were written.
 pub fn seal<Pol: prodrome::policy::Policy<Todo>>(
     store: &prodrome::store::EventStore<Todo, Pol>,
     event: Event,
