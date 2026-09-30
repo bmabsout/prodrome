@@ -1,4 +1,4 @@
-//! SPEC §9.2, §9.3, §9.6, §9.9, §9.17 b and Draft A's laws 24, 25 and 27, as
+//! SPEC §9.2, §9.3, §9.6, §9.9, §9.17 b and laws 24, 25 and 27, as
 //! properties over random logs and random two-replica DAGs.
 //!
 //! The vectors say this side agrees with the reference on the cases the

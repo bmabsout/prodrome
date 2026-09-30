@@ -1,4 +1,4 @@
-//! Draft A's laws 19, 20, 21, 23, 28 and 29 on stores of changes: a name is
+//! SPEC laws 19, 20, 21, 23, 28 and 29 on stores of changes: a name is
 //! its genesis, event and view; append is idempotent; deps never leave a todo;
 //! geneses are disjoint; a snapshot attests its closure; placement is not
 //! identity.

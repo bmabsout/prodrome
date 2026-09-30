@@ -1,7 +1,7 @@
 //! §6.6 — the DAG as the registers read it: each object's place and ancestry,
 //! and each todo's stream of writes.
 //!
-//! See ../../SPEC.md and Draft A. [`crate::fold`] folds a stream into its
+//! See ../../SPEC.md §6.6. [`crate::fold`] folds a stream into its
 //! registers; this module only says what descends from what.
 //!
 //! THE FOLD IS A MONOID ACTION. `fold(nodes) == extend(EMPTY, nodes)` and

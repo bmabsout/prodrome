@@ -380,7 +380,7 @@ fn snapshot_attests_the_store_and_chains() {
 fn weave_settles_a_legacy_store_s_two_heads_and_is_a_no_op_on_changes() {
     assert!(said(&seeded(), &["weave"]).contains("nothing to weave"));
 
-    // Two histories on one root, the way two replicas wrote before Draft A.
+    // Two histories on one root, the way two replicas wrote before changes.
     let root = a_store();
     let store = Store::new(&root, Untrusted::none());
     let at = |hour| Datetime::new(2026, 9, 10, hour, 0, 0, 0).expect("an instant");
