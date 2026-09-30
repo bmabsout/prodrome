@@ -3,7 +3,7 @@ use std::fmt;
 use crate::event::Hash;
 use crate::literal::{Datetime, ProdromeError};
 
-/// One thing `verify` says about a store, in the words §3 and Draft A use.
+/// One thing `verify` says about a store, in §3's words.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Finding {
     /// The listing of `objects/` or `quarantine/` failed.
@@ -119,16 +119,16 @@ impl fmt::Display for Finding {
             Finding::Stranger { object, genesis } => write!(
                 f,
                 "object {object} names genesis {genesis}, which the store does not hold as a \
-                 genesis (SPEC Draft A)"
+                 genesis (SPEC §3)"
             ),
             Finding::Crossing { object, parent } => write!(
                 f,
-                "object {object} rests on {parent}, of another genesis (SPEC Draft A)"
+                "object {object} rests on {parent}, of another genesis (SPEC §3)"
             ),
             Finding::Unwritten { change, dep } => write!(
                 f,
                 "change {change} depends on {dep}, which writes no register its event writes \
-                 (SPEC Draft A)"
+                 (SPEC §3)"
             ),
             Finding::Redundant {
                 change,
@@ -137,12 +137,12 @@ impl fmt::Display for Finding {
             } => write!(
                 f,
                 "change {change} depends on {dep}, which its dep {beneath} already rests on \
-                 (SPEC Draft A)"
+                 (SPEC §3)"
             ),
             Finding::Incomplete { snapshot, missing } => write!(
                 f,
                 "snapshot {snapshot} attests {missing}, which the store does not hold \
-                 (SPEC Draft A)"
+                 (SPEC §3)"
             ),
         }
     }

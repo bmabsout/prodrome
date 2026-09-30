@@ -18,7 +18,7 @@ static VOCABULARY: Table = Table(&[
     ("Note", &["on", "lines"]),
 ]);
 
-/// One of each of Draft A's objects, ASCII so any byte offset is a cut.
+/// One of each of §3's Genesis, Change and Snapshot, ASCII so any byte offset is a cut.
 const OBJECTS: [&str; 3] = [
     "Genesis(label='suzatary', nonce='9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c')",
     "Change(genesis='0000000000000000000000000000000000000000000000000000000000000000', \

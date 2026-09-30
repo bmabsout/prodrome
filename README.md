@@ -152,10 +152,16 @@ This example is the crate's doctest; `cargo test` compiles and runs it.
 
 ## Concepts
 
-**Objects and the DAG.** An object is a `Sealed(prev, event)` with one parent
-or a `Woven(parents, event)` merge with several. Its name is the hash of its
-canonical print. `verify` reports anything that does not hash to its name,
-rest on a missing parent, or form a cycle.
+**Objects and the DAG.** A prodrome begins with a `Genesis(label, nonce)`.
+An event is written as a `Change(genesis, deps, event)`, whose `deps` are
+the writes it supersedes in the registers it writes, so they never leave its
+todo; appending an event the prodrome already holds writes nothing. A
+`Snapshot(genesis, tips, previous)` attests everything written so far.
+Stores written earlier hold `Sealed` and `Woven` objects, read forever. An
+object's name is the hash of its canonical print, so a change's name is its
+genesis, its event and what it supersedes, wherever it was written.
+`verify` reports anything that does not hash to its name, rests on a missing
+parent, forms a cycle, or crosses from one genesis to another.
 
 **Records and payloads.** Six event kinds are the database's — `Created`,
 `Completed`/`Cancelled`/`Reopened`, `Tended` (a pass at a recurring todo,
@@ -166,15 +172,15 @@ print, and the only two things the folds read out of one (the spec it carries
 and how many checklist items it has). The stored bytes are frozen the moment
 you ship them, exactly as the database's own are.
 
-**Folds.** `env_at` gives each todo's outcome at an instant and every pass it
-was tended (a grow-only set, merged by union), `specs_at` its
-spec in force, `authored_at` its current record, and `flatten` its whole
-history as one function of time. `history` is the environment as a function
-of time.
-
-**Registers.** The same DAG read per `(kind, todo)`: a register holds the
-frontier of writes nothing later descends from. One write is a value, more is
-a conflict the caller is shown. On any DAG the registers agree with the folds.
+**Registers and folds.** The DAG is read per `(kind, todo)`: a register
+holds the frontier of writes nothing later descends from, and reads as its
+candidates, the distinct events there. One is a value; more is a conflict,
+shown to the caller and settled by the next write that descends from it.
+Every fold projects the registers at an instant: `env` gives each todo's
+candidate outcomes and every pass it was tended (a grow-only set, merged by
+union), `specs` its candidate specs, `content` its candidate records, and
+`flatten` its whole history as one function of time, a conflict priced as
+its most urgent candidate with `Least`.
 
 **Standing.** The database does not decide whom to believe. It asks the host's
 `Policy` one question per event — does this BIND, or does it only CLAIM — and
@@ -229,8 +235,8 @@ nothing else, and nothing is evaluated.
 Nothing names the heads. A store's tips are DERIVED: the objects no object
 names as a parent. So a store under git merges by union: two clones that each
 appended only added files, and `git merge` of the two is the Prodrome's own
-merge, with nothing that can conflict. The next append on the merged store is
-written on top of both tips at once. (A store from before 0.9 has a `HEAD`,
+merge, with nothing that can conflict, and nothing has to join it: the next
+append names only the writes it supersedes. (A store from before 0.9 has a `HEAD`,
 and `refs/` if it had several heads; `prodrome verify` asks for them to be
 deleted, and the tips it derives are the ones they named.)
 
