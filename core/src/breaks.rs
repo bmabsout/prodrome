@@ -1,3 +1,4 @@
+// Measuring a one-line change on CI; this branch is not merged.
 use std::collections::BTreeSet;
 use std::iter::Sum;
 use std::ops::Add;
