@@ -8,6 +8,13 @@
 //! `extend(extend(s, xs), ys) == extend(s, xs ++ ys)`, so a consumer keeps the
 //! state for a tip and applies only the objects since.
 //!
+//! AND AN ACTION OF THE SET. [`Folded::insert`] puts an object where the
+//! linearisation of everything folded and it would: on a linearised suffix
+//! that is the end, so it is `extend`, and in any other order that puts
+//! parents first it is still `fold` of the union. The state is a function of
+//! the objects (§1), whatever order they arrive in, wherever each object
+//! rests only on objects of its own scope ([`Folded::local`]).
+//!
 //! Ancestry is a [`BitSet`] over positions. A legacy object is placed among
 //! every legacy object, O(n²) bits for the store; a change's deps never leave
 //! its entity, so a change is placed within its `(genesis, key)`, O(Σ kᵢ²).
@@ -25,10 +32,23 @@ use crate::schema::Schema;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Folded<E: Schema> {
     index: BTreeMap<Hash, Place<E::Key>>,
-    legacy: usize,
+    /// The legacy scope's objects in order, each with its entity if it has
+    /// an event: a legacy position is an index here.
+    legacy: Vec<(Hash, Option<E::Key>)>,
     attestations: BTreeSet<Hash>,
     prodromes: BTreeMap<Genesis, Prodrome<E>>,
+    local: bool,
 }
+
+/// Where an object is placed: the legacy scope (`None`), or one entity of
+/// one prodrome.
+type Scope<K> = Option<(Hash, K)>;
+
+/// [`Folded::insert`]'s refusal: where this object goes in the
+/// linearisation depends on objects outside its scope, so only a fold of
+/// everything can place it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Elsewhere;
 
 /// Which prodrome: a genesis object's name, or `None` for the legacy one.
 pub type Genesis = Option<Hash>;
@@ -56,7 +76,17 @@ impl<E: Schema> Stamp<E> {
 struct Place<K> {
     position: usize,
     ancestry: BitSet,
-    scope: Option<(Hash, K)>,
+    scope: Scope<K>,
+}
+
+impl<K> Place<K> {
+    /// Make room at `slot`: this place, if at or after it, moves up one.
+    fn open(&mut self, slot: usize) {
+        if self.position >= slot {
+            self.position += 1;
+            self.ancestry.open(slot);
+        }
+    }
 }
 
 /// What the fold reads of a stored object. `genesis` is `None` for a legacy
@@ -88,14 +118,24 @@ impl<E: Schema> Folded<E> {
     pub fn empty() -> Folded<E> {
         Folded {
             index: BTreeMap::new(),
-            legacy: 0,
+            legacy: Vec::new(),
             attestations: BTreeSet::new(),
             prodromes: BTreeMap::new(),
+            local: true,
         }
     }
 
     pub fn holds(&self, name: &Hash) -> bool {
         self.index.contains_key(name) || self.attestations.contains(name)
+    }
+
+    /// Does every object folded rest only on objects of its own scope? Then
+    /// each scope's order is decided within it, and [`Folded::insert`] can
+    /// place an object without the rest. True of every store an append
+    /// wrote: a change's deps never leave its entity, a legacy object's
+    /// parents are legacy.
+    pub fn local(&self) -> bool {
+        self.local
     }
 
     /// Is `earlier` among `later`'s ancestors in one index? False for a name
@@ -121,12 +161,131 @@ impl<E: Schema> Folded<E> {
             .map(|(key, stream)| (key, stream.as_slice()))
     }
 
-    fn place(&mut self, node: &Node<E>) -> Option<Place<E::Key>> {
-        let scope = match (&node.genesis, &node.event) {
-            (None, _) => None,
-            (Some(genesis), Some(event)) => Some((genesis.clone(), event.key().clone())),
-            (Some(_), None) => return None,
+    /// Fold `node` in after everything folded: the monoid action's step.
+    pub fn push(&mut self, node: &Node<E>) {
+        if self.holds(&node.name) {
+            return;
+        }
+        let Some(scope) = scope(node) else {
+            self.attestations.insert(node.name.clone());
+            return;
         };
+        self.local &= self.within(node, &scope);
+        let slot = self.size(&scope);
+        self.put(node, scope, slot);
+    }
+
+    /// Fold `node` in WHERE THE LINEARISATION OF THE UNION PUTS IT: after its
+    /// parents, and before the first object of its scope after them whose
+    /// name is greater, which is where Kahn's walk, taking the least ready
+    /// name, takes it. Everything of its scope after that moves up one.
+    ///
+    /// So for objects given parents first, in any order, inserting each is
+    /// `fold` of them all, and on a linearised suffix it is
+    /// [`Folded::push`]. An object already folded changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Elsewhere`], changing nothing, where `node` or anything folded
+    /// rests on an object of another scope ([`Folded::local`]).
+    pub fn insert(&mut self, node: &Node<E>) -> Result<(), Elsewhere> {
+        if self.holds(&node.name) {
+            return Ok(());
+        }
+        let Some(scope) = scope(node) else {
+            self.attestations.insert(node.name.clone());
+            return Ok(());
+        };
+        if !self.local || !self.within(node, &scope) {
+            return Err(Elsewhere);
+        }
+        let after = node
+            .parents
+            .iter()
+            .filter_map(|parent| self.index.get(parent))
+            .map(|parent| parent.position + 1)
+            .max()
+            .unwrap_or(0);
+        let slot = self
+            .members(&scope, after)
+            .position(|name| *name > node.name)
+            .map_or_else(|| self.size(&scope), |later| after + later);
+        self.open(&scope, slot);
+        self.put(node, scope, slot);
+        Ok(())
+    }
+
+    /// Does every parent of `node` this state holds lie in `scope`?
+    fn within(&self, node: &Node<E>, scope: &Scope<E::Key>) -> bool {
+        node.parents
+            .iter()
+            .all(|parent| match self.index.get(parent) {
+                Some(place) => place.scope == *scope,
+                None => !self.attestations.contains(parent),
+            })
+    }
+
+    /// The names of `scope`'s objects from position `from`, in order.
+    fn members<'s>(
+        &'s self,
+        scope: &Scope<E::Key>,
+        from: usize,
+    ) -> Box<dyn Iterator<Item = &'s Hash> + 's> {
+        match scope {
+            None => Box::new(self.legacy[from..].iter().map(|(name, _)| name)),
+            Some((genesis, key)) => Box::new(
+                self.prodromes
+                    .get(&Some(genesis.clone()))
+                    .and_then(|entities| entities.get(key))
+                    .map_or(&[][..], |stream| &stream[from..])
+                    .iter()
+                    .map(|stamp| &stamp.name),
+            ),
+        }
+    }
+
+    /// How many objects `scope` holds.
+    fn size(&self, scope: &Scope<E::Key>) -> usize {
+        match scope {
+            None => self.legacy.len(),
+            Some((genesis, key)) => self
+                .prodromes
+                .get(&Some(genesis.clone()))
+                .and_then(|entities| entities.get(key))
+                .map_or(0, Vec::len),
+        }
+    }
+
+    /// Make room at `slot` in `scope`: every place at or after it moves up.
+    fn open(&mut self, scope: &Scope<E::Key>, slot: usize) {
+        let streams: Vec<&mut Vec<Stamp<E>>> = match scope {
+            None => self
+                .prodromes
+                .get_mut(&None)
+                .map_or_else(Vec::new, |entities| entities.values_mut().collect()),
+            Some((genesis, key)) => self
+                .prodromes
+                .get_mut(&Some(genesis.clone()))
+                .and_then(|entities| entities.get_mut(key))
+                .into_iter()
+                .collect(),
+        };
+        for stream in streams {
+            let moved = stream.partition_point(|stamp| stamp.place.position < slot);
+            for stamp in &mut stream[moved..] {
+                stamp.place.open(slot);
+            }
+        }
+        let moved: Vec<Hash> = self.members(scope, slot).cloned().collect();
+        for name in &moved {
+            if let Some(place) = self.index.get_mut(name) {
+                place.open(slot);
+            }
+        }
+    }
+
+    /// Place `node` at `slot` of `scope`, which is free.
+    fn put(&mut self, node: &Node<E>, scope: Scope<E::Key>, slot: usize) {
         let mut ancestry = BitSet::default();
         for parent in node.parents.iter().filter_map(|p| self.index.get(p)) {
             if parent.scope == scope {
@@ -134,22 +293,42 @@ impl<E: Schema> Folded<E> {
                 ancestry.union_with(&parent.ancestry);
             }
         }
-        let position = match &scope {
-            None => {
-                self.legacy += 1;
-                self.legacy - 1
-            }
-            Some((genesis, key)) => self
-                .prodromes
-                .get(&Some(genesis.clone()))
-                .and_then(|entities| entities.get(key))
-                .map_or(0, Vec::len),
-        };
-        Some(Place {
-            position,
+        let place = Place {
+            position: slot,
             ancestry,
             scope,
-        })
+        };
+        if place.scope.is_none() {
+            let key = node.event.as_ref().map(|event| event.key().clone());
+            self.legacy.insert(slot, (node.name.clone(), key));
+        }
+        self.index.insert(node.name.clone(), place.clone());
+        if let Some(event) = &node.event {
+            let stream = self
+                .prodromes
+                .entry(node.genesis.clone())
+                .or_default()
+                .entry(event.key().clone())
+                .or_default();
+            let at = stream.partition_point(|stamp| stamp.place.position < slot);
+            stream.insert(
+                at,
+                Stamp {
+                    name: node.name.clone(),
+                    event: Arc::new(event.clone()),
+                    place,
+                },
+            );
+        }
+    }
+}
+
+/// Where `node` is placed: `None` for an attestation, which has no place.
+fn scope<E: Schema>(node: &Node<E>) -> Option<Scope<E::Key>> {
+    match (&node.genesis, &node.event) {
+        (None, _) => Some(None),
+        (Some(genesis), Some(event)) => Some(Some((genesis.clone(), event.key().clone()))),
+        (Some(_), None) => None,
     }
 }
 
@@ -158,26 +337,7 @@ impl<E: Schema> Folded<E> {
 pub fn extend<E: Schema>(state: &Folded<E>, nodes: &[Node<E>]) -> Folded<E> {
     let mut next = state.clone();
     for node in nodes {
-        if next.holds(&node.name) {
-            continue;
-        }
-        let Some(place) = next.place(node) else {
-            next.attestations.insert(node.name.clone());
-            continue;
-        };
-        next.index.insert(node.name.clone(), place.clone());
-        if let Some(event) = &node.event {
-            next.prodromes
-                .entry(node.genesis.clone())
-                .or_default()
-                .entry(event.key().clone())
-                .or_default()
-                .push(Stamp {
-                    name: node.name.clone(),
-                    event: Arc::new(event.clone()),
-                    place,
-                });
-        }
+        next.push(node);
     }
     next
 }
@@ -248,6 +408,15 @@ impl BitSet {
         self.0[word] |= 1 << (bit % 64);
     }
 
+    /// Insert a clear bit at `at`: every bit at or above it moves up one.
+    pub fn open(&mut self, at: usize) {
+        let bits: Vec<usize> = self.iter().collect();
+        *self = BitSet::default();
+        for bit in bits {
+            self.insert(if bit >= at { bit + 1 } else { bit });
+        }
+    }
+
     pub fn union_with(&mut self, other: &BitSet) {
         if self.0.len() < other.0.len() {
             self.0.resize(other.0.len(), 0);
@@ -286,5 +455,7 @@ mod tests {
         shorter.insert(1);
         other.union_with(&shorter);
         assert_eq!(other.iter().collect::<Vec<_>>(), vec![0, 1, 64, 130]);
+        other.open(64);
+        assert_eq!(other.iter().collect::<Vec<_>>(), vec![0, 1, 65, 131]);
     }
 }
