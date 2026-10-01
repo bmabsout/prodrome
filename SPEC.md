@@ -150,6 +150,10 @@ since this grammar has tuples and no mapping.
     under the policy where everything binds, and at no moment, because a
     name records what its writer held and never a reader's policy or moment.
     `Created` and `Tended` write no register, so their `deps` are `()`.
+  - A write to an INFLATIONARY register (§6) whose value is not `≥` the
+    reading it supersedes is refused before any object carries it. Of the
+    todo's registers only the tendings are inflationary, and a `Tended`
+    supersedes nothing, so no event of §4 is refused.
 
   A register is one todo's, so `deps` never leave a todo: a store of changes
   is a disjoint union of per-todo DAGs, and changes to different todos are
@@ -307,10 +311,17 @@ Every fold is a projection of one todo's REGISTERS (6) at a moment `t` under
 a §5 POLICY. A write joins its register when it is dated at or before `t`
 and the policy binds it — a content record joins whoever wrote it — and what
 it supersedes is ancestry alone: no clock and no linearisation picks a
-winner. A register's reading is its CANDIDATES, the distinct events of its
-frontier, so twins (§3) are one candidate; one candidate is a value, and
-more is a conflict. Every fold factors per genesis (§3), a todo keyed by
-`(genesis, todo)`; in a store of one genesis that key reads as the todo.
+winner. A register's type orders its values by a partial order, which
+decides no succession, and its reading is the MAXIMAL values of its
+frontier's values under that order, the free completion: one is a value,
+and more is a conflict. The orders of §4's registers are discrete, a value
+being the event that wrote it, so a reading is its CANDIDATES, the distinct
+events of its frontier, exactly as before, and twins (§3) are one
+candidate; the tendings are a grow-only set, ordered by inclusion. A type
+may declare its register INFLATIONARY, every write `≥` the reading it
+supersedes, which §3's append enforces. Every fold factors per genesis
+(§3), a todo keyed by `(genesis, todo)`; in a store of one genesis that key
+reads as the todo.
 
 1. `env(t, policy)`, the environment, in two halves. `outcomes : TodoId →
    set of candidate bindings`: the candidates of the todo's state register,
@@ -701,7 +712,10 @@ tendings (§6.1, §7.3);
 take no environment because a compiled term cannot consult one, and
 `ChainError`, whose
 `Cycle` carries the path; `Frontier`, an ordered set of writes, empty for
-an unwritten register, and its candidates; `Folded`; `Breaks`; `Entry`
+an unwritten register, and its candidates; `Order`, a partial order on a
+register's values (`Discrete` by default, `Total`, inclusion on a set), and
+`Inflationary`, a register type's declaration that a write only grows its
+reading; `Folded`; `Breaks`; `Entry`
 (§6.7), keyed by genesis and todo, whose outcome is a candidate set, whose
 function is always
 there (`Absent` where the todo has none), whose value is a number, `∅` or a
@@ -932,6 +946,25 @@ geneses united, a snapshot chain and a mixed store over a
     `event_id`. Checked against two plain stores, a base and a store staged
     over it: `change.rs::accept_is_a_same_name_move`,
     `change.rs::reproposal_is_recognised`.
+
+Laws 30–32 are §6's register types (`docs/design-register-types.md`, its
+laws 2 to 4), on generated values and DAGs, with a state machine in the
+tests beside the vocabulary's orders. That §4's registers read byte for
+byte as before is law 22 and every vector suite, unchanged.
+
+30. **An order is a partial order.** Each value type's `≤` is reflexive,
+    antisymmetric and transitive.
+    `order_laws.rs::every_order_is_a_partial_order`.
+31. **A reading is the completion.** A register reads the maximal values of
+    its frontier's values, each once, and one value exactly when one is
+    greatest; under the discrete order on events that is the candidates.
+    `order_laws.rs::a_reading_is_the_maximal_values`,
+    `order_laws.rs::the_discrete_reading_is_the_candidates`.
+32. **An inflationary reading is a homomorphism.** An append to an
+    inflationary register whose value is not `≥` the reading it supersedes
+    is refused, and over the histories so written `read(h₁ ∪ h₂) =
+    max(read(h₁) ∪ read(h₂))`.
+    `order_laws.rs::an_inflationary_reading_is_a_homomorphism`.
 
 ## 10. Non-goals
 
