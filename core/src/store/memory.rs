@@ -61,6 +61,10 @@ impl<E: Schema> Verified<E> {
         &self.name
     }
 
+    pub fn object(&self) -> &Envelope<E> {
+        &self.object
+    }
+
     /// `bytes` under `name`, rehashed and parsed.
     pub fn read(name: &Hash, bytes: &[u8]) -> Result<Verified<E>, Unread> {
         decode(name, bytes).map(|object| Verified {
