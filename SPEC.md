@@ -1037,7 +1037,7 @@ geneses united, a snapshot chain and a mixed store over a
     `change.rs::snapshot_chain_grows`.
 29. **Placement is not identity.** Moving a change's file between two stores
     of one genesis changes no name. A change re-proposed over the same
-    frontier is the same object, and over a moved frontier it has the same
+    heads is the same object, and over moved heads it has the same
     `event_id`. Checked against two plain stores, a base and a store staged
     over it: `change.rs::accept_is_a_same_name_move`,
     `change.rs::reproposal_is_recognised`.
@@ -1108,8 +1108,9 @@ Laws 36 and 37 are §3's deps and §6.6's supersession, on two writers whose
 replicas in memory sync in between and whose events are dated anywhere.
 
 36. **A change rests on what its writer saw.** Each append descends from
-    every write to its entity its writer held, in any register:
-    happens-before is what the deps say, for one writer and across writers.
+    every write to its entity its writer held, in any register, and from no
+    other: happens-before within an entity is what the deps say, for one
+    writer and across writers.
     So a writer's own successive writes to one entity stream in the order
     it wrote them, whatever their registers and instants.
     `causal.rs::a_change_rests_on_what_its_writer_saw`,
