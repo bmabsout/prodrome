@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::{a_draft, a_log, a_replay, a_schedule, moment, realise, two_writers, Draft, WINDOW};
 use prodrome::dag::{Dag, Finding};
 use prodrome::event::{
-    canonical, canonical_envelope, event_id, seal_hash, Actor, Envelope, Hash, TodoEvent, TodoId,
+    canonical, canonical_envelope, event_id, seal_hash, Actor, Envelope, Hash, TodoEvent,
 };
-use prodrome::fold::{Kind, Product, Write};
+use prodrome::fold::{Kind, Product};
 use prodrome::genesis::mk_genesis;
 use prodrome::policy::{Everything, Untrusted};
 use prodrome::reference::Todo;
@@ -108,13 +108,6 @@ fn findings(store: &Store) -> Vec<String> {
     store.verify().iter().map(ToString::to_string).collect()
 }
 
-/// The registers an event writes.
-fn registers(event: &Event) -> BTreeSet<(TodoId, Kind)> {
-    Write::of(event)
-        .filter_map(|write| Some((event.todo().clone(), write.kind()?)))
-        .collect()
-}
-
 /// A draft that writes a register, dated.
 fn a_write() -> impl Strategy<Value = Event> {
     ((a_draft(), 3u8..7), 0i64..WINDOW)
@@ -125,18 +118,16 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 
     /// Law 19 — A NAME IS ITS GENESIS, EVENT AND VIEW. Two writers diverge
-    /// on everything but the registers `event` writes, and write it as one
-    /// object.
+    /// on everything but `event`'s entity, and write it as one object.
     #[test]
-    fn name_ignores_other_registers(
+    fn name_ignores_other_entities(
         (shared, mine, theirs) in two_writers(),
         event in a_write(),
     ) {
         let scratch = Scratch::new();
-        let written = registers(&event);
         let elsewhere = |log: &[Event]| -> Vec<Event> {
             log.iter()
-                .filter(|other| registers(other).is_disjoint(&written))
+                .filter(|other| other.todo() != event.todo())
                 .cloned()
                 .collect()
         };
@@ -212,8 +203,8 @@ proptest! {
         );
     }
 
-    /// Law 21 — INDEPENDENCE IS STRUCTURAL. Every dep writes a register its
-    /// change's event writes, so deps never leave a todo; and the store
+    /// Law 21 — INDEPENDENCE IS STRUCTURAL. Every dep is a write to its
+    /// change's todo, so deps never leave a todo; and the store
     /// written todo by todo is the store written in time order.
     #[test]
     fn deps_name_one_todo(log in a_log()) {
@@ -225,7 +216,7 @@ proptest! {
             let Envelope::Change(change) = object else { continue };
             for dep in &change.deps {
                 let event = read.get(dep).and_then(Envelope::event).expect("a dep carries an event");
-                prop_assert!(!registers(event).is_disjoint(&registers(&change.event)));
+                prop_assert_eq!(event.todo(), change.event.todo());
             }
         }
         prop_assert_eq!(findings(&store), Vec::<String>::new());
