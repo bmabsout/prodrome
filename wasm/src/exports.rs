@@ -19,7 +19,7 @@ use prodrome::schema::Schema;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::wire::{object, parse_objects, strings, ObjectIn, Refusal};
+use crate::wire::{object, parse_names, parse_objects, strings, ObjectIn, Refusal};
 
 /// What a schema says to cross this boundary, beside what it says to be
 /// stored. Not a bound on [`Schema`]: JSON is this boundary's business, and a
@@ -389,4 +389,44 @@ pub fn verify<E: Json>(replica: &Replica<E>) -> Result<String, Refusal> {
         ("problems", strings(problems)),
         ("linearisation", strings(linearisation)),
     ]))
+}
+
+// --- §3: where a replica stands ------------------------------------------------
+
+fn names<'n>(names: impl IntoIterator<Item = &'n Hash>) -> Value {
+    strings(names.into_iter().map(|name| name.as_str().to_owned()))
+}
+
+/// The objects' TIPS, those no object names as a parent, and each prodrome's
+/// HEADS, its own tips, by the name of its genesis (a legacy store's by its
+/// least root). Refused, like every reading, over objects that are not.
+pub fn tips<E: Schema>(replica: &Replica<E>) -> Result<String, Refusal> {
+    let dag = replica.read()?.dag;
+    let heads = dag
+        .geneses()
+        .into_iter()
+        .map(|genesis| {
+            let heads = names(&dag.tips_in(&dag.key(&genesis)));
+            (genesis.into_string(), heads)
+        })
+        .collect();
+    printed(&object(vec![
+        ("tips", names(&dag.tips())),
+        ("heads", Value::Object(heads)),
+    ]))
+}
+
+/// The objects a replica that holds `tips` (a JSON array of names) and
+/// everything they rest on does not, in causal order: what to send it. A tip
+/// these objects lack names nothing they hold, so it holds back nothing.
+/// Names only: the caller holds the bytes it sent.
+pub fn since<E: Schema>(replica: &Replica<E>, tips: &str) -> Result<String, Refusal> {
+    let read = replica.read()?;
+    let held = read.dag.closure(parse_names("tips", tips)?);
+    let since = read
+        .nodes
+        .iter()
+        .map(|node| &node.name)
+        .filter(|name| !held.contains(*name));
+    printed(&object(vec![("since", names(since))]))
 }
