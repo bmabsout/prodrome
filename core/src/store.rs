@@ -422,8 +422,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// names them all beneath it, so they stop being tips (a FAST-FORWARD);
     /// anything else is a second tip. Answers `digest`.
     pub fn adopt(&self, source: &EventStore<E, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
-        let _locked = self.lock()?;
-        self.copy_in(source, digest)?;
+        self.copy_in_from(digest, |name| fs::read(source.object_path(name)).ok())?;
         Ok(digest.clone())
     }
 
@@ -446,7 +445,6 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         objects: &BTreeMap<Hash, String>,
         digest: &Hash,
     ) -> Result<Hash, ProdromeError> {
-        let _locked = self.lock()?;
         self.copy_in_from(digest, |name| {
             objects.get(name).map(|text| text.as_bytes().to_vec())
         })?;
@@ -468,47 +466,51 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         Ok(())
     }
 
-    /// Every object `digest` rests on that this store lacks, VERIFIED in — a
-    /// replica is not trusted for being a replica. An object we already hold
-    /// ends that branch of the walk: this store is closed under parents, so
-    /// everything above one of ours is already here.
-    fn copy_in(&self, source: &EventStore<E, Pol>, digest: &Hash) -> Result<(), ProdromeError> {
-        self.copy_in_from(digest, |name| fs::read(source.object_path(name)).ok())
-    }
-
-    /// The walk both adoptions share: from `digest` down through parents,
-    /// taking in what this store lacks and REVERIFYING each object on the way.
+    /// The walk both adoptions share, under the lock: from `digest` down
+    /// through parents, taking in what this store lacks and VERIFYING each
+    /// object on the way — a replica is not trusted for being a replica.
     /// `bytes_of` is where the replica's objects are read from — a directory,
     /// or a map that arrived over a wire.
+    ///
+    /// An object the memory holds ends that branch of the walk, unread: this
+    /// store is closed under parents, so everything above one of ours is
+    /// already here. A file the memory does not hold is verified where the
+    /// walk reaches it, as before; one elsewhere that does not verify is not
+    /// this adoption's business, so the look's refusal is not either.
     ///
     /// NOTHING IS WRITTEN UNTIL EVERYTHING HAS VERIFIED, and then PARENTS
     /// FIRST. With derived tips an object is part of the store the moment its
     /// file appears, so a child written before its parent — by a crash between
     /// the two, or read by another process in between — would be a store
     /// naming an object it does not hold. Written in this order, every prefix
-    /// of the adoption is a store closed under parents.
+    /// of the adoption is a store closed under parents. What is written was
+    /// verified on the way in, so it enters the memory without a second read.
     fn copy_in_from(
         &self,
         digest: &Hash,
         bytes_of: impl Fn(&Hash) -> Option<Vec<u8>>,
     ) -> Result<(), ProdromeError> {
         /// A depth-first walk, emitting an object once its parents are.
-        enum Visit {
+        enum Visit<E> {
             Enter(Hash),
-            Leave(Hash, Vec<u8>),
+            Leave(Verified<E>, Vec<u8>),
         }
+        let _locked = self.lock()?;
+        let mut memory = self.memory();
+        // Refused where the walk reaches it, below, and nowhere else.
+        let _unreached: Result<(), ProdromeError> = self.look(&mut memory);
         let mut entered: BTreeSet<Hash> = BTreeSet::new();
-        let mut taken: Vec<(Hash, Vec<u8>)> = Vec::new();
+        let mut taken: Vec<(Verified<E>, Vec<u8>)> = Vec::new();
         let mut pending = vec![Visit::Enter(digest.clone())];
         while let Some(visit) = pending.pop() {
             let name = match visit {
-                Visit::Leave(name, raw) => {
-                    taken.push((name, raw));
+                Visit::Leave(verified, raw) => {
+                    taken.push((verified, raw));
                     continue;
                 }
                 Visit::Enter(name) => name,
             };
-            if !entered.insert(name.clone()) {
+            if !entered.insert(name.clone()) || memory.holds(&name) {
                 continue;
             }
             if self.object_path(&name).exists() {
@@ -521,16 +523,30 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                     name.as_str()
                 )));
             };
-            let object = decode::<E>(&name, &raw).map_err(|why| why.refusal(&name))?;
-            pending.push(Visit::Leave(name, raw));
-            let named = parents_of(&object)
+            let verified = Verified::read(&name, &raw).map_err(|why| why.refusal(&name))?;
+            let named: Vec<Hash> = parents_of(verified.object())
                 .into_iter()
-                .chain(object.genesis().cloned());
-            pending.extend(named.map(Visit::Enter));
+                .chain(verified.object().genesis().cloned())
+                .collect();
+            pending.push(Visit::Leave(verified, raw));
+            pending.extend(named.into_iter().map(Visit::Enter));
         }
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
-        self.place(taken.iter().map(|(name, raw)| (name, raw.as_slice())))
+        self.place(
+            taken
+                .iter()
+                .map(|(verified, raw)| (verified.name(), raw.as_slice())),
+        )?;
+        let now = SystemTime::now();
+        let seen = taken
+            .into_iter()
+            .map(|(verified, _)| {
+                let seen = Seen::of(fs::metadata(self.object_path(verified.name())).ok(), now);
+                (verified, seen)
+            })
+            .collect();
+        memory.admit(&[], seen)
     }
 
     /// Objects onto disk under their names, in the order given, DURABLY: each
@@ -678,13 +694,19 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// Everything `digest` transitively rests on — STRICTLY: an object is not
     /// its own ancestor. This is the partial order and the whole of it.
     pub fn ancestors(&self, digest: &Hash) -> Result<BTreeSet<Hash>, ProdromeError> {
+        let dag = self.dag()?;
+        let parents = |name: &Hash| {
+            dag.get(name)
+                .map(parents_of)
+                .ok_or_else(|| ProdromeError::Store(format!("missing object {}", name.as_str())))
+        };
         let mut found: BTreeSet<Hash> = BTreeSet::new();
-        let mut pending = parents_of(&self.load(digest)?);
+        let mut pending = parents(digest)?;
         while let Some(name) = pending.pop() {
             if !found.insert(name.clone()) {
                 continue;
             }
-            pending.extend(parents_of(&self.load(&name)?));
+            pending.extend(parents(&name)?);
         }
         Ok(found)
     }
