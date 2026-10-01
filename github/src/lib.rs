@@ -758,7 +758,7 @@ pub fn apply_delivery(
     delivery: &Delivery,
     proposal: Option<&str>,
 ) -> Result<Outcome, Error> {
-    match plan(delivery, proposal, &store.dag()?)? {
+    match plan(delivery, proposal, &*store.dag()?)? {
         Err(skip) => Ok(Outcome::said(format!("nothing to append: {skip}"))),
         Ok(meant) if meant.is_empty() => Ok(Outcome::said("nothing to append: already applied")),
         Ok(meant) => {
