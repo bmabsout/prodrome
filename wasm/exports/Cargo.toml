@@ -1,0 +1,38 @@
+[package]
+name = "prodrome-wasm-exports"
+description = "prodrome-core's WebAssembly exports, generic over a schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "../../README.md"
+keywords = ["wasm", "webassembly", "event-sourcing", "database", "temporal"]
+categories = ["wasm", "database-implementations"]
+# Not for crates.io yet, as `prodrome-wasm` is not: a host depends on it by
+# path or by git until there is a published artefact to be the source of.
+publish = false
+
+# A LIBRARY, and only one: a module is a `cdylib` crate that instantiates
+# `schema!` for each of its schemas, `prodrome-wasm` (the reference module)
+# or a host's. A crate that were both would be built without whole-module
+# LTO, which costs the reference module a seventh of its size.
+[lib]
+name = "prodrome_wasm_exports"
+path = "src/lib.rs"
+
+[dependencies]
+# Without the reference payload: a module that wants it says so.
+prodrome-core = { path = "../../core", default-features = false }
+# Pinned to the EXACT patch the flake's `wasm-bindgen-cli_0_2_127` is: the
+# generator and the runtime negotiate over a schema version baked into both,
+# and a mismatch is a link error at bindgen time rather than a bug later. A
+# module that instantiates `schema!` depends on it at this version too.
+wasm-bindgen = "=0.2.127"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+# The tests read the reference payload's records.
+prodrome-core = { path = "../../core" }

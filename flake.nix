@@ -56,6 +56,7 @@
             ./core/Cargo.toml
             ./github/Cargo.toml
             ./wasm/Cargo.toml
+            ./wasm/exports/Cargo.toml
           ] ++ paths);
         };
 
@@ -110,7 +111,7 @@
         # time, and pinning only one of them would make that failure a
         # `nix flake update` away.
         wasmArgs = profile: common // {
-          src = rustSrc [ ./core/src ./wasm/src ];
+          src = rustSrc [ ./core/src ./wasm/src ./wasm/exports/src ];
           nativeBuildInputs = [ pkgs.lld ];
           doCheck = false;
           buildPhaseCargoCommand = ''
@@ -334,9 +335,8 @@
           # `nix develop -c cargo …` runs by hand, in one target directory:
           # every crate's suites — SPEC §9 against `conformance/*.json` and
           # the laws over generated logs and DAGs — and clippy at `-D
-          # warnings` over `--all-targets`, which is the tests too, and over
-          # the wasm crate as a host depends on it, without the reference
-          # module. The dev profile: it compiles the suites in a fraction of release's time,
+          # warnings` over `--all-targets`, which is the tests too. The dev
+          # profile: it compiles the suites in a fraction of release's time,
           # and they run no slower.
           prodrome-workspace = craneLib.mkCargoDerivation (common // {
             pname = "prodrome-workspace";
@@ -346,7 +346,6 @@
             buildPhaseCargoCommand = ''
               cargo fmt --all --check
               cargo clippy --locked --workspace --all-targets -- -D warnings
-              cargo clippy --locked -p prodrome-wasm --no-default-features -- -D warnings
               cargo test --locked --workspace
             '';
             doInstallCargoArtifacts = false;
