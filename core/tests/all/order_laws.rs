@@ -4,12 +4,13 @@
 //! register refuses a write that would make its reading fall, so that its
 //! reading is a homomorphism, over two generated replicas.
 //!
-//! Beside the todo vocabulary's orders, a small state machine that no
-//! register of the vocabulary uses, so the laws see an order that is neither
-//! discrete, total nor inclusion, and that is inflationary. Its values ride
-//! in the notes of state writes, so they reach a frontier through the same
-//! fold as the todo's, and its appends are refused by the same [`grows`] the
-//! store's append path calls.
+//! Beside the todo vocabulary's orders, the review schema's machine
+//! (`review.rs`), so the laws see an order that is neither discrete, total
+//! nor inclusion, and that is inflationary. Here its values ride in the notes
+//! of todo state writes, so they reach a frontier through the same fold as
+//! the todo's, and its appends are refused by the same [`grows`] the store's
+//! append path calls; `review.rs` drives the same refusal through the append
+//! path itself.
 //!
 //! Law 6, that the todo vocabulary reads byte for byte as before, is every
 //! vector suite beside this one, unchanged.
@@ -17,36 +18,14 @@
 use std::collections::BTreeSet;
 
 use prodrome::event::{mk_completed, Hash, TodoEvent, TodoId};
-use prodrome::fold::{grows, maximal, Discrete, Frontier, Inflationary, Order, Total};
+use prodrome::fold::{grows, maximal, Discrete, Frontier, Order, Total};
 use prodrome::literal::Datetime;
 use prodrome::policy::Everything;
 use prodrome::reference::Todo;
 use prodrome::registers::{fold, Folded, Node, Stamp};
 use proptest::prelude::*;
 
-/// `Draft < Review < Merged` and `Draft < Closed`: further along is greater,
-/// and `Merged` and `Closed` are the one incomparable pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    Draft,
-    Review,
-    Merged,
-    Closed,
-}
-
-impl Order for Phase {
-    fn le(&self, other: &Self) -> bool {
-        use Phase::*;
-        matches!(
-            (self, other),
-            (Draft, _) | (Review, Review | Merged) | (Merged, Merged) | (Closed, Closed)
-        )
-    }
-}
-
-const PHASES: [Phase; 4] = [Phase::Draft, Phase::Review, Phase::Merged, Phase::Closed];
-
-impl Inflationary for Phase {}
+use crate::review::{Phase, PHASES};
 
 fn a_phase() -> impl Strategy<Value = Phase> {
     prop::sample::select(PHASES.to_vec())
