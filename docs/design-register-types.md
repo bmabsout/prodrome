@@ -127,6 +127,35 @@ An entity whose schema has no valuation has NO price. It is not `Absent`.
 `Absent` stays a value of FPL meaning "this todo prices no opinion"; it
 stops standing in for "this type has no price".
 
+**What landed.** A valuation is `schema::Price`, one method:
+
+    fn terms(registers: &Self::Registers<'_>) -> Result<Vec<Term>, FplError>;
+
+the term each candidate of the reading prices as, and `fold::price` is
+`Least` over them, defined once. `Least` is the meet in the fulfillment
+order: its value at every instant is the least of its members', with `∅` as
+the top, so a reading none of whose candidates prices is `∅` and an
+unpriced candidate never lowers a priced one (law 5). For the todo, a
+candidate is a WORLD, one candidate from each register.
+
+What only the todo has is in traits only the schemas that have it
+implement, none of them required of a `Price` (§5):
+
+- `History: Price`, a price that changes with the entity's history:
+  `moment(now, first, head)`, the terms of one moment, a register unwritten
+  yet read as first written and a world that prices nothing priced as the
+  head. `fold::flatten` makes each moment a piece of §6.4's function, and a
+  moment with nothing first written and no head is the reading's `terms`.
+- `Bind`, what FPL's `Ref`s read of an entity in this store
+  (`fold::env`), its key a string. A `Ref` to an entity in ANOTHER store is
+  a host's environment, passed in, never a method of a schema.
+- `Row`, what a list row shows (`Reading`) and when it is provisional
+  (`disputes`, `unconfirmed`); `view::entries` asks for `Row + History +
+  Bind`.
+
+A schema whose price does not change with its history, that nothing
+refers to, and whose store trusts every writer implements `Price` alone.
+
 **Two operations, two laws.** The completion's join merges CONCURRENT VERSIONS
 of one register: idempotent, since a value joined with itself is itself.
 FPL's conjunction (`Conj`, the power mean, §7) AGGREGATES DIFFERENT ENTITIES:
@@ -146,7 +175,8 @@ A host declares a schema, and the database is generic over it:
 - its REGISTERS, a product: each a name, a value type with its order, whether
   it is inflationary, and the route from each event to the registers it
   writes with what value;
-- optionally a VALUATION (§4).
+- optionally a VALUATION (§4): `Price`, and where it has them, `History`,
+  `Bind` and `Row`.
 
 The registers of an entity are a product of semilattices, so they are a
 semilattice; the fold of a stream is a monoid action (`extend`), as §6.6
@@ -226,24 +256,29 @@ In this repository, each one PR:
    schema's events are a closed sum and nothing else parses into one
    (`TodoEvent<P>` is the todo schema, in `todo`); an entity's registers as
    a `fold::Product` of `Frontier`s and grow-only sets, each read under a
-   `fold::RegisterType`; `schema::Valuation`, its price `Least` over a
-   reading's worlds by construction (`fold::price`); `EventStore`, `Dag`,
+   `fold::RegisterType`; a valuation, since narrowed to `schema::Price`, its
+   price `Least` over a reading's candidates by construction (`fold::price`),
+   beside `History`, `Bind` and `Row` for what only the todo has (§4);
+   `EventStore`, `Dag`,
    `Envelope`, `Change`, the fold, `registers`, `verify`, `Policy` and
    `view::entries` generic over a schema, the append calling `grows` through
-   `Product::grows`. A review schema in the tests, with no valuation, runs
+   `Product::grows`. A review schema in the tests, priced by a flat term per phase, runs
    law 1 beside the todo's and law 4 through the append (SPEC laws 32 and
-   33); law 5 is SPEC law 24 and law 6 is law 22, every vector unchanged.
+   33); law 5 is SPEC law 34 over any `Price`, the review schema priced by a
+   flat term per phase, and law 24 for the todo's entry; law 6 is law 22,
+   every vector unchanged.
 3. **The wasm.** The exports read a store at a schema. BUILT: the exports
    are generic over a schema (`prodrome-wasm-exports`, a library): `verify`, `tips`
    and each prodrome's heads, `since` a replica's tips, and `readings`, each
    register's maximal writes through `fold::Product::reading`, for any
-   schema; `entries` and `prices` for one with a `Valuation`. A schema
+   schema; `entries` and `prices` for one with a `Row`, a `History` and a
+   `Bind`. A schema
    crosses the boundary by `Json` beside it (its key's field, its
    registers' names, its values' JSON, a function of the value) and, priced,
-   `PricedJson` (its reading's JSON); not a bound on `Schema`, since
+   `RowJson` (its row's reading's JSON); not a bound on `Schema`, since
    JSON is the boundary's and a schema read natively owes it nothing. A host
    says `prodrome_wasm_exports::schema!(Name = Schema)`, with `, priced`
-   for a valuation, once per schema, each a JS class in ONE module, its own
+   for those three, once per schema, each a JS class in ONE module, its own
    `cdylib` crate. `prodrome-wasm` is the reference module, built the same
    way: the todo schema at the reference payload, `Todos`, beside its old
    exports, byte for byte; the tests' review schema runs through the
