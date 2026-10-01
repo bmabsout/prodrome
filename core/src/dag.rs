@@ -173,7 +173,8 @@ impl<E> Dag<E> {
         Ok(order)
     }
 
-    fn is_root(&self, name: &Hash) -> bool {
+    /// Is `name` a legacy root, a `Sealed` with no `prev`?
+    pub(crate) fn is_root(&self, name: &Hash) -> bool {
         matches!(
             self.objects.get(name),
             Some(Envelope::Sealed { prev: None, .. })

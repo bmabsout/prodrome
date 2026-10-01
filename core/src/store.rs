@@ -148,7 +148,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 Ok(verified) => fresh.push((verified, seen)),
             }
         }
-        memory.admit(&gone, fresh)?;
+        memory.admit(&gone, fresh);
         match unread.into_iter().next() {
             Some((name, why)) => Err(why.refusal(&name)),
             None => Ok(()),
@@ -235,7 +235,8 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// The fold of every object the store holds, across a parent set aside
     /// (what an append decides on): `fold(&dag.nodes_across_gaps()?)` of
     /// [`EventStore::dag`], extended by each object as it is read and never
-    /// refolded from the files.
+    /// refolded from the files. Shared as `dag` is: a caller holding it
+    /// while the store extends its memory makes that extension copy it.
     pub fn folded(&self) -> Result<Arc<Folded<E>>, ProdromeError> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
@@ -306,8 +307,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         }
     }
 
-    fn genesis(&self, dag: &Dag<E>) -> Result<Hash, ProdromeError> {
-        let geneses = dag.geneses();
+    fn genesis(&self, geneses: &BTreeSet<Hash>) -> Result<Hash, ProdromeError> {
         let mut sole = geneses.iter();
         match (&self.genesis, sole.next(), sole.next()) {
             (Some(mine), ..) if geneses.contains(mine) => Ok(mine.clone()),
@@ -332,7 +332,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let _locked = self.lock()?;
         let mut memory = self.memory();
         self.look(&mut memory)?;
-        if let Some(genesis) = memory.dag().geneses().first() {
+        if let Some(genesis) = memory.geneses().first() {
             return Err(ProdromeError::Store(format!(
                 "the store already has a genesis, {}",
                 genesis.as_str()
@@ -357,7 +357,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let _locked = self.lock()?;
         let mut memory = self.memory();
         self.look(&mut memory)?;
-        let genesis = self.genesis(memory.dag())?;
+        let genesis = self.genesis(memory.geneses())?;
         let prodrome = memory.dag().key(&genesis);
         if let Some(twin) = memory.twin(&prodrome, &event)? {
             return Ok(twin);
@@ -377,8 +377,8 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
         let snapshot = {
+            let genesis = self.genesis(memory.geneses())?;
             let dag = memory.dag();
-            let genesis = self.genesis(dag)?;
             let tips = dag.tips_in(&dag.key(&genesis));
             let previous = dag.linearise()?.into_iter().rev().find(|name| {
                 tips.contains(name) && matches!(dag.get(name), Some(Envelope::Snapshot(_)))
@@ -474,9 +474,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     ///
     /// An object the memory holds ends that branch of the walk, unread: this
     /// store is closed under parents, so everything above one of ours is
-    /// already here. A file the memory does not hold is verified where the
-    /// walk reaches it, as before; one elsewhere that does not verify is not
-    /// this adoption's business, so the look's refusal is not either.
+    /// already here. A store holding a file that does not verify refuses, as
+    /// every read of it does, naming the file and the quarantine that sets it
+    /// aside; adopting the object back is the repair after that.
     ///
     /// NOTHING IS WRITTEN UNTIL EVERYTHING HAS VERIFIED, and then PARENTS
     /// FIRST. With derived tips an object is part of the store the moment its
@@ -497,8 +497,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         }
         let _locked = self.lock()?;
         let mut memory = self.memory();
-        // Refused where the walk reaches it, below, and nowhere else.
-        let _unreached: Result<(), ProdromeError> = self.look(&mut memory);
+        self.look(&mut memory)?;
         let mut entered: BTreeSet<Hash> = BTreeSet::new();
         let mut taken: Vec<(Verified<E>, Vec<u8>)> = Vec::new();
         let mut pending = vec![Visit::Enter(digest.clone())];
@@ -511,10 +510,6 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 Visit::Enter(name) => name,
             };
             if !entered.insert(name.clone()) || memory.holds(&name) {
-                continue;
-            }
-            if self.object_path(&name).exists() {
-                self.load(&name)?;
                 continue;
             }
             let Some(raw) = bytes_of(&name) else {
@@ -546,7 +541,8 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 (verified, seen)
             })
             .collect();
-        memory.admit(&[], seen)
+        memory.admit(&[], seen);
+        Ok(())
     }
 
     /// Objects onto disk under their names, in the order given, DURABLY: each
@@ -594,20 +590,21 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     }
 
     /// One object onto disk, content-addressed and idempotent, and into
-    /// `memory`, which has just looked: an object it holds is a no-op, since
-    /// the look found its file holding its bytes; DIFFERENT bytes already at
+    /// `memory`, which has just looked: an object it holds is a no-op while
+    /// its file is there, since the look found it holding its bytes;
+    /// DIFFERENT bytes already at
     /// the name are a sha256 collision or a corrupt store, and we stop rather
     /// than clobber. The object is verified because it was sealed here, so
     /// nothing written is read back.
     fn write(&self, memory: &mut Memory<E>, object: Envelope<E>) -> Result<Hash, ProdromeError> {
         let (verified, text) = Verified::sealed(object);
         let digest = verified.name().clone();
-        if memory.holds(&digest) {
+        let path = self.object_path(&digest);
+        if memory.holds(&digest) && path.exists() {
             return Ok(digest);
         }
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
-        let path = self.object_path(&digest);
         if path.exists() {
             let existing = fs::read(&path).map_err(|e| Self::io(&path, e))?;
             if existing != text.as_bytes() {
@@ -620,7 +617,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             self.place([(&digest, text.as_bytes())])?;
         }
         let seen = Seen::of(fs::metadata(&path).ok(), SystemTime::now());
-        memory.admit(&[], vec![(verified, seen)])?;
+        memory.admit(&[], vec![(verified, seen)]);
         Ok(digest)
     }
 

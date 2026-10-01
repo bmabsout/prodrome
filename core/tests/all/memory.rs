@@ -572,3 +572,40 @@ fn writers_at_once_write_each_event_once() {
         assert_eq!(read(writer).as_ref(), Ok(&cold));
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// THE GENESES ARE KEPT, NOT SCANNED FOR. Two unrelated legacy replicas,
+    /// one's files arriving in the other's directory one at a time while a
+    /// handle reads: an append through that handle writes into the prodrome
+    /// of the least legacy root, the object a fresh handle's append writes.
+    #[test]
+    fn an_append_writes_into_the_least_legacy_root(
+        mine in a_log(),
+        theirs in a_log(),
+        event in a_log(),
+    ) {
+        prop_assume!(!mine.is_empty() && !theirs.is_empty() && !event.is_empty());
+        let scratch = Scratch::new("roots");
+        let here = scratch.store("here");
+        for event in &mine {
+            seal(&here, event.clone());
+        }
+        let there = scratch.store("there");
+        for event in &theirs {
+            seal(&there, event.clone());
+        }
+        read(&here).expect("reads");
+        for name in names_in(there.root()).into_iter().rev() {
+            let file = format!("objects/{}.py", name.as_str());
+            fs::copy(there.root().join(&file), here.root().join(&file)).expect("copies");
+            read(&here).expect("reads");
+        }
+        let twin = scratch.0.join("twin");
+        copy_store(here.root(), &twin);
+        let cold = Store::new(&twin, roster()).append(event[0].clone()).map_err(|e| e.to_string());
+        prop_assert_eq!(here.append(event[0].clone()).map_err(|e| e.to_string()), cold);
+        prop_assert_eq!(read(&here), read(&scratch.store("here")));
+    }
+}
