@@ -45,9 +45,10 @@ every reading and every stored byte is as it was.
   `Discrete` (the default), `Total` and inclusion on a set as instances;
   `fold::maximal` and `Frontier::read` are the completion, a register's
   reading as the maximal values of its frontier. `fold::Inflationary`
-  declares a register that may only grow, and `fold::grows`, on the store's
-  append path, refuses a write that goes back. SPEC laws 30–32 and their
-  evidence, `core/tests/all/order_laws.rs`.
+  declares a register that may only grow, and `fold::grows` is the refusal an
+  append of a write that goes back meets; no todo register supersedes a write
+  it could refuse, so the store calls it from stage 2's schemas. SPEC laws
+  30–32 and their evidence, `core/tests/all/order_laws.rs`.
 
 - **`Absent`, a new leaf of `TermF` (SPEC §7):** `∅` at every instant,
   printed `Absent()`, built by `fpl::mk_absent`. `∅` is the identity of
