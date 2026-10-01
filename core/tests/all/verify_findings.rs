@@ -246,6 +246,16 @@ fn every_change_identity_finding() {
             mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
         ),
     );
+    // A dep may be any write to the change's entity, in any register: this
+    // one writes no register at all and rests on a state write. No finding.
+    write(
+        &root,
+        &change(
+            &mine,
+            &[&reopened],
+            mk_created("alpha", at(5), "bassel", "", "").expect("valid"),
+        ),
+    );
     let absent = name_of(b"never written");
 
     let redundant = write(
@@ -299,8 +309,8 @@ fn every_change_identity_finding() {
         (
             other_todo.clone(),
             vec![format!(
-                "change {other_todo} depends on {done}, which writes no register its event \
-                 writes (SPEC §3)"
+                "change {other_todo} depends on {done}, which is not a write to its entity \
+                 (SPEC §3)"
             )],
         ),
         (
