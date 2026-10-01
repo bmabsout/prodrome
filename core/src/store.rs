@@ -14,32 +14,39 @@
 //! Effect shell, not pure core: the filesystem lives here and `literal`/`event`
 //! stay pure. Two rules the reference states and this keeps:
 //!
-//! - a load REVERIFIES, hashing the STORED BYTES against the filename before
+//! - a read VERIFIES, hashing the STORED BYTES against the filename before
 //!   parsing — tamper-evidence on read — and never a reprint→rehash, which
-//!   would couple every old object's validity to the current printer;
+//!   would couple every old object's validity to the current printer. A
+//!   handle verifies each object once and holds it (`store::memory`); a held
+//!   object is read again only when its file no longer looks as it did, and
+//!   `verify` rehashes everything, on purpose;
 //! - a write is content-addressed and idempotent, through a randomly named
 //!   temp file synced before it is renamed, so the object appearing under its
 //!   name IS the append: there is no second file to move after it, and no
 //!   crash leaves a store half-written or an object empty.
+
+mod memory;
 
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::SystemTime;
 
 use crate::change::mk_change;
-use crate::dag::{decode, tips_among, Dag, Finding};
+use crate::dag::{decode, Dag, Finding, Unread};
 use crate::event::{canonical, mk_woven, parents_of, seal_hash, Envelope, Hash};
 use crate::genesis::mk_genesis;
 use crate::literal::ProdromeError;
 use crate::policy::{Policy, Untrusted};
-use crate::registers::{deps_for, fold};
+use crate::registers::{deps_for, fold, Folded};
 use crate::schema::Schema;
 use crate::snapshot::mk_snapshot;
+
+use memory::{Memory, Seen, Verified};
 
 /// A chain rooted at `root`, of the schema `E`, read under one host
 /// [`Policy`] (§5).
@@ -50,29 +57,23 @@ use crate::snapshot::mk_snapshot;
 /// at all is a store nobody has configured — and `Untrusted::none()`, which
 /// stands behind every writer, is the only honest thing for that to mean.
 #[derive(Debug, Clone)]
-pub struct EventStore<E, Pol = Untrusted> {
+pub struct EventStore<E: Schema, Pol = Untrusted> {
     root: PathBuf,
     policy: Pol,
-    /// WHICH SCHEMA THIS STORE HOLDS. A store is parsed against one closed
-    /// vocabulary (§2), the envelopes' and this schema's, so the schema is
+    /// WHAT THIS HANDLE (OR A CLONE OF IT) HAS READ: every object, verified
+    /// once, and their fold. A read or an append looks at `objects/` and
+    /// reads only what the memory does not hold, so it costs the objects
+    /// new since the last look and not the store.
+    ///
+    /// The schema is the memory's: a store is parsed against one closed
+    /// vocabulary (§2), the envelopes' and its schema's, so the schema is
     /// part of what a store IS, not an argument to each read. No object
     /// carries it.
-    schema: PhantomData<E>,
-    /// THE PARENT INDEX: every object this handle (or a clone of it) has
-    /// verified, by name, with the parents it names. Deriving the tips reads
-    /// every object's parents, and loading a thousand objects to learn that is
-    /// tens of milliseconds where the old `HEAD` was one small read. The index
-    /// makes it a directory listing plus the objects not seen before.
     ///
-    /// A MEMO OF A PURE FUNCTION, which is why it needs no invalidation: a name
-    /// is the hash of the bytes, so the parents a name has are fixed forever.
-    /// What the listing no longer holds is simply not asked about — a host
-    /// that deletes an object (a rejected proposal) needs nothing here.
-    ///
-    /// ⚠️ What it gives up, stated: an object tampered with on disk AFTER this
-    /// handle verified it is not noticed by [`EventStore::tips`]. Every read of
-    /// the objects themselves, and `verify`, still rehash every file.
-    parents: Arc<Mutex<BTreeMap<Hash, Vec<Hash>>>>,
+    /// A `Mutex`, because every read may extend it, and a store is shared
+    /// between threads: `EventStore` is `Send` and `Sync` wherever its
+    /// schema's events and its policy are.
+    memory: Arc<Mutex<Memory<E>>>,
     /// The prodrome this handle writes into, for a store that holds several.
     genesis: Option<Hash>,
 }
@@ -81,7 +82,7 @@ pub struct EventStore<E, Pol = Untrusted> {
 /// entry's file name.
 #[derive(Debug, Default)]
 struct Listing {
-    objects: Vec<Hash>,
+    objects: Vec<(Hash, fs::DirEntry)>,
     garbage: Vec<String>,
 }
 
@@ -90,23 +91,68 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         EventStore {
             root: root.into(),
             policy,
-            schema: PhantomData,
-            parents: Arc::default(),
+            memory: Arc::new(Mutex::new(Memory::empty())),
             genesis: None,
         }
     }
 
-    /// The index, whoever held it last. A panic cannot leave it wrong — every
-    /// write to it is one insert of a verified object's parents — so a
-    /// poisoned lock is taken as it stands.
-    fn index(&self) -> MutexGuard<'_, BTreeMap<Hash, Vec<Hash>>> {
-        self.parents.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The memory, whoever held it last. A panic while it was held may have
+    /// left it half extended, so a poisoned memory is forgotten and the next
+    /// look reads the store as a fresh handle does.
+    fn memory(&self) -> MutexGuard<'_, Memory<E>> {
+        self.memory.lock().unwrap_or_else(|poisoned| {
+            let mut memory = poisoned.into_inner();
+            *memory = Memory::empty();
+            self.memory.clear_poison();
+            memory
+        })
     }
 
-    fn remember(&self, digest: &Hash, object: &Envelope<E>) {
-        self.index()
-            .entry(digest.clone())
-            .or_insert_with(|| parents_of(object));
+    /// Bring `memory` level with `objects/`. A name listed and not held is
+    /// read and verified; a held name no longer listed is forgotten; a held
+    /// file that no longer looks as it did when it was verified ([`Seen`]) is
+    /// read and verified again. Nothing else is read, and nothing held is
+    /// rehashed.
+    ///
+    /// Refuses as a cold read does, with the first file by name that is not
+    /// an object; what did verify is held all the same.
+    fn look(&self, memory: &mut Memory<E>) -> Result<(), ProdromeError> {
+        let listed = self.listing()?.objects;
+        let now = SystemTime::now();
+        let gone: Vec<Hash> = {
+            let listed: BTreeSet<&Hash> = listed.iter().map(|(name, _)| name).collect();
+            memory
+                .files()
+                .keys()
+                .filter(|name| !listed.contains(name))
+                .cloned()
+                .collect()
+        };
+        let mut fresh = Vec::new();
+        let mut unread: BTreeMap<Hash, Unread> = BTreeMap::new();
+        for (name, entry) in listed {
+            let seen = Seen::of(stat(&entry), now);
+            let held = match memory.files().get(&name) {
+                Some(Some(was)) if seen.as_ref() == Some(was) => continue,
+                held => held.is_some(),
+            };
+            match self
+                .raw(&name)
+                .map_err(Unread::Io)
+                .and_then(|bytes| Verified::read(&name, &bytes))
+            {
+                Err(why) => {
+                    unread.insert(name, why);
+                }
+                Ok(_) if held => memory.reseen(&name, seen),
+                Ok(verified) => fresh.push((verified, seen)),
+            }
+        }
+        memory.admit(&gone, fresh)?;
+        match unread.into_iter().next() {
+            Some((name, why)) => Err(why.refusal(&name)),
+            None => Ok(()),
+        }
     }
 
     /// The policy this store reads under — what `verify` asks and what a
@@ -129,39 +175,20 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     }
 
     /// Every head: the objects no object in the store names as a parent —
-    /// [`tips_of`] over the store's objects, and nothing on disk besides.
+    /// [`Dag::tips`] over the store's objects, and nothing on disk besides.
     ///
-    /// FALLIBLE, because it reads every object it has not already verified: a
-    /// store holding a file that does not verify has no honest answer to "what
+    /// FALLIBLE, because it reads every object it does not hold: a store
+    /// holding a file that does not verify has no honest answer to "what
     /// are its heads", since the file it cannot read might name any of them.
     /// The refusal does not guess, and it does not leave the store stuck
     /// either: a file failing its hash is named, with the
     /// [`EventStore::quarantine`] that sets it aside.
-    /// Empty for an empty store. The parents come from the handle's index, so
-    /// a steady store costs a directory listing.
+    /// Empty for an empty store. The tips are the memory's, so a steady store
+    /// costs a directory listing.
     pub fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
-        let names = self.names()?;
-        let unseen: Vec<&Hash> = {
-            let index = self.index();
-            names
-                .iter()
-                .filter(|name| !index.contains_key(*name))
-                .collect()
-        };
-        for name in unseen {
-            self.load(name)?;
-        }
-        let index = self.index();
-        Ok(tips_among(
-            names.iter().map(|name| (name, index[name].as_slice())),
-        ))
-    }
-
-    /// The name of every object file, in no particular order — nothing that
-    /// reads it depends on one (SPEC §9.17). A store with no `objects/` yet
-    /// holds nothing.
-    fn names(&self) -> Result<Vec<Hash>, ProdromeError> {
-        Ok(self.listing()?.objects)
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        Ok(memory.tips().clone())
     }
 
     /// What `objects/` holds, SPLIT BY NAME: an entry named `<name>.py` for a
@@ -170,7 +197,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     ///
     /// The reads take the objects and pass over the rest, so a crash that left
     /// a temp stops no read and no write; `verify` reports the rest, every
-    /// entry of it, so nothing in the directory goes unsaid.
+    /// entry of it, so nothing in the directory goes unsaid. In no particular
+    /// order — nothing that reads it depends on one (SPEC §9.17). A store
+    /// with no `objects/` yet holds nothing.
     fn listing(&self) -> Result<Listing, ProdromeError> {
         let dir = self.objects_dir();
         let entries = match fs::read_dir(&dir) {
@@ -182,24 +211,35 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         };
         let mut listing = Listing::default();
         for entry in entries {
-            let file = entry.map_err(|e| Self::io(&dir, e))?.file_name();
-            let file = file.to_string_lossy().into_owned();
+            let entry = entry.map_err(|e| Self::io(&dir, e))?;
+            let file = entry.file_name().to_string_lossy().into_owned();
             match file.strip_suffix(".py").map(Hash::new) {
-                Some(Ok(name)) => listing.objects.push(name),
+                Some(Ok(name)) => listing.objects.push((name, entry)),
                 _ => listing.garbage.push(file),
             }
         }
         Ok(listing)
     }
 
-    /// Every object the store holds, each rehashed, refusing the first file
-    /// that is not an object.
-    pub fn dag(&self) -> Result<Dag<E>, ProdromeError> {
-        let dag = self.read(&self.names()?).whole()?;
-        for (name, object) in dag.objects() {
-            self.remember(name, object);
-        }
-        Ok(dag)
+    /// Every object the store holds, refusing the first file that is not an
+    /// object: what the memory holds, after reading what it does not.
+    ///
+    /// Shared, not copied: the memory goes on from this value, and copies it
+    /// only if a look extends it while the caller still holds this one.
+    pub fn dag(&self) -> Result<Arc<Dag<E>>, ProdromeError> {
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        Ok(Arc::clone(memory.dag()))
+    }
+
+    /// The fold of every object the store holds, across a parent set aside
+    /// (what an append decides on): `fold(&dag.nodes_across_gaps()?)` of
+    /// [`EventStore::dag`], extended by each object as it is read and never
+    /// refolded from the files.
+    pub fn folded(&self) -> Result<Arc<Folded<E>>, ProdromeError> {
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        memory.folded()
     }
 
     fn read(&self, names: &[Hash]) -> Dag<E> {
@@ -543,7 +583,6 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             return Ok(digest);
         }
         self.place([(&digest, text.as_bytes())])?;
-        self.remember(&digest, object);
         Ok(digest)
     }
 
@@ -552,9 +591,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// hashes bytes and not semantics, so that a future printer change cannot
     /// false-alarm the whole store as tampered.
     pub fn load(&self, digest: &Hash) -> Result<Envelope<E>, ProdromeError> {
-        let object = decode(digest, &self.raw(digest)?).map_err(|why| why.refusal(digest))?;
-        self.remember(digest, &object);
-        Ok(object)
+        decode(digest, &self.raw(digest)?).map_err(|why| why.refusal(digest))
     }
 
     /// One object file's bytes, unchecked.
@@ -659,12 +696,13 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// `quarantine/`, which stands in for the missing parent it would be.
     pub fn verify(&self) -> Vec<Finding> {
         let Listing {
-            mut objects,
+            objects,
             mut garbage,
         } = match self.listing() {
             Ok(listing) => listing,
             Err(error) => return vec![Finding::Io(error)],
         };
+        let mut objects: Vec<Hash> = objects.into_iter().map(|(name, _)| name).collect();
         objects.sort();
         garbage.sort();
         let (mut findings, graph): (Vec<Finding>, Vec<Finding>) = self
@@ -699,6 +737,15 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             .collect();
         files.sort();
         files.into_iter().map(Finding::Quarantined).collect()
+    }
+}
+
+/// A listed file's metadata, through a symlink to what it names, since
+/// that is what a read of it reads.
+fn stat(entry: &fs::DirEntry) -> Option<fs::Metadata> {
+    match entry.file_type() {
+        Ok(kind) if !kind.is_symlink() => entry.metadata().ok(),
+        _ => fs::metadata(entry.path()).ok(),
     }
 }
 
@@ -1074,9 +1121,9 @@ mod tests {
         let fresh = Store::new(store.root(), roster());
         assert!(fresh.tips().is_err());
         assert!(store.dag().is_err());
-        // The limit the parent index states: a handle that verified the object
-        // BEFORE it was tampered with keeps the parents it verified.
-        assert!(store.tips().is_ok());
+        // A FILE CHANGED UNDER A HELD NAME IS READ AGAIN, so the handle that
+        // verified the object before it was tampered with refuses too.
+        assert!(store.tips().is_err());
         // `verify` REPORTS, twice over, and both are true: the file no longer
         // hashes to its name, and the object resting on it rests on nothing.
         assert_eq!(
@@ -1187,13 +1234,12 @@ mod tests {
         let _ = fs::remove_dir_all(store.root());
     }
 
-    /// THE INDEX NEEDS NO INVALIDATION. It remembers parents by name, which
-    /// never change; what the directory no longer lists is simply not asked
-    /// about, so a host that deletes an object — the one removal a host does,
-    /// a rejected proposal nothing rests on — sees its parent become a tip
-    /// again through the same handle.
+    /// THE MEMORY FOLLOWS THE LISTING. What the directory no longer lists
+    /// the memory forgets, so a host that deletes an object — the one removal
+    /// a host does, a rejected proposal nothing rests on — sees its parent
+    /// become a tip again through the same handle.
     #[test]
-    fn the_index_follows_the_listing() {
+    fn the_memory_follows_the_listing() {
         let store = Store::new(scratch("index"), roster());
         let first = seal(
             &store,

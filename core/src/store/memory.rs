@@ -1,0 +1,239 @@
+//! What a store has read (design §6.1): its objects, each verified once, and
+//! their fold, extended by the objects it has not read yet and never rebuilt
+//! from the files.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::fs;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use crate::dag::{decode, Dag, Unread};
+use crate::event::{parents_of, Envelope, Hash};
+use crate::literal::ProdromeError;
+use crate::registers::{fold, Folded};
+use crate::schema::Schema;
+
+/// A store's objects as it last read them, and their fold.
+///
+/// VERIFIED, NOT TRUSTED FOR BEING HELD. An object enters only as
+/// [`Verified`]: its bytes rehashed to its name, or sealed here. Its FILE is
+/// only held: [`Seen`] is how it looked then, and a file that no longer looks
+/// so is read and verified again before anything is read from memory.
+///
+/// The fold is the fold of the objects, always, taken the first time it is
+/// asked for: an object arriving after that is [`Folded::insert`]ed where the
+/// linearisation of the union puts it, and what insertion cannot do (an
+/// object gone, one that something held names, one resting on another scope)
+/// sets the fold aside, to be taken again from memory, never from the files.
+pub struct Memory<E: Schema> {
+    dag: Arc<Dag<E>>,
+    folded: Option<Arc<Folded<E>>>,
+    tips: BTreeSet<Hash>,
+    /// What a held object names (a parent, a genesis) that is not held.
+    wanted: BTreeSet<Hash>,
+    /// Each held object's file as it was seen, `None` while a look could
+    /// not tell a change from none.
+    files: BTreeMap<Hash, Option<Seen>>,
+}
+
+/// An object whose name is the hash of its bytes, which is the only way into
+/// a [`Memory`].
+pub struct Verified<E> {
+    name: Hash,
+    object: Envelope<E>,
+}
+
+impl<E: Schema> Verified<E> {
+    /// `bytes` under `name`, rehashed and parsed.
+    pub fn read(name: &Hash, bytes: &[u8]) -> Result<Verified<E>, Unread> {
+        decode(name, bytes).map(|object| Verified {
+            name: name.clone(),
+            object,
+        })
+    }
+}
+
+/// How long after a file changed at `modified` its `stat` may still not tell
+/// a second change from none: a scheduler tick, where timestamps carry
+/// fractions of a second, and FAT's two seconds where they do not (ext3 and
+/// HFS+ keep one).
+fn racy(modified: SystemTime) -> Duration {
+    let fine = modified
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .is_ok_and(|since| since.subsec_nanos() != 0);
+    if fine {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_secs(2)
+    }
+}
+
+/// A file as `stat` saw it: while it looks the same it holds the same bytes,
+/// the test git's index makes of a worktree. Its size, its times and, on
+/// unix, its device, inode and change time, which no writer sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seen {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl Seen {
+    /// A file as `meta` says it looks at `now`, or `None` where that says
+    /// nothing: it could not be read, or it changed within [`racy`] of
+    /// `now`, so a change after this look could leave it looking the same
+    /// (git's "racily clean"). A file seen as `None` is read again at the
+    /// next look.
+    pub fn of(meta: Option<fs::Metadata>, now: SystemTime) -> Option<Seen> {
+        let meta = meta?;
+        let modified = meta.modified().ok();
+        let settled =
+            modified.is_some_and(|at| now.duration_since(at).is_ok_and(|age| age >= racy(at)));
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec())
+        };
+        settled.then_some(Seen {
+            len: meta.len(),
+            modified,
+            #[cfg(unix)]
+            identity,
+        })
+    }
+}
+
+impl<E: Schema> Memory<E> {
+    pub fn empty() -> Memory<E> {
+        Memory {
+            dag: Arc::new(Dag::from_iter([])),
+            folded: None,
+            tips: BTreeSet::new(),
+            wanted: BTreeSet::new(),
+            files: BTreeMap::new(),
+        }
+    }
+
+    pub fn dag(&self) -> &Arc<Dag<E>> {
+        &self.dag
+    }
+
+    /// The fold of what is held, across a parent set aside: taken from
+    /// memory the first time, and extended since.
+    ///
+    /// # Errors
+    ///
+    /// A cycle among what is held, which only a hash collision could make.
+    pub fn folded(&mut self) -> Result<Arc<Folded<E>>, ProdromeError> {
+        if let Some(folded) = &self.folded {
+            return Ok(Arc::clone(folded));
+        }
+        let folded = Arc::new(fold(&self.dag.nodes_across_gaps()?));
+        self.folded = Some(Arc::clone(&folded));
+        Ok(folded)
+    }
+
+    pub fn tips(&self) -> &BTreeSet<Hash> {
+        &self.tips
+    }
+
+    /// The held names, each with its file as it was seen.
+    pub fn files(&self) -> &BTreeMap<Hash, Option<Seen>> {
+        &self.files
+    }
+
+    /// A held object's file, read again and found to hold its bytes, as it
+    /// looks now.
+    pub fn reseen(&mut self, name: &Hash, seen: Option<Seen>) {
+        if let Some(held) = self.files.get_mut(name) {
+            *held = seen;
+        }
+    }
+
+    /// Forget `gone` and take in `fresh`, each with its file as it was seen
+    /// before it was read. The tips and the fold follow, each fresh object
+    /// in turn, parents first: the fold by [`Folded::insert`], or set aside
+    /// where insertion cannot say.
+    ///
+    /// # Errors
+    ///
+    /// A cycle among what is held, which only a hash collision could make.
+    pub fn admit(
+        &mut self,
+        gone: &[Hash],
+        fresh: Vec<(Verified<E>, Option<Seen>)>,
+    ) -> Result<(), ProdromeError> {
+        if gone.is_empty() && fresh.is_empty() {
+            return Ok(());
+        }
+        let extends = gone.is_empty()
+            && fresh
+                .iter()
+                .all(|(verified, _)| !self.wanted.contains(&verified.name));
+        let dag = Arc::make_mut(&mut self.dag);
+        for name in gone {
+            dag.remove(name);
+            self.files.remove(name);
+        }
+        let mut names = BTreeSet::new();
+        for (Verified { name, object }, seen) in fresh {
+            self.files.insert(name.clone(), seen);
+            dag.insert(name.clone(), object);
+            names.insert(name);
+        }
+        if !extends {
+            self.folded = None;
+            self.tips = dag.tips();
+            self.wanted = dag
+                .objects()
+                .values()
+                .flat_map(named)
+                .filter(|named| dag.get(named).is_none())
+                .collect();
+            return Ok(());
+        }
+        let order = dag.order_among(&names.iter().collect())?;
+        for name in &order {
+            let object = dag.get(name).expect("admitted above");
+            for parent in parents_of(object) {
+                self.tips.remove(&parent);
+            }
+            self.tips.insert(name.clone());
+            self.wanted.extend(
+                named(object)
+                    .into_iter()
+                    .filter(|named| dag.get(named).is_none()),
+            );
+        }
+        if let Some(folded) = &mut self.folded {
+            let folded = Arc::make_mut(folded);
+            let placed = order
+                .iter()
+                .filter_map(|name| dag.node(name))
+                .all(|node| folded.insert(&node).is_ok());
+            if !placed {
+                self.folded = None;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What an object names: its parents, and the genesis of its prodrome.
+fn named<E>(object: &Envelope<E>) -> Vec<Hash> {
+    let mut names = parents_of(object);
+    names.extend(object.genesis().cloned());
+    names
+}
+
+/// Counts, not contents: a memory is the whole store.
+impl<E: Schema> fmt::Debug for Memory<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Memory")
+            .field("objects", &self.files.len())
+            .field("tips", &self.tips.len())
+            .finish_non_exhaustive()
+    }
+}

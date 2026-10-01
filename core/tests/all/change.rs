@@ -89,7 +89,7 @@ fn append(store: &Store, events: &[Event]) -> Vec<Hash> {
         .collect()
 }
 
-fn dag(store: &Store) -> Dag<TodoEvent<Todo>> {
+fn dag(store: &Store) -> std::sync::Arc<Dag<TodoEvent<Todo>>> {
     store.dag().expect("reads")
 }
 
