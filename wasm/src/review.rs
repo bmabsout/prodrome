@@ -16,11 +16,23 @@ use crate::exports::Json;
 #[path = "../../core/tests/schemas/review.rs"]
 mod schema;
 
-use schema::{day, moved, opened, Phase, Review};
+use schema::{day, moved, opened, Field, Phase, Review};
 
-/// A review names its entity `pr`.
+/// A review names its entity `pr`; its one register is its phase, whose
+/// value is the phase a move names.
 impl Json for Review {
     const KEY: &'static str = "pr";
+
+    fn register(_phase: Field) -> &'static str {
+        "phase"
+    }
+
+    fn value(&self, _phase: Field) -> Value {
+        match self {
+            Review::Moved { phase, .. } => json!(phase.as_str()),
+            Review::Opened { .. } => Value::Null,
+        }
+    }
 }
 
 crate::schema!(Reviews = Review);
@@ -132,4 +144,32 @@ fn a_replica_is_sent_what_its_tips_do_not_hold() {
     assert_eq!(order.len(), 6);
     assert!(at(2) < at(3) && at(2) < at(4), "{everything}");
     assert!(crate::exports::since(&replica.0, r#"["not a name"]"#).is_err());
+}
+
+/// The phase register read: a merge and a close that each supersede the
+/// move to review are both maximal, the one real conflict; under a policy
+/// that does not stand behind the closer, the merge alone; before either,
+/// the review. A review only opened has an unwritten phase.
+#[test]
+fn a_review_store_reads_its_phases() {
+    let (replica, names) = replica();
+    let phases = |at: Option<&str>, untrusted: &str| {
+        answer(replica.readings(at.map(str::to_owned), untrusted))["readings"].clone()
+    };
+    let write = |i: usize, phase: &str| json!({ "hash": names[i].as_str(), "value": phase });
+    let mut conflict = vec![write(3, "merged"), write(4, "closed")];
+    conflict.sort_by_key(|w| w["hash"].as_str().expect("a name").to_owned());
+    let row = |pr: &str, phase: Vec<Value>| json!({ "genesis": names[0].as_str(), "pr": pr, "registers": { "phase": phase } });
+    assert_eq!(
+        phases(None, "[]"),
+        json!([row("pr-1", conflict), row("pr-2", vec![])])
+    );
+    assert_eq!(
+        phases(None, r#"["bo"]"#)[0],
+        row("pr-1", vec![write(3, "merged")])
+    );
+    assert_eq!(
+        phases(Some("2026-10-02T12:00:00"), "[]")[0],
+        row("pr-1", vec![write(2, "review")])
+    );
 }
