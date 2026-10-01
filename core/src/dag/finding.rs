@@ -38,7 +38,8 @@ pub enum Finding {
         object: Hash,
         parent: Hash,
     },
-    Unwritten {
+    /// A change depending on what is not a write to its entity.
+    Foreign {
         change: Hash,
         dep: Hash,
     },
@@ -125,10 +126,9 @@ impl fmt::Display for Finding {
                 f,
                 "object {object} rests on {parent}, of another genesis (SPEC §3)"
             ),
-            Finding::Unwritten { change, dep } => write!(
+            Finding::Foreign { change, dep } => write!(
                 f,
-                "change {change} depends on {dep}, which writes no register its event writes \
-                 (SPEC §3)"
+                "change {change} depends on {dep}, which is not a write to its entity (SPEC §3)"
             ),
             Finding::Redundant {
                 change,

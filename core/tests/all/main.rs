@@ -6,6 +6,7 @@
 mod common;
 
 mod calibration;
+mod causal;
 mod chain;
 mod change;
 mod change_vectors;
