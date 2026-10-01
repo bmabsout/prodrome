@@ -2,7 +2,6 @@
 //! of the replica of record under its lock, and the record of the answer
 //! written through, before anything is performed.
 
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::sync::{Arc, MutexGuard};
 
@@ -104,12 +103,6 @@ impl<E: Schema, Pol: Policy<E>> Decision<'_, E, Pol> {
     /// A cycle among what is held, which only a hash collision could make.
     pub fn folded(&mut self) -> Result<&Arc<Folded<E>>, ProdromeError> {
         self.memory.folded()
-    }
-
-    /// The store's tips, as of the lock.
-    #[must_use]
-    pub fn tips(&self) -> &BTreeSet<Hash> {
-        self.memory.tips()
     }
 
     /// [`EventStore::append`] under this lock, written through: the object

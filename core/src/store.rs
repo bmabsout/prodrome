@@ -118,12 +118,19 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     }
 
     /// THE STORE OF RECORD'S DECISION: its lock taken, then its memory,
-    /// brought level with `objects/`. See [`Decision`].
+    /// brought level with `objects/`. See [`Decision`]. On unix only: there
+    /// is no store, and no lock, off it.
     ///
     /// # Errors
     ///
     /// The lock not taken; a file that is not an object, as every read.
+    #[cfg(unix)]
     pub fn decide(&self) -> Result<Decision<'_, E, Pol>, ProdromeError> {
+        self.decision()
+    }
+
+    /// [`EventStore::decide`], on every target: what each write begins with.
+    fn decision(&self) -> Result<Decision<'_, E, Pol>, ProdromeError> {
         let locked = self.lock()?;
         let mut memory = self.memory();
         self.look(&mut memory)?;
@@ -336,7 +343,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// Begin a prodrome: write a `Genesis(label, nonce)` into a store that
     /// has none, and answer its name.
     pub fn init(&self, label: &str) -> Result<Hash, ProdromeError> {
-        let mut decision = self.decide()?;
+        let mut decision = self.decision()?;
         if let Some(genesis) = decision.memory.geneses().first() {
             return Err(ProdromeError::Store(format!(
                 "the store already has a genesis, {}",
@@ -360,14 +367,14 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// every object any writer finished: the twin check and the deps read
     /// what a fresh handle would read, and cost what is new.
     pub fn append(&self, event: E) -> Result<Hash, ProdromeError> {
-        self.decide()?.append(event)
+        self.decision()?.append(event)
     }
 
     /// Attest the writer's prodrome: a `Snapshot` of its tips, chained to the
     /// last snapshot among them. With nothing new since that one, it is the
     /// answer and nothing is written.
     pub fn snapshot(&self) -> Result<Hash, ProdromeError> {
-        let mut decision = self.decide()?;
+        let mut decision = self.decision()?;
         let snapshot = {
             let genesis = decision.memory.writer(self.genesis.as_ref())?;
             let dag = decision.memory.dag();
@@ -398,7 +405,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// caller that wants the act attributed passes an ordinary `event`, and
     /// the object is a write and a join at once.
     pub fn merge(&self, parents: Option<&[Hash]>, event: Option<E>) -> Result<Hash, ProdromeError> {
-        let mut decision = self.decide()?;
+        let mut decision = self.decision()?;
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
             None => decision.memory.dag().tips_in(&None).into_iter().collect(),
@@ -483,7 +490,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         seeds: impl IntoIterator<Item = Hash>,
         print_of: impl Fn(&Hash) -> Option<Vec<u8>>,
     ) -> Result<Vec<Hash>, ProdromeError> {
-        let mut decision = self.decide()?;
+        let mut decision = self.decision()?;
         let memory = &mut decision.memory;
         let taken = memory::receive(|name| memory.holds(name), seeds, print_of)?;
         let objects = self.objects_dir();
