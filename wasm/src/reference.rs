@@ -9,12 +9,11 @@ use prodrome::fold::{self, Product};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Candidates};
 use prodrome::policy::Policy;
 use prodrome::registers;
+use prodrome_wasm_exports::{self as exports, json, name_of, Read, Replica};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 
-use crate::exports::{self, name_of, Read, Replica};
-use crate::json;
-use crate::wire::{
+use prodrome_wasm_exports::wire::{
     json_candidates, json_entry, json_env, json_marker, json_reading, json_record, json_tended,
     json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_names,
     parse_specs, parse_term, parse_untrusted, strings, History, Refusal,
@@ -22,8 +21,8 @@ use crate::wire::{
 
 /// THE RECORD SHAPE THIS MODULE WAS BUILT WITH: `prodrome::reference::Todo`,
 /// the shape `conformance/*.py` was taken with. A host with its own payload,
-/// or its own schemas, builds its own module with [`crate::schema!`] (see the
-/// crate's header) and leaves this one off.
+/// or its own schemas, builds its own module with
+/// `prodrome_wasm_exports::schema!` (see that crate's header).
 type Record = prodrome::reference::Todo;
 
 type Event = TodoEvent<Record>;
@@ -31,7 +30,7 @@ type Object = Envelope<Event>;
 
 // The todo schema's exports through the generic path, beside the free
 // functions below that have always answered for it: `new Todos(objects)`.
-crate::schema!(Todos = Event, priced);
+prodrome_wasm_exports::schema!(Todos = Event, priced);
 
 /// A refusal, as the exception a JS caller catches. Every entry point returns
 /// one rather than panicking: a browser that aborts inside the Wasm leaves the
@@ -129,7 +128,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     let functions = Value::Object(
         fold::link_specs(&flat, state.entities().map(|(todo, _)| todo))
             .into_iter()
-            .map(|(todo, term)| (todo, crate::json::to_json(&term)))
+            .map(|(todo, term)| (todo, json::to_json(&term)))
             .collect(),
     );
 
@@ -190,7 +189,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     printed(&object(vec![
         ("at", Value::String(iso(instant_of(moment)))),
         ("env", json_env(&env)),
-        ("specs", json_candidates(&specs, crate::json::to_json)),
+        ("specs", json_candidates(&specs, json::to_json)),
         ("content", json_candidates(&content, json_record)),
         ("flatten", json_terms(&flat)),
         ("functions", functions),
@@ -457,7 +456,7 @@ pub fn fulfillment(term: &str, now: &str, env: &str) -> Result<Option<f64>, JsEr
 #[wasm_bindgen]
 pub fn term_json(literal: &str) -> Result<String, JsError> {
     let term = prodrome::fpl::parse_term(literal).map_err(|e| refused(format!("term: {}", e.0)))?;
-    printed(&crate::json::to_json(&term))
+    printed(&json::to_json(&term))
 }
 
 /// §7's explain tree — `Cofree TermF Annotation` as [`json::explain`] writes it: the
@@ -468,7 +467,7 @@ pub fn explain(term: &str, now: &str, env: &str) -> Result<String, JsError> {
     let term = parse_closed("term", term).map_err(refused)?;
     let now = parse_instant("now", now).map_err(refused)?;
     let env = parse_env(env).map_err(refused)?;
-    printed(&crate::json::explain(&term, now, &env))
+    printed(&json::explain(&term, now, &env))
 }
 
 /// §7.1 — a term with every `After` resolved against a snapshot, so a page
@@ -516,7 +515,7 @@ pub fn link(term: &str, specs: &str) -> Result<String, JsError> {
     let term = parse_term("term", term).map_err(refused)?;
     let specs = parse_specs(specs).map_err(refused)?;
     let linked = prodrome::fpl::link(&term, &specs).map_err(|e| refused(format!("link: {e}")))?;
-    printed(&crate::json::to_json(linked.term()))
+    printed(&json::to_json(linked.term()))
 }
 
 /// §7's knots — the curve a graph draws over `[from, to]`, and whether the

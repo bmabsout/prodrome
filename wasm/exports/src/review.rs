@@ -9,11 +9,11 @@ use prodrome::event::{canonical_envelope, seal_hash, Envelope, Hash};
 use prodrome::genesis::mk_genesis;
 use serde_json::{json, Value};
 
-use crate::exports::Json;
+use crate::Json;
 
 // The schema's whole surface is the core tests'; this reads part of it.
 #[allow(dead_code)]
-#[path = "../../core/tests/schemas/review.rs"]
+#[path = "../../../core/tests/schemas/review.rs"]
 mod schema;
 
 use schema::{day, moved, opened, Field, Phase, Review};
@@ -96,9 +96,9 @@ fn a_review_store_verifies() {
 /// A refusal is a value the export throws, never a panic.
 #[test]
 fn a_set_that_is_not_objects_is_refused() {
-    assert!(crate::exports::Replica::<Review>::of("{}").is_err());
+    assert!(crate::Replica::<Review>::of("{}").is_err());
     let todo = r#"[{"hash": "00", "text": "Created()"}]"#;
-    let replica = crate::exports::Replica::<Review>::of(todo).expect("the shape is right");
+    let replica = crate::Replica::<Review>::of(todo).expect("the shape is right");
     assert!(
         replica.read().is_err(),
         "a name that is no name reads nothing"
@@ -143,7 +143,7 @@ fn a_replica_is_sent_what_its_tips_do_not_hold() {
     let at = |i: usize| order.iter().position(|name| *name == names[i].as_str());
     assert_eq!(order.len(), 6);
     assert!(at(2) < at(3) && at(2) < at(4), "{everything}");
-    assert!(crate::exports::since(&replica.0, r#"["not a name"]"#).is_err());
+    assert!(crate::since(&replica.0, r#"["not a name"]"#).is_err());
 }
 
 /// The phase register read: a merge and a close that each supersede the

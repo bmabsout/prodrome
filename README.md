@@ -272,8 +272,9 @@ The JSON shape of a term is this crate's — `wasm/src/json.rs`, since 0.4 —
 because JSON is JavaScript's literal grammar and the core has its own. A
 record crosses as its payload's own field names. Beside them is `Todos`, the
 same exports generic over a schema: a host with its own schemas builds one
-module of them all from this crate, each a class of its own, with
-`prodrome_wasm::schema!`, as `wasm/src/lib.rs`'s header describes.
+module of them all, each a class of its own, with
+`prodrome_wasm_exports::schema!`, as `wasm/exports/src/lib.rs`'s header
+describes.
 
 ## The viewer: the Prodrome in the browser
 
@@ -375,7 +376,8 @@ core/         prodrome-core: literal, payload, policy, event, store, fpl, chain,
 cli/          prodrome-cli: the `prodrome` binary — the verbs, over that payload
               and the reference policy, and the only clock in the workspace
 wasm/         prodrome-wasm: the core compiled for the browser, built with that
-              payload, plus `json`, the term codec the JavaScript side reads
+              payload; `wasm/exports/` holds its exports generic over a schema
+              and `json`, the term codec the JavaScript side reads
 conformance/  the vectors, as literals of the grammar in SPEC §2
 docs/         how the repository runs its own roadmap: the issue mirror
 .github/      CI, and the two workflows that mirror and price issues

@@ -2,9 +2,44 @@
 //! whatever its events are.
 //!
 //! A schema says what its events are ([`prodrome::schema::Schema`]); this
-//! module reads a set of objects at one, and [`Json`] is the one thing more a
-//! schema says to cross this boundary. Every function here answers JSON
-//! text, or a refusal, a string, that the exports throw.
+//! crate reads a set of objects at one, and every function here answers JSON
+//! text, or a refusal, a string, that a module's exports throw.
+//!
+//! ONE MODULE, ANY SCHEMAS. `#[wasm_bindgen]` exports no generic item, so a module
+//! instantiates them with [`schema!`], once per schema, each as a JS class of
+//! its own name: `new Reviews(objects)` reads the objects once, and every
+//! method asks its question of what was read.
+//!
+//! | method     | asks                                                         |
+//! | ---------- | ------------------------------------------------------------ |
+//! | `verify`   | §3: do these bytes hash to these names, form one DAG, and end at which tips |
+//! | `tips`     | §3: the objects' tips, and each prodrome's heads by its genesis |
+//! | `since`    | §3: what a replica holding these tips lacks, in causal order |
+//! | `readings` | §6: each entity's registers, each its maximal writes          |
+//! | `entries`  | §6.7, `priced` only: every entity as the folds see it        |
+//! | `prices`   | §6.1, §6.4, `priced` only: the environment and every function |
+//!
+//! A schema crosses the boundary by [`Json`]: the field its events
+//! name an entity by, each register's name, and each value's JSON, a function
+//! of the value so that a reading's JSON is a function of the reading. A
+//! schema with a valuation adds [`PricedJson`], its reading's JSON.
+//! The todo schema has both, at any payload.
+//!
+//! A MODULE is a `cdylib` crate that depends on this one, on
+//! `prodrome-core`, and on `wasm-bindgen` at the version this crate pins
+//! (the version of the CLI it runs anyway); implements `Json` for each of
+//! its schemas (and `PricedJson` for each with a `Valuation`); and says, once
+//! per schema, `prodrome_wasm_exports::schema!(Reviews = Review);` or
+//! `prodrome_wasm_exports::schema!(Todos = TodoEvent<Record>, priced);`. It
+//! builds for `wasm32-unknown-unknown` and runs `wasm-bindgen` over the
+//! result, as `nix build .#prodrome-wasm` does for `prodrome-wasm`, the
+//! reference module. A module exports its classes and nothing of this
+//! crate's own.
+
+pub mod json;
+#[cfg(test)]
+mod review;
+pub mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,7 +57,7 @@ use prodrome::view::{list_order, Entry};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::wire::{
+use wire::{
     json_env, json_literal, json_reading, object, parse_moment, parse_names, parse_objects,
     parse_untrusted, strings, ObjectIn, Refusal,
 };
@@ -87,6 +122,103 @@ impl<P: Payload> PricedJson for TodoEvent<P> {
             "content": names(&reading.content),
         })
     }
+}
+
+/// A schema's exports, in ONE module beside every other schema's: a JS class
+/// named `$name` for the schema `$schema`, which must implement
+/// [`Json`], and where `priced` is said, also
+/// [`prodrome::schema::Valuation`] and [`PricedJson`]. The invoking
+/// crate depends on `wasm-bindgen` at this
+/// crate's pinned version, which is the version of the `wasm-bindgen` CLI it
+/// builds its module with anyway.
+///
+/// ```text
+/// prodrome_wasm_exports::schema!(Reviews = my_host::Review);
+/// prodrome_wasm_exports::schema!(Todos = prodrome::event::TodoEvent<my_host::Record>, priced);
+/// ```
+///
+/// A macro because `#[wasm_bindgen]` exports no generic item: each method is
+/// one line, a call of the generic function in this crate of the same name,
+/// so a schema costs its module the monomorphised functions and nothing else.
+///
+/// `new Reviews(objects)` reads the objects once (`[{hash, text}]`, see
+/// [`Replica::of`]); every method asks its question of what was read.
+/// A refusal is the JS exception, never a panic. Call `free()` when done, or
+/// let the finaliser.
+#[macro_export]
+macro_rules! schema {
+    ($name:ident = $schema:ty) => {
+        #[doc = concat!("The exports of the schema `", stringify!($schema), "`.")]
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub struct $name($crate::Replica<$schema>);
+
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        impl $name {
+            /// The objects, `[{hash, text}]`, read once at this schema.
+            #[wasm_bindgen(constructor)]
+            pub fn new(objects: &str) -> Result<$name, wasm_bindgen::JsError> {
+                $crate::Replica::of(objects)
+                    .map($name)
+                    .map_err(|refusal| wasm_bindgen::JsError::new(&refusal))
+            }
+
+            /// §3: do these bytes hash to these names, form one DAG, and end
+            /// at which tips. Every row names its entity under the schema's
+            /// key.
+            pub fn verify(&self) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::verify(&self.0))
+            }
+
+            /// §3: the objects' tips, and each prodrome's heads by its
+            /// genesis.
+            pub fn tips(&self) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::tips(&self.0))
+            }
+
+            /// §3: what a replica holding `tips` (a JSON array of names)
+            /// lacks, in causal order: the names to send it.
+            pub fn since(&self, tips: &str) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::since(&self.0, tips))
+            }
+
+            /// §6: every entity's registers, each its maximal writes, at
+            /// `at` (ISO, or `null` for everything) under `untrusted`.
+            pub fn readings(
+                &self,
+                at: Option<String>,
+                untrusted: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::readings(&self.0, at, untrusted))
+            }
+        }
+    };
+    ($name:ident = $schema:ty, priced) => {
+        $crate::schema!($name = $schema);
+
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        impl $name {
+            /// §6.7: every entity, as the folds see it at `at` (ISO, or
+            /// `null` for the latest instant the objects stamp) under
+            /// `untrusted`, in list order.
+            pub fn entries(
+                &self,
+                at: Option<String>,
+                untrusted: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::entries(&self.0, at, untrusted))
+            }
+
+            /// §6.1 and §6.4, per prodrome: the environment, and every
+            /// entity's fulfillment function.
+            pub fn prices(
+                &self,
+                at: Option<String>,
+                untrusted: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::prices(&self.0, at, untrusted))
+            }
+        }
+    };
 }
 
 /// The name these bytes have: sha256 of the canonical print, exactly what
@@ -619,7 +751,7 @@ pub fn prices<E: PricedJson>(
         let functions = prodrome::fold::flatten(prodrome, now, &policy).map_err(|e| e.0)?;
         let functions = prodrome::fold::link_specs(&functions, prodrome.keys())
             .into_iter()
-            .map(|(key, term)| (key, crate::json::to_json(&term)))
+            .map(|(key, term)| (key, json::to_json(&term)))
             .collect();
         prices.push(object(vec![
             ("genesis", json!(genesis.as_ref().map(Hash::as_str))),

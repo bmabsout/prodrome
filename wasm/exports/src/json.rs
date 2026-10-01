@@ -186,7 +186,7 @@ mod tests {
     /// values.
     ///
     /// `include_str!`, inside `#[cfg(test)]`, so none of it reaches the `.wasm`.
-    const VECTORS: &str = include_str!("../conformance/term-json.json");
+    const VECTORS: &str = include_str!("../../conformance/term-json.json");
 
     /// SPEC §9.8: shapes and strings exactly, floats to 1e-9.
     fn agrees(path: &str, mine: &Value, theirs: &Value) -> Result<(), String> {

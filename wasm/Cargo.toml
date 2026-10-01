@@ -18,26 +18,18 @@ publish = false
 [lib]
 name = "prodrome_wasm"
 path = "src/lib.rs"
-# A cdylib, and an rlib so that a host's own crate can build ITS module from
-# this one: it depends on this crate with `default-features = false` and
-# instantiates `prodrome_wasm::schema!` for each of its schemas (see the
-# crate's header). The wire shapes are still pinned where a JavaScript reader
-# meets them: the snapshot drives every export, and the viewer the built
-# module.
-crate-type = ["cdylib", "rlib"]
-
-[features]
-# The REFERENCE module: the todo schema at the reference payload, every export
-# it has always had. A host's module turns it off and has only its own.
-default = ["reference"]
-reference = []
+# A cdylib and nothing else: this crate is a MODULE, not a library anything
+# links against. The library is `prodrome-wasm-exports`, which this module,
+# like a host's, instantiates; the wire shapes are pinned where a JavaScript
+# reader meets them, by the snapshot of every export and by the viewer that
+# drives the built module.
+crate-type = ["cdylib"]
 
 [dependencies]
 prodrome-core = { path = "../core" }
+prodrome-wasm-exports = { path = "exports" }
 # Pinned to the EXACT patch the flake's `wasm-bindgen-cli_0_2_127` is: the
 # generator and the runtime negotiate over a schema version baked into both,
 # and a mismatch is a link error at bindgen time rather than a bug later.
 wasm-bindgen = "=0.2.127"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
