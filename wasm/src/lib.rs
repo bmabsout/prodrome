@@ -616,7 +616,7 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
     listed.sort_by(|a, b| prodrome::view::list_order(a, b));
     let records: serde_json::Map<String, Value> = rows
         .iter()
-        .flat_map(|row| row.content())
+        .flat_map(prodrome::view::Entry::content)
         .filter_map(|name| match read.dag.get(name).and_then(Envelope::event) {
             Some(TodoEvent::Authored(record)) => {
                 Some((name.as_str().to_owned(), json_record(record)))

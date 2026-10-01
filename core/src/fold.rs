@@ -269,6 +269,10 @@ pub fn content<P: Payload>(
 /// the price of the reading there. The head, extending to −∞, is the price of
 /// each register's earliest writes; an entity they price nothing has no
 /// function.
+///
+/// # Errors
+///
+/// A piece a smart constructor refuses.
 pub fn flatten<E: Valuation>(
     prodrome: &Prodrome<E>,
     at: Instant,
@@ -286,6 +290,10 @@ pub fn flatten<E: Valuation>(
 /// A reading's price (design §4): `Least` over the prices of its worlds, so
 /// a conflict prices as its most urgent candidate; none where no world has
 /// one.
+///
+/// # Errors
+///
+/// A world's price a smart constructor refuses.
 pub fn price<E: Valuation>(
     now: &E::Registers<'_>,
     first: &E::Registers<'_>,

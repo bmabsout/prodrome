@@ -160,7 +160,7 @@ impl RegisterType<Review> for PhaseRegister {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Phases<'a>(Frontier<'a, Review>);
 
-impl<'a> Phases<'a> {
+impl Phases<'_> {
     /// The reading: the maximal phases of the frontier.
     pub fn phases(&self) -> HashSet<Phase> {
         self.0
