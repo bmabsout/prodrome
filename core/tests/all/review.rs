@@ -188,6 +188,10 @@ impl<'a> Product<'a> for Phases<'a> {
         &mut self.0
     }
 
+    fn reading(&self, _phase: Field) -> Vec<&'a Stamp<Review>> {
+        self.0.reading::<PhaseRegister>()
+    }
+
     /// The phase is inflationary: a move must not fall below, or beside,
     /// the phase it supersedes.
     fn grows(&self, event: &Review) -> Result<(), ProdromeError> {
