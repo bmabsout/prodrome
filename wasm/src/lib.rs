@@ -54,26 +54,25 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use prodrome::dag::{Dag, Finding, Unread};
-use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
+use prodrome::event::{Envelope, Hash, TodoEvent};
 use prodrome::fold::{self, Product};
-use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Candidates, Instant};
-use prodrome::literal::Datetime;
-use prodrome::policy::{Everything, Policy};
+use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Candidates};
+use prodrome::policy::Policy;
 use prodrome::registers;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
+pub mod exports;
 mod json;
 #[cfg(test)]
 mod snapshot;
 mod wire;
 
+use exports::{name_of, Read, Replica};
 use wire::{
     json_candidates, json_entry, json_env, json_marker, json_reading, json_record, json_tended,
-    json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_objects,
-    parse_specs, parse_term, parse_untrusted, strings, History, ObjectIn, Refusal,
+    json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_specs,
+    parse_term, parse_untrusted, strings, History, Refusal,
 };
 
 /// THE RECORD SHAPE THIS MODULE WAS BUILT WITH.
@@ -88,7 +87,11 @@ type Record = prodrome::reference::Todo;
 
 type Event = TodoEvent<Record>;
 type Object = Envelope<Event>;
-type Node = registers::Node<Event>;
+
+/// The todo schema crosses as it always has: each row names its todo.
+impl exports::Json for Event {
+    const KEY: &'static str = "todo";
+}
 
 /// A refusal, as the exception a JS caller catches. Every entry point returns
 /// one rather than panicking: a browser that aborts inside the Wasm leaves the
@@ -99,17 +102,7 @@ fn refused(reason: Refusal) -> JsError {
 }
 
 fn printed(value: &Value) -> Result<String, JsError> {
-    serde_json::to_string(value).map_err(|e| refused(format!("could not print the answer: {e}")))
-}
-
-/// The name these bytes have: sha256 of the canonical print, exactly what
-/// `seal_hash` takes and what `events/objects/<name>.py` holds — UTF-8, no
-/// trailing newline.
-fn name_of(text: &str) -> String {
-    Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    exports::printed(value).map_err(refused)
 }
 
 /// The crate version, so a page can say WHICH core answered it.
@@ -120,300 +113,28 @@ pub fn version() -> String {
 
 // --- §3: verify --------------------------------------------------------------
 
-/// One object's row on the chain page: what it claims, what this core
-/// computed, and where the walk found it.
-struct Row {
-    hash: String,
-    computed: String,
-    parents: Vec<Hash>,
-    kind: String,
-    todo: String,
-    actor: String,
-    at: String,
-    problem: String,
-    reachable: bool,
-    depth: Option<usize>,
-    root: bool,
-}
-
-impl Row {
-    fn blank(hash: String, computed: String) -> Row {
-        Row {
-            hash,
-            computed,
-            parents: Vec::new(),
-            kind: String::new(),
-            todo: String::new(),
-            actor: String::new(),
-            at: String::new(),
-            problem: String::new(),
-            reachable: false,
-            depth: None,
-            root: false,
-        }
-    }
-
-    fn hash_ok(&self) -> bool {
-        self.hash == self.computed
-    }
-
-    fn tampered(&self) -> String {
-        format!(
-            "does not hash to its own name — this browser computed {}",
-            self.computed
-        )
-    }
-
-    /// The four fields `json_link` puts on the wire, read from the object's own
-    /// bytes; an object with no event leaves them "" and is kinded by its name.
-    fn describe(&mut self, envelope: &Object) {
-        self.parents = parents_of(envelope);
-        self.root = matches!(
-            envelope,
-            Envelope::Genesis(_) | Envelope::Sealed { prev: None, .. }
-        );
-        match envelope.event() {
-            Some(event) => {
-                self.kind = event.kind_name().to_owned();
-                self.todo = event.todo().as_str().to_owned();
-                self.actor = event.actor().as_str().to_owned();
-                self.at = iso(instant_of(event.at()));
-            }
-            None => self.kind = envelope.name().to_owned(),
-        }
-    }
-
-    fn json(&self) -> Value {
-        json!({
-            "hash": self.hash,
-            "computed": self.computed,
-            "hashOk": self.hash_ok(),
-            "reachable": self.reachable,
-            "depth": self.depth,
-            "kind": self.kind,
-            "todo": self.todo,
-            "actor": self.actor,
-            "at": self.at,
-            "problem": self.problem,
-        })
-    }
-}
-
-/// §3's `verify`, for the set of objects a browser was handed.
+/// §3's `verify`, for the set of objects a browser was handed: the reference
+/// schema's [`exports::verify`].
 ///
 /// `objects` is `[{hash, text}]` — every object's claimed name beside the exact
-/// canonical print that name is a hash of. They are read as one
-/// [`prodrome::dag::Dag`], and the answer's `tips` are its tips: nobody has to
-/// tell a replica where its heads are.
-///
-/// The findings are the `Dag`'s, less the ones about a DIRECTORY, which a set
-/// in memory has none of. A page's own wording stands where it had one: an
-/// object whose bytes do not hash to its name, and a parent that was not sent.
-/// The walk from the tips gives each row its depth, and what it does not
-/// reach (only an object that is not one, or one caught in a cycle) is said.
+/// canonical print that name is a hash of.
 #[wasm_bindgen]
 pub fn verify_objects(objects: &str) -> Result<String, JsError> {
-    let sent = parse_objects(objects).map_err(refused)?;
-
-    let mut problems: Vec<String> = Vec::new();
-    let mut rows: Vec<Row> = Vec::new();
-    let mut index: BTreeMap<String, usize> = BTreeMap::new();
-    let mut prints = Vec::new();
-    for ObjectIn { hash, text } in &sent {
-        if index.contains_key(hash) {
-            problems.push(format!("object {hash} was sent twice"));
-            continue;
-        }
-        index.insert(hash.clone(), rows.len());
-        let mut row = Row::blank(hash.clone(), name_of(text));
-        match Hash::new(hash.clone()) {
-            Ok(name) => prints.push((name, Ok(text.as_bytes().to_vec()))),
-            Err(_) => {
-                row.problem = row.tampered();
-                problems.push(format!("object {hash} {}", row.problem));
-            }
-        }
-        rows.push(row);
-    }
-    let dag: Dag<Event> = Dag::from_prints(prints);
-    for (name, object) in dag.objects() {
-        rows[index[name.as_str()]].describe(object);
-    }
-    for finding in dag.verify(&Everything) {
-        match finding {
-            Finding::Unread { name, why } => {
-                let row = &mut rows[index[name.as_str()]];
-                row.problem = match why {
-                    Unread::Tampered(_) => row.tampered(),
-                    _ => format!("failed to parse: {}", why.refusal(&name)),
-                };
-                problems.push(format!("object {} {}", name.as_str(), row.problem));
-            }
-            Finding::Broken { at, why: None } => problems.push(format!(
-                "object {} is named as a parent but was not sent",
-                at.as_str()
-            )),
-            Finding::Broken { .. } => {}
-            other => problems.push(other.to_string()),
-        }
-    }
-
-    let tips: Vec<String> = dag
-        .tips()
-        .into_iter()
-        .map(|tip| tip.as_str().to_owned())
-        .collect();
-    // Breadth first from every tip at once, so `depth` is the distance from
-    // the nearest tip and the order stays tips-first the way the page reads
-    // it.
-    let mut order: Vec<usize> = Vec::new();
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut queue: Vec<(String, usize)> = tips.iter().map(|name| (name.clone(), 0)).collect();
-    let mut cursor = 0;
-    while cursor < queue.len() {
-        let (name, depth) = queue[cursor].clone();
-        cursor += 1;
-        let Some(at) = index.get(&name).copied().filter(|_| seen.insert(name)) else {
-            continue;
-        };
-        rows[at].reachable = true;
-        rows[at].depth = Some(depth);
-        order.push(at);
-        for parent in rows[at].parents.clone() {
-            queue.push((parent.as_str().to_owned(), depth + 1));
-        }
-    }
-
-    // A genesis object says so itself: an object that did not parse names no
-    // parents either, and calling that a beginning would turn a tampered tip
-    // into a clean chain of one. A change with no deps is no beginning.
-    let genesis: Vec<String> = order
-        .iter()
-        .filter(|at| rows[**at].root && rows[**at].problem.is_empty())
-        .map(|at| rows[*at].hash.clone())
-        .collect();
-    if genesis.is_empty() && problems.is_empty() && !rows.is_empty() {
-        problems.push(
-            "the walk ended without reaching a genesis object (an object with no parents)"
-                .to_owned(),
-        );
-    }
-
-    let linearisation: Vec<String> = dag
-        .linearise()
-        .unwrap_or_default()
-        .iter()
-        .map(|name| name.as_str().to_owned())
-        .collect();
-
-    let orphans: Vec<usize> = (0..rows.len()).filter(|at| !rows[*at].reachable).collect();
-    for at in &orphans {
-        problems.push(format!(
-            "object {} is not reachable from any head",
-            rows[*at].hash
-        ));
-        if rows[*at].problem.is_empty() {
-            rows[*at].problem = "not reachable from any head by its parents".to_owned();
-        }
-    }
-
-    let listed: Vec<usize> = order.iter().copied().chain(orphans).collect();
-    let verified = listed.iter().filter(|at| rows[**at].hash_ok()).count();
-    printed(&object(vec![
-        ("tips", strings(tips)),
-        (
-            "objects",
-            Value::Array(listed.iter().map(|at| rows[*at].json()).collect()),
-        ),
-        ("walked", Value::from(order.len())),
-        ("verified", Value::from(verified)),
-        ("genesis", strings(genesis)),
-        ("ok", Value::Bool(problems.is_empty())),
-        ("problems", strings(problems)),
-        ("linearisation", strings(linearisation)),
-    ]))
+    exports::verify(&Replica::<Event>::of(objects).map_err(refused)?).map_err(refused)
 }
 
-// --- the objects, read -------------------------------------------------------
-
-/// The objects, rehashed, parsed and put in causal order — what every fold
-/// below reads.
-///
-/// It REFUSES where [`verify_objects`] REPORTS, and the difference is the
-/// question each is asked: one is "is this store healthy", whose answer is a
-/// list of findings; the other is "what does this store believe", which has no
-/// honest answer over objects that do not hash to their names.
-/// `EventStore::dag` draws the same line.
-struct Read {
-    dag: Dag<Event>,
-    nodes: Vec<Node>,
-}
-
-impl Read {
-    fn of(objects: &str) -> Result<Read, Refusal> {
-        let mut prints = Vec::new();
-        for ObjectIn { hash, text } in parse_objects(objects)? {
-            let tampered =
-                || format!("object {hash} does not hash to its own name (tampered/corrupt)");
-            let name = Hash::new(hash.clone()).map_err(|_| tampered())?;
-            prints.push((name, Ok(text.into_bytes())));
+/// Per todo, its events in causal order with the object that carries each —
+/// `json_entry`'s `stream` and `json_series`'s `markers`, from one pass.
+fn streams(read: &Read<'_, Event>) -> BTreeMap<String, Vec<(Hash, Event)>> {
+    let mut out: BTreeMap<String, Vec<(Hash, Event)>> = BTreeMap::new();
+    for node in read.nodes {
+        if let Some(event) = &node.event {
+            out.entry(event.todo().as_str().to_owned())
+                .or_default()
+                .push((node.name.clone(), event.clone()));
         }
-        let dag = Dag::from_prints(prints);
-        if let Some((name, why)) = dag.unread().iter().next() {
-            return Err(match why {
-                Unread::Tampered(_) => format!(
-                    "object {} does not hash to its own name (tampered/corrupt)",
-                    name.as_str()
-                ),
-                _ => format!(
-                    "object {} failed to parse: {}",
-                    name.as_str(),
-                    why.refusal(name)
-                ),
-            });
-        }
-        let nodes = dag.nodes().map_err(|e| e.to_string())?;
-        Ok(Read { dag, nodes })
     }
-
-    /// The events, in the linearisation's order — merges dropped, since a
-    /// merge is structure and carries no event to fold.
-    fn events(&self) -> impl Iterator<Item = &Event> {
-        self.nodes.iter().filter_map(|node| node.event.as_ref())
-    }
-
-    /// Per todo, its events in causal order with the object that carries each —
-    /// `json_entry`'s `stream` and `json_series`'s `markers`, from
-    /// one pass.
-    fn streams(&self) -> BTreeMap<String, Vec<(Hash, Event)>> {
-        let mut out: BTreeMap<String, Vec<(Hash, Event)>> = BTreeMap::new();
-        for node in &self.nodes {
-            if let Some(event) = &node.event {
-                out.entry(event.todo().as_str().to_owned())
-                    .or_default()
-                    .push((node.name.clone(), event.clone()));
-            }
-        }
-        out
-    }
-
-    /// The moment to fold at. `None` means "everything the chain holds", which
-    /// is the LATEST INSTANT THE CHAIN ITSELF STAMPS and never the host's
-    /// clock: a core that read a clock would let one decide who wins, which is
-    /// the thing §1 forbids. A caller that means "now" says so.
-    fn moment(&self, at: Option<Instant>) -> Result<Datetime, Refusal> {
-        let instant = match at {
-            Some(instant) => instant,
-            None => self
-                .events()
-                .map(|event| instant_of(event.at()))
-                .max()
-                .unwrap_or_else(|| {
-                    prodrome::fpl::parse_iso("0001-01-01T00:00:00").expect("a real instant")
-                }),
-        };
-        datetime_of(instant).map_err(|e| format!("at: {e}"))
-    }
+    out
 }
 
 // --- §6: the folds -----------------------------------------------------------
@@ -447,12 +168,13 @@ impl Read {
 /// one computed here.
 #[wasm_bindgen]
 pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
-    let read = Read::of(objects).map_err(refused)?;
+    let replica = Replica::<Event>::of(objects).map_err(refused)?;
+    let read = replica.read().map_err(refused)?;
     let policy = parse_untrusted(untrusted).map_err(refused)?;
     let moment = read
         .moment(parse_moment("at", at).map_err(refused)?)
         .map_err(refused)?;
-    let state = registers::fold(&read.nodes);
+    let state = registers::fold(read.nodes);
     let now = instant_of(moment);
     let mut env = prodrome::fpl::Env::new();
     let (mut specs, mut content, mut flat) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
@@ -509,7 +231,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     }
     let history = json!({ "bindings": bindings, "tended": json_tended(&tended) });
     let stream = Value::Object(
-        read.streams()
+        streams(&read)
             .iter()
             .map(|(todo, events)| {
                 (
@@ -546,14 +268,15 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
 /// per object is not a cost to pay on every fold to learn that again.
 #[wasm_bindgen]
 pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
-    let read = Read::of(objects).map_err(refused)?;
+    let replica = Replica::<Event>::of(objects).map_err(refused)?;
+    let read = replica.read().map_err(refused)?;
     let policy = parse_untrusted(untrusted).map_err(refused)?;
     let moment = parse_moment("at", at)
         .map_err(refused)?
         .map(datetime_of)
         .transpose()
         .map_err(|e| refused(format!("at: {e}")))?;
-    let state = registers::fold(&read.nodes);
+    let state = registers::fold(read.nodes);
     let conflicts = Value::Object(
         state
             .entities()
@@ -605,13 +328,14 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
 /// gathers them; the rows say what `at` believes.
 #[wasm_bindgen]
 pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
-    let read = Read::of(objects).map_err(refused)?;
+    let replica = Replica::<Event>::of(objects).map_err(refused)?;
+    let read = replica.read().map_err(refused)?;
     let policy = parse_untrusted(untrusted).map_err(refused)?;
     let moment = read
         .moment(parse_moment("at", at).map_err(refused)?)
         .map_err(refused)?;
-    let rows = prodrome::view::entries(&read.nodes, moment, &policy)
-        .map_err(|e| refused(e.to_string()))?;
+    let rows =
+        prodrome::view::entries(read.nodes, moment, &policy).map_err(|e| refused(e.to_string()))?;
     let mut listed: Vec<&prodrome::view::Entry<Event>> = rows.iter().collect();
     listed.sort_by(|a, b| prodrome::view::list_order(a, b));
     let records: serde_json::Map<String, Value> = rows
