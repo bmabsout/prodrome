@@ -26,8 +26,6 @@
 //! is NOT a shipped string — `Sealed.prev` at genesis, `Woven.event` — it is an
 //! `Option`, and the printer puts the `''`/`None` back.
 
-use std::marker::PhantomData;
-
 use sha2::{Digest, Sha256};
 
 use crate::change::Change;
@@ -37,11 +35,9 @@ use crate::literal::{
     Vocabulary,
 };
 use crate::payload::{
-    as_string, datetime_field, record_signature, required, string_field, string_or_empty,
-    tuple_field, Payload,
+    as_string, datetime_field, required, string_field, string_or_empty, tuple_field, Payload,
 };
 use crate::snapshot::Snapshot;
-use crate::term::schema::signatures;
 use crate::term::Term;
 
 // --- the names, as types ----------------------------------------------------
@@ -552,42 +548,30 @@ pub fn mk_woven<P: Payload>(
 
 // --- the vocabulary ----------------------------------------------------------
 
-/// The database's constructors, name and declared field order: the envelopes
-/// and the six kinds whose fields are its own semantics.
-pub const EVENT_SIGNATURES: &[(&str, &[&str])] = &[
+/// The envelopes' constructors, name and declared field order: the database's
+/// own, whatever the schema.
+pub const ENVELOPE_SIGNATURES: &[(&str, &[&str])] = &[
     ("Sealed", &["prev", "event"]),
     ("Woven", &["parents", "event"]),
     ("Genesis", &["label", "nonce"]),
     ("Change", &["genesis", "deps", "event"]),
     ("Snapshot", &["genesis", "tips", "previous"]),
-    ("Created", &["todo", "at", "actor", "text", "note"]),
-    ("Completed", &["todo", "at", "actor", "note"]),
-    ("Cancelled", &["todo", "at", "actor", "note"]),
-    ("Reopened", &["todo", "at", "actor", "note"]),
-    ("Tended", &["todo", "at", "actor", "note"]),
-    ("SpecRevised", &["todo", "at", "actor", "spec", "note"]),
 ];
 
-/// The whole vocabulary a stored artifact may use: §7's terms (a spec can nest
-/// anywhere in a `SpecRevised` or a record) plus §4's own kinds plus the
-/// PAYLOAD's — its record kind, whose fields are `todo, at, actor` and then
-/// `P::FIELDS`, and the constructors those fields nest. `datetime` and
-/// `timedelta` are the grammar's own and need no entry.
+/// The whole vocabulary a stored artifact may use: the envelopes, then the
+/// schema's own ([`crate::todo::TodoVocabulary`] for the todo's). `datetime`
+/// and `timedelta` are the grammar's own and need no entry.
 ///
-/// STILL A WHITELIST, and the core's half of it wins: a payload that named its
-/// record `Created` would not shadow §4's, it would be unreachable.
+/// STILL A WHITELIST, and the envelopes win: a schema that named a kind
+/// `Change` would not shadow §3's, it would be unreachable.
 pub struct EventVocabulary<P: Payload> {
-    /// `todo, at, actor` then `P::FIELDS` — owned, because it is the one
-    /// signature in the grammar that is not a compile-time table.
-    record: Vec<&'static str>,
-    payload: PhantomData<P>,
+    schema: crate::todo::TodoVocabulary<P>,
 }
 
 impl<P: Payload> EventVocabulary<P> {
     pub fn new() -> EventVocabulary<P> {
         EventVocabulary {
-            record: record_signature::<P>(),
-            payload: PhantomData,
+            schema: crate::todo::TodoVocabulary::default(),
         }
     }
 }
@@ -600,16 +584,9 @@ impl<P: Payload> Default for EventVocabulary<P> {
 
 impl<P: Payload> Vocabulary for EventVocabulary<P> {
     fn signature(&self, name: &str) -> Option<Signature<'_>> {
-        if let Some(signature) = signatures().signature(name) {
-            return Some(signature);
-        }
-        if let Some(signature) = Table(EVENT_SIGNATURES).find(name) {
-            return Some(signature);
-        }
-        if name == P::KIND {
-            return Some(Signature::Fields(&self.record));
-        }
-        Table(P::VOCABULARY).find(name)
+        Table(ENVELOPE_SIGNATURES)
+            .find(name)
+            .or_else(|| self.schema.signature(name))
     }
 }
 

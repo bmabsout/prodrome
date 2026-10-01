@@ -90,6 +90,8 @@
 //!
 //! Layout, one module per layer of the spec:
 //! - `literal`  — §2: the grammar, its printer (Python `repr` rules) and parser
+//! - `schema`   — §4–§6: a store's events, their entities and registers
+//! - `todo`     — the todo schema, the reference one: §4's kinds, §6's registers
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `genesis`, `change`, `snapshot` — §3: a prodrome, a change, an attestation
@@ -124,8 +126,10 @@ pub mod policy;
 #[cfg(feature = "reference")]
 pub mod reference;
 pub mod registers;
+pub mod schema;
 pub mod snapshot;
 pub mod store;
 pub mod term;
+pub mod todo;
 pub mod topo;
 pub mod view;

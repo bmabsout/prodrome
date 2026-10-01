@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use prodrome::change::mk_change;
 use prodrome::event::{
     canonical, canonical_envelope, event_id, parents_of, parse_envelope, seal_hash, Actor,
-    Envelope, Hash, TodoEvent, EVENT_SIGNATURES,
+    Envelope, Hash, TodoEvent, ENVELOPE_SIGNATURES,
 };
 use prodrome::genesis::mk_genesis;
 use prodrome::payload::Payload;
@@ -22,6 +22,7 @@ use prodrome::policy::{Policy, Untrusted};
 use prodrome::reference::Todo;
 use prodrome::snapshot::mk_snapshot;
 use prodrome::term::schema::signatures;
+use prodrome::todo::TODO_SIGNATURES;
 use proptest::prelude::*;
 
 fn roster() -> Untrusted {
@@ -117,7 +118,11 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
     }
     for kind in &kinds {
         assert!(
-            EVENT_SIGNATURES.iter().any(|(name, _)| name == kind) || *kind == Todo::KIND,
+            ENVELOPE_SIGNATURES
+                .iter()
+                .chain(TODO_SIGNATURES)
+                .any(|(name, _)| name == kind)
+                || *kind == Todo::KIND,
             "{kind} is outside SPEC §4"
         );
     }
@@ -172,8 +177,9 @@ fn the_vocabulary_is_exactly_the_spec_s() {
     let mut names: Vec<&str> = signatures()
         .names()
         .chain(
-            EVENT_SIGNATURES
+            ENVELOPE_SIGNATURES
                 .iter()
+                .chain(TODO_SIGNATURES)
                 .chain(Todo::VOCABULARY.iter())
                 .map(|(name, _)| *name),
         )
