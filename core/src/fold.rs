@@ -7,12 +7,14 @@
 //! linearisation picks a winner; a conflict is its candidates.
 
 mod frontier;
+mod order;
 mod register;
 mod write;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use frontier::Frontier;
+pub use order::{grows, maximal, Discrete, Inflationary, Order, Total};
 pub use register::{GrowSet, Register};
 pub use write::{Kind, Write};
 
@@ -24,6 +26,8 @@ use crate::registers::{Prodrome, Stamp};
 use crate::term::Term;
 
 /// One todo's registers at a moment: the one fold every reading projects.
+/// The state, spec and content are discrete; the tendings, a grow-only set,
+/// are ordered by inclusion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Registers<'a, P> {
     pub state: Frontier<'a, P>,

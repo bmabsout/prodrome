@@ -19,6 +19,7 @@ mod fpl_vectors;
 mod fuzz;
 mod link_vectors;
 mod literals;
+mod order_laws;
 mod recur_vectors;
 mod registers;
 mod series_vectors;
