@@ -336,9 +336,10 @@ of the order: one is a value, and more is a conflict. A type may declare its
 register INFLATIONARY, every write `≥` the reading it supersedes; §3's
 append refuses a write that is not, before any object exists, and the
 reading of such a register is then a homomorphism (law 32). A schema MAY
-also carry a VALUATION: the price of an entity's reading as a §7 term, a
-reading in conflict priced as `Least` over its worlds (4). An entity whose
-schema has no valuation has no price at all, which is not `Absent`.
+also carry a PRICE: the §7 term each candidate of an entity's reading prices
+as, the reading priced as `Least` over them, their meet (law 34); for the
+todo, a candidate is a world (4). An entity whose schema has no price has
+none at all, which is not `Absent`.
 
 Every fold is a projection of one entity's registers at a moment `t` under a
 §5 POLICY. A write joins its register when it is dated at or before `t` and
@@ -733,8 +734,12 @@ No stored byte moves: `Tended`, `Recur` and `Periodic` are new constructors
 parameter — an event vocabulary with its parse and print, the key, instant
 and actor of each event, the registers it writes, which events a policy is
 asked about, and an entity's registers as a product — carried by value and
-never as an existential, since one store holds one schema, and a
-`Valuation` beside it where the schema prices (§6); a register TYPE, its
+never as an existential, since one store holds one schema, and beside it,
+each only where the schema has it, `Price`, the term each candidate of a
+reading prices as (§6), `History: Price`, the terms of each moment of a
+price that changes with its history (§6.4), `Bind`, what a `Ref` reads of an
+entity in its store (§6.1, §7.2), and `Row`, what a row shows and when it is
+provisional (§6.7); a register TYPE, its
 values, their `Order` and the value a write gives it; `Payload`, the todo
 schema's record kind as a parameter — a constructor name, a field order, a
 vocabulary, a parse, a print, `spec` and a checklist length;
@@ -1013,10 +1018,10 @@ byte as before is law 22 and every vector suite, unchanged.
     `review.rs::the_reading_of_a_union_is_the_join_of_the_readings`.
 
 Law 33 is the design's law 1, over two schemas: the todo schema and a
-second one in the tests (`review.rs`), a machine with no valuation, so the
-law is seen to ask nothing of a schema. The design's law 5, that a conflict
-prices as `Least` over its worlds, is law 24, and holds of any valuation by
-construction (§6); its law 6 is law 22.
+second one in the tests (`review.rs`), a machine priced by a flat term per
+phase and nothing else, so the law is seen to ask nothing of a schema. The
+design's law 5 is law 34, over any `Price`, and law 24 is it for the todo
+through the entry; its law 6 is law 22.
 
 33. **A reading is a function of the object set.** Every parents-first
     permutation of a history, every duplication of its objects, and every
@@ -1028,6 +1033,14 @@ construction (§6); its law 6 is law 22.
     `schema_laws.rs::a_review_reading_is_a_function_of_the_object_set`,
     `schema_laws.rs::a_todo_write_joins_the_registers_it_names`,
     `schema_laws.rs::a_review_write_joins_the_registers_it_names`.
+34. **A conflict prices as `Least` over its candidates.** Under any schema
+    with a `Price`, a reading whose candidates price nothing has no price,
+    one priced candidate is the price written as it, and otherwise the
+    price's value at every instant is the least of the candidates' values,
+    `∅` the top: below each, and attained. A todo's moment with nothing
+    first written and no head is its reading's terms.
+    `schema_laws.rs::a_todo_conflict_prices_as_the_least_of_its_candidates`,
+    `schema_laws.rs::a_review_conflict_prices_as_the_least_of_its_candidates`.
 
 ## 10. Non-goals
 

@@ -1,6 +1,7 @@
 //! The REVIEW schema, beside the tests rather than in one: a review, whose
 //! one register is a machine ordered by "further along", `Draft < Review <
-//! Merged` and `Draft < Closed`, declared inflationary, with no valuation.
+//! Merged` and `Draft < Closed`, declared inflationary, priced by a flat
+//! term per phase that does not change with its history ([`Price`]).
 //! The core's tests (`all/review.rs`, `all/schema_laws.rs`) and the wasm's
 //! read the same schema, so it depends on nothing but the core.
 
@@ -8,10 +9,12 @@ use std::collections::HashSet;
 
 use prodrome::event::Actor;
 use prodrome::fold::{Frontier, Inflationary, Order, Product, Register, RegisterType};
+use prodrome::fpl::{mk_flat, FplError};
 use prodrome::literal::{Call, Datetime, ProdromeError, Signature, Table, Value, Vocabulary};
 use prodrome::payload::{datetime_field, string_field};
 use prodrome::registers::Stamp;
-use prodrome::schema::Schema;
+use prodrome::schema::{Price, Schema};
+use prodrome::term::Term;
 
 /// Further along is greater; `Merged` and `Closed` are the one incomparable
 /// pair, so a merge on one replica and a close on another is the one real
@@ -287,6 +290,28 @@ impl Schema for Review {
 
     fn writes(&self) -> impl Iterator<Item = Field> {
         PhaseRegister::value(self).map(|_| Field::Phase).into_iter()
+    }
+}
+
+/// Each maximal phase prices as a flat term: a draft as 0.25, a review as
+/// 0.5, a merge as fulfilled and a close as nothing fulfilled, so the one
+/// real conflict prices as the close. A review only opened has no price.
+impl Price for Review {
+    fn terms(phases: &Phases<'_>) -> Result<Vec<Term>, FplError> {
+        phases
+            .0
+            .reading::<PhaseRegister>()
+            .into_iter()
+            .filter_map(|stamp| PhaseRegister::value(&stamp.event))
+            .map(|phase| {
+                mk_flat(match phase {
+                    Phase::Draft => 0.25,
+                    Phase::Review => 0.5,
+                    Phase::Merged => 1.0,
+                    Phase::Closed => 0.0,
+                })
+            })
+            .collect()
     }
 }
 
