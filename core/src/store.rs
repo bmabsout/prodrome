@@ -27,6 +27,8 @@
 
 mod decision;
 mod memory;
+mod memory_store;
+mod replica;
 
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,6 +50,8 @@ use crate::snapshot::mk_snapshot;
 
 pub use decision::Decision;
 use memory::{Memory, Printed, Seen, Verified};
+pub use memory_store::MemoryStore;
+pub use replica::{sync, Held, Replica};
 
 /// A chain rooted at `root`, of the schema `E`, read under one host
 /// [`Policy`] (§5).
@@ -743,6 +747,41 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             .collect();
         files.sort();
         files.into_iter().map(Finding::Quarantined).collect()
+    }
+}
+
+/// The store on disk as a replica: what it holds is `objects/`, and what it
+/// receives is placed there, durably, under its lock.
+impl<E: Schema, Pol: Policy<E>> Replica<E> for EventStore<E, Pol> {
+    fn held(&self) -> Result<Held<E>, ProdromeError> {
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        let folded = memory.folded()?.clone();
+        Ok(Held {
+            dag: memory.dag().clone(),
+            folded,
+            tips: memory.tips().clone(),
+        })
+    }
+
+    fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
+        EventStore::tips(self)
+    }
+
+    fn print(&self, name: &Hash) -> Option<Vec<u8>> {
+        EventStore::print(self, name)
+    }
+
+    fn append(&self, event: E) -> Result<Hash, ProdromeError> {
+        EventStore::append(self, event)
+    }
+
+    fn receive(
+        &self,
+        seeds: BTreeSet<Hash>,
+        print_of: &dyn Fn(&Hash) -> Option<Vec<u8>>,
+    ) -> Result<Vec<Hash>, ProdromeError> {
+        self.copy_in_from(seeds, print_of)
     }
 }
 

@@ -1,0 +1,116 @@
+//! A replica in memory (design §6.1): what a page holds, and what an overlay
+//! writes to.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, MutexGuard};
+
+use super::memory::{self, Memory};
+use super::replica::{Held, Replica};
+use crate::event::Hash;
+use crate::literal::ProdromeError;
+use crate::schema::Schema;
+
+/// A STORE THAT IS NOT A DIRECTORY: objects and their prints held in memory,
+/// verified on the way in, and folded as an [`super::EventStore`] folds
+/// them. It appends by the same decision a store on disk makes
+/// ([`Replica::append`]), so it writes byte for byte what a disk store
+/// holding the same objects writes, and it holds no lock any other writer
+/// takes: what it writes is monotone and reaches a store of record by
+/// [`super::sync`].
+#[derive(Debug)]
+pub struct MemoryStore<E: Schema> {
+    objects: Mutex<Objects<E>>,
+    genesis: Option<Hash>,
+}
+
+#[derive(Debug)]
+struct Objects<E: Schema> {
+    memory: Memory<E>,
+    prints: BTreeMap<Hash, Vec<u8>>,
+}
+
+impl<E: Schema> Default for MemoryStore<E> {
+    fn default() -> Self {
+        MemoryStore {
+            objects: Mutex::new(Objects {
+                memory: Memory::empty(),
+                prints: BTreeMap::new(),
+            }),
+            genesis: None,
+        }
+    }
+}
+
+impl<E: Schema> MemoryStore<E> {
+    /// This store, writing into the prodrome `genesis` begins; without one
+    /// it writes into its only genesis.
+    #[must_use]
+    pub fn in_genesis(self, genesis: Hash) -> MemoryStore<E> {
+        MemoryStore {
+            genesis: Some(genesis),
+            ..self
+        }
+    }
+
+    /// The objects. A panic while they were held may have left them half
+    /// admitted, and there is no directory to read them again from.
+    fn objects(&self) -> MutexGuard<'_, Objects<E>> {
+        self.objects
+            .lock()
+            .expect("a store in memory outlives no panic while it is held")
+    }
+}
+
+impl<E: Schema> Replica<E> for MemoryStore<E> {
+    fn held(&self) -> Result<Held<E>, ProdromeError> {
+        let mut objects = self.objects();
+        let folded = objects.memory.folded()?.clone();
+        Ok(Held {
+            dag: objects.memory.dag().clone(),
+            folded,
+            tips: objects.memory.tips().clone(),
+        })
+    }
+
+    fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
+        Ok(self.objects().memory.tips().clone())
+    }
+
+    fn print(&self, name: &Hash) -> Option<Vec<u8>> {
+        self.objects().prints.get(name).cloned()
+    }
+
+    fn append(&self, event: E) -> Result<Hash, ProdromeError> {
+        let mut objects = self.objects();
+        let (name, sealed) = objects.memory.change(self.genesis.as_ref(), event)?;
+        if let Some((verified, print)) = sealed {
+            objects.prints.insert(name.clone(), print);
+            objects.memory.admit(&[], vec![(verified, None)]);
+        }
+        Ok(name)
+    }
+
+    /// Walked without the lock, over what was held when it began, so a
+    /// `print_of` that reads this store again does not wait on it; what
+    /// another receipt took meanwhile is not taken twice.
+    fn receive(
+        &self,
+        seeds: BTreeSet<Hash>,
+        print_of: &dyn Fn(&Hash) -> Option<Vec<u8>>,
+    ) -> Result<Vec<Hash>, ProdromeError> {
+        let dag = self.objects().memory.dag().clone();
+        let taken = memory::receive(|name| dag.get(name).is_some(), seeds, print_of)?;
+        let mut objects = self.objects();
+        let mut names = Vec::new();
+        let mut fresh = Vec::new();
+        for (verified, print) in taken {
+            if !objects.memory.holds(verified.name()) {
+                names.push(verified.name().clone());
+                objects.prints.insert(verified.name().clone(), print);
+                fresh.push((verified, None));
+            }
+        }
+        objects.memory.admit(&[], fresh);
+        Ok(names)
+    }
+}
