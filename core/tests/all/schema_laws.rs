@@ -6,26 +6,33 @@
 //! Stated once, generic over a schema, and run over the todo schema and the
 //! review schema of `review.rs`: the law asks nothing of a schema, so neither
 //! may break it.
+//!
+//! Beside it, the one thing a schema says twice: the route's NAMES
+//! (`Schema::writes`) and the route itself (`Product::join`, and each
+//! register type's `value`) agree, so a write joins exactly the frontiers its
+//! event names.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::change::mk_change;
 use prodrome::dag::Dag;
 use prodrome::event::{
-    mk_cancelled, mk_completed, mk_reopened, mk_spec_revised, mk_tended, seal_hash, Envelope, Hash,
-    TodoEvent,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, mk_tended, seal_hash,
+    Envelope, Hash, TodoEvent,
 };
-use prodrome::fold::{read, Product};
+use prodrome::fold::{read, Kind, Product, RegisterType};
 use prodrome::fpl::mk_flat;
 use prodrome::genesis::mk_genesis;
 use prodrome::literal::Datetime;
 use prodrome::policy::Everything;
-use prodrome::reference::Todo;
+use prodrome::reference::{mk_authored, Todo};
 use prodrome::registers::{extend, fold, Folded, Genesis, Node};
 use prodrome::schema::Schema;
 use proptest::prelude::*;
 
-use crate::review::{self, Phase, Review, PHASES};
+use prodrome::todo::{Content, Spec, State};
+
+use crate::review::{self, Field, Phase, PhaseRegister, Review, PHASES};
 
 /// What one history is drawn as: each event with the earlier changes to its
 /// entity it supersedes (a bit per earlier change), a rank per object for
@@ -155,19 +162,65 @@ fn free<E: Schema>(draw: &Draw<E>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// One write, folded alone, joins exactly the frontiers its event names.
+fn routed<E: Schema>(event: &E) -> Result<(), TestCaseError> {
+    let dag: Dag<E> = history(&[(event.clone(), 0)]).into_iter().collect();
+    let state = fold(&dag.nodes().expect("a DAG"));
+    let (_, stream) = state.entities().next().expect("one entity");
+    let registers = read(stream, None, &Everything);
+    for register in E::REGISTERS {
+        prop_assert_eq!(
+            registers.frontier(*register).writes().len(),
+            usize::from(event.writes().any(|written| written == *register)),
+            "{:?}",
+            register
+        );
+    }
+    Ok(())
+}
+
+/// A register type's value is there exactly for the events whose names
+/// name its register.
+fn valued<E: Schema, R: RegisterType<E>>(event: &E, register: E::Register) -> bool {
+    R::value(event).is_some() == event.writes().any(|written| written == register)
+}
+
 fn at(seconds: u32) -> Datetime {
     Datetime::new(2026, 10, 1 + seconds / 86_400, 0, 0, 0, 0).expect("a real instant")
 }
 
 fn a_todo_event() -> impl Strategy<Value = TodoEvent<Todo>> {
-    (0..2usize, 0..5u8, 0u32..5 * 86_400, 0..3u8).prop_map(|(todo, kind, seconds, note)| {
+    (0..2usize, 0..8u8, 0u32..5 * 86_400, 0..3u8).prop_map(|(todo, kind, seconds, note)| {
         let (todo, at, note) = (["alpha", "beta"][todo], at(seconds), format!("n{note}"));
+        let spec = || mk_flat(0.5).expect("valid");
+        let record = |spec| {
+            mk_authored(
+                todo,
+                at,
+                "ana",
+                "todo",
+                at,
+                &note,
+                spec,
+                vec![],
+                "",
+                "",
+                "",
+                None,
+                vec![],
+                vec![],
+                "",
+            )
+        };
         match kind {
             0 => mk_completed(todo, at, "ana", &note),
             1 => mk_cancelled(todo, at, "ana", &note),
             2 => mk_reopened(todo, at, "ana", &note),
             3 => mk_tended(todo, at, "ana", &note),
-            _ => mk_spec_revised(todo, at, "ana", mk_flat(0.5).expect("valid"), &note),
+            4 => mk_created(todo, at, "ana", &note, ""),
+            5 => record(None),
+            6 => record(Some(spec())),
+            _ => mk_spec_revised(todo, at, "ana", spec(), &note),
         }
         .expect("valid")
     })
@@ -214,5 +267,19 @@ proptest! {
     #[test]
     fn a_review_reading_is_a_function_of_the_object_set(draw in a_draw(a_review_event())) {
         free(&draw)?;
+    }
+
+    #[test]
+    fn a_todo_write_joins_the_registers_it_names(event in a_todo_event()) {
+        routed(&event)?;
+        prop_assert!(valued::<_, State>(&event, Kind::State));
+        prop_assert!(valued::<_, Spec>(&event, Kind::Spec));
+        prop_assert!(valued::<_, Content>(&event, Kind::Content));
+    }
+
+    #[test]
+    fn a_review_write_joins_the_registers_it_names(event in a_review_event()) {
+        routed(&event)?;
+        prop_assert!(valued::<_, PhaseRegister>(&event, Field::Phase));
     }
 }

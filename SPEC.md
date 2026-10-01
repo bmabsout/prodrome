@@ -1021,9 +1021,13 @@ construction (§6); its law 6 is law 22.
 33. **A reading is a function of the object set.** Every parents-first
     permutation of a history, every duplication of its objects, and every
     partition into two replicas folded apart and then merged read the same,
-    register by register, under any schema.
+    register by register, under any schema. And the route agrees with its
+    names: one write joins exactly the registers its schema says it writes,
+    and each register type values exactly those writes.
     `schema_laws.rs::a_todo_reading_is_a_function_of_the_object_set`,
-    `schema_laws.rs::a_review_reading_is_a_function_of_the_object_set`.
+    `schema_laws.rs::a_review_reading_is_a_function_of_the_object_set`,
+    `schema_laws.rs::a_todo_write_joins_the_registers_it_names`,
+    `schema_laws.rs::a_review_write_joins_the_registers_it_names`.
 
 ## 10. Non-goals
 
