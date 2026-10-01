@@ -270,9 +270,10 @@ exports (`verify_objects`, `fold`, `registers`, `entries`, `fulfillment`,
 return JSON.
 The JSON shape of a term is this crate's — `wasm/src/json.rs`, since 0.4 —
 because JSON is JavaScript's literal grammar and the core has its own. A
-record crosses as its payload's own field names; the module is built with one
-payload, named once at the top of `wasm/src/lib.rs`, so a host with its own
-compiles its own wasm from this crate with that line changed.
+record crosses as its payload's own field names. Beside them is `Todos`, the
+same exports generic over a schema: a host with its own schemas builds one
+module of them all from this crate, each a class of its own, with
+`prodrome_wasm::schema!`, as `wasm/src/lib.rs`'s header describes.
 
 ## The viewer: the Prodrome in the browser
 

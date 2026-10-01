@@ -45,7 +45,31 @@ the todo schema is the reference one. A MINOR change under this file's rule:
 no stored byte and no object name moves, and every vector reads as it did.
 The API breaks wherever a type was parameterised by the payload.
 
+And register types, stage 3: prodrome-wasm's exports are generic over a
+schema, and a host builds ONE module of all its schemas with a macro. A
+MINOR change under this file's rule: no stored byte moves, and every export
+the reference module had answers byte for byte as it did.
+
 ### Added
+
+- **prodrome-wasm, generic over a schema:** `exports::Replica` reads a set of
+  objects once at a schema, and `exports::verify`, `tips` (each prodrome's
+  heads by its genesis), `since` (what a replica holding some tips lacks),
+  `readings` (each register's maximal writes, for any schema), and, for a
+  schema with a `Valuation`, `entries` and `prices` answer over it.
+  `exports::Json` is what a schema says to cross the boundary (the field its
+  events name an entity by, its registers' names, its values' JSON) and
+  `exports::PricedJson` its reading's JSON; the todo schema has both, at any
+  payload. `prodrome_wasm::schema!(Name = Schema)`, with `, priced` for a
+  valuation, instantiates them as a JS class per schema in one module: the
+  crate is an `rlib` too, and its reference module is the default feature
+  `reference`, which a host's crate turns off. The reference module adds
+  `Todos`, the todo schema through that path.
+- **`fold::Product::reading(register)`:** a register's reading by name, its
+  frontier's maximal writes under its type's order, so a reader holding
+  only `Schema::REGISTERS` reads any schema. SPEC law 33's test compares it
+  too. The tests' review schema is `core/tests/schemas/review.rs`, which
+  prodrome-wasm's tests instantiate through `schema!` over a small store.
 
 - **`schema::Schema` (SPEC §4, §6, §8):** what a store's events are and what
   each writes: the vocabulary (`Vocabulary`, `to_value`, `from_value`), the
@@ -198,6 +222,10 @@ The API breaks wherever a type was parameterised by the payload.
   semilattice), and `conformance/change.py`, NEW and written by hand.
 
 ### Changed (breaking)
+
+- **`fold::Product` has a required method, `reading`**: a product names its
+  registers' types, which only it knows. An implementation answers each
+  register's `Frontier::reading` under that register's type.
 
 - **A store's type parameter is its schema, the event type, where it was the
   payload.** `EventStore<P, Pol>` is `EventStore<TodoEvent<P>, Pol>`, and so
