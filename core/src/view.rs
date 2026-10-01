@@ -1,5 +1,5 @@
 //! §6.7 — the entry: one entity as the folds see it at a moment, under a
-//! schema with a [`Valuation`].
+//! schema with a [`Row`], a [`History`] and a [`Bind`].
 //!
 //! See ../../SPEC.md §6.7. Not a fifth fold: every field is a
 //! projection of the entity's registers or §7's evaluator over them, composed
@@ -26,12 +26,12 @@ use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
 use crate::registers::{self, Genesis, Node};
-use crate::schema::Valuation;
+use crate::schema::{Bind, History, Row};
 use crate::term::Term;
 
 /// An entity's price at a moment: §6.4's function and that function's value
 /// there. Every row has one: an entity with no function is priced by `Absent`
-/// (§7), which reads `∅`. Only a schema with a [`Valuation`] has rows.
+/// (§7), which reads `∅`. Only a schema with a [`Row`] has rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Price {
     /// The todo's fulfillment FUNCTION over all of time — its revisions and
@@ -60,10 +60,10 @@ pub struct Price {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provisional {
     /// A CLAIMING event names a reading the confirmed one refuses
-    /// ([`Valuation::disputes`]). [`Entry::claim`] is that reading.
+    /// ([`Row::disputes`]). [`Entry::claim`] is that reading.
     Claimed,
     /// A winning write is one the policy does not [`Policy::confirms`]
-    /// ([`Valuation::unconfirmed`]) — it BINDS, and it is still its
+    /// ([`Row::unconfirmed`]) — it BINDS, and it is still its
     /// writer's. Under the todo schema, a content record, shown as source and
     /// never rendered ("rendered means confirmed").
     Content,
@@ -105,7 +105,7 @@ impl Confidence {
 
 /// One entity, as the folds see it at a moment.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Entry<E: Valuation> {
+pub struct Entry<E: Row> {
     pub genesis: Genesis,
     pub key: E::Key,
     /// The CONFIRMED reading: for a todo, its candidate bindings, `None` for
@@ -124,7 +124,7 @@ pub struct Entry<E: Valuation> {
     pub stream: Vec<Hash>,
 }
 
-impl<E: Valuation> Entry<E> {
+impl<E: Row> Entry<E> {
     pub fn spec(&self) -> &Term {
         &self.price.spec
     }
@@ -196,7 +196,7 @@ impl<P: Payload> Entry<TodoEvent<P>> {
 /// §6.7's LIST ORDER, stated once so no host decides it: most urgent first —
 /// ascending in value, ties by (genesis, id) — then every row with no number,
 /// `absent` or not linking, by (genesis, id).
-pub fn list_order<E: Valuation>(a: &Entry<E>, b: &Entry<E>) -> Ordering {
+pub fn list_order<E: Row>(a: &Entry<E>, b: &Entry<E>) -> Ordering {
     let number = |entry: &Entry<E>| entry.value().ok().flatten();
     match (number(a), number(b)) {
         (Some(x), Some(y)) => x.total_cmp(&y),
@@ -233,7 +233,7 @@ fn lowered(candidates: &Candidates) -> String {
 /// # Errors
 ///
 /// A function [`fold::flatten`] cannot build.
-pub fn entries<E: Valuation>(
+pub fn entries<E: Row + History + Bind>(
     nodes: &[Node<E>],
     t: Datetime,
     policy: &impl Policy<E>,

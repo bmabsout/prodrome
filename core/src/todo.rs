@@ -15,7 +15,7 @@ use crate::fpl::{Candidates, Env, FplError, Outcome};
 use crate::literal::{Datetime, ProdromeError, Signature, Table, Value, Vocabulary};
 use crate::payload::{record_signature, Payload};
 use crate::policy::Policy;
-use crate::schema::{Bind, History, Price, Schema, Valuation};
+use crate::schema::{Bind, History, Price, Row, Schema};
 use crate::term::schema::signatures;
 use crate::term::Term;
 
@@ -138,7 +138,7 @@ impl<P: Payload> History for TodoEvent<P> {
 }
 
 /// A todo's row shows its candidate outcomes and records.
-impl<P: Payload> Valuation for TodoEvent<P> {
+impl<P: Payload> Row for TodoEvent<P> {
     type Reading = Reading;
 
     fn reading(registers: &Registers<'_, P>) -> Reading {
