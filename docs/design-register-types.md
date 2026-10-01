@@ -1,6 +1,7 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 built, and stage 7's in-memory
+replica behind a store (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -345,6 +346,26 @@ In this repository, after stage 3:
    overlay reads as its union. An agent's staging area is its first host
    use (a batch as an overlay over its target, accepted by a sync of the
    objects picked), replacing a copy of the target and a deletion.
+
+   BUILT, its first part: the in-memory replica behind a store. An
+   `EventStore` holds every object it has read, each verified once, with
+   their tips and their fold (`store::memory`), and each look at the disk
+   replica is a sync into it of exactly the objects it lacks: a name
+   listed and not held is read and verified, a held name no longer listed
+   is forgotten, and a held file whose `stat` changed is read again. The
+   fold follows by `registers::Folded::insert`, which puts an object where
+   the linearisation of the union puts it, so the memory is the fold of
+   the object set whatever order the objects arrive in, never rebuilt from
+   the files. An append decides on the memory under the store's lock and
+   enters what it writes without reading it back; an adoption ends its walk
+   at what the memory holds. Laws, `core/tests/all/memory.rs`: a store read
+   incrementally reads as the same objects read cold (objects, fold,
+   readings, heads), an append through the memory writes byte for byte what
+   a cold one does, and law 7's pieces where an adoption meets the memory
+   (idempotent, order-free, an interrupted one completes, the reading after
+   it is the union's). Not yet: `sync` between two stores as a function, an
+   in-memory store that never touches a disk, and the overlay with its
+   flush.
 
 ## 9. Non-goals
 
