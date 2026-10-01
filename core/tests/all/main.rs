@@ -22,6 +22,8 @@ mod literals;
 mod order_laws;
 mod recur_vectors;
 mod registers;
+mod review;
+mod schema_laws;
 mod series_vectors;
 mod tips;
 mod verify_findings;

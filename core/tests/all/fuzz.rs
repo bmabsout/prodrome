@@ -3,7 +3,7 @@
 //! is the same property in Rust, where "never a crash" also means never a
 //! stack overflow — a deep nest is a refusal, not an abort (`MAX_DEPTH`).
 
-use prodrome::event::parse_envelope;
+use prodrome::event::{parse_envelope, TodoEvent};
 use prodrome::literal::{parse_literal, print_literal, Open, Table};
 use prodrome::reference::Todo;
 use proptest::prelude::*;
@@ -56,7 +56,7 @@ proptest! {
         let at = at.index(object.len() + 1);
         let end = (at + cut).min(object.len());
         let damaged = format!("{}{splice}{}", &object[..at], &object[end..]);
-        let _ = parse_envelope::<Todo>(&damaged);
+        let _ = parse_envelope::<TodoEvent<Todo>>(&damaged);
     }
 
     /// Whatever survives the parse must print back to something the parser
@@ -75,7 +75,10 @@ proptest! {
 #[test]
 fn every_object_the_fuzzer_damages_parses_whole() {
     for object in OBJECTS {
-        assert!(parse_envelope::<Todo>(object).is_ok(), "{object}");
+        assert!(
+            parse_envelope::<TodoEvent<Todo>>(object).is_ok(),
+            "{object}"
+        );
     }
 }
 

@@ -449,9 +449,10 @@ impl Payload for Todo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::EVENT_SIGNATURES;
+    use crate::event::ENVELOPE_SIGNATURES;
     use crate::payload::record_signature;
     use crate::term::schema::signatures;
+    use crate::todo::TODO_SIGNATURES;
 
     #[test]
     fn the_smart_constructors_are_the_only_door() {
@@ -530,7 +531,12 @@ mod tests {
     fn the_payloads_names_do_not_collide_with_the_cores() {
         let core: Vec<&str> = signatures()
             .names()
-            .chain(EVENT_SIGNATURES.iter().map(|(name, _)| *name))
+            .chain(
+                ENVELOPE_SIGNATURES
+                    .iter()
+                    .chain(TODO_SIGNATURES)
+                    .map(|(name, _)| *name),
+            )
             .collect();
         for (name, _) in Todo::VOCABULARY {
             assert!(!core.contains(name), "{name} is one of the core's names");

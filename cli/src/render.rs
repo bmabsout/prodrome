@@ -3,17 +3,22 @@
 //! Every function here is total and returns a `String`: the binary is the only
 //! thing that writes to a stream, so a test drives a verb and reads its answer.
 
+use prodrome::event::TodoEvent;
 use prodrome::event::TodoId;
 use prodrome::fold::Kind;
 use prodrome::fpl::print_term;
+use prodrome::reference::Todo;
 use prodrome::view::{list_order, Confidence, Entry, Provisional};
+
+/// A row of the todo schema, as this CLI reads one.
+type Row = Entry<TodoEvent<Todo>>;
 
 use crate::price::iso;
 use crate::Reading;
 
 /// A price as `show` says it: the number, `absent` where the function reads
 /// `∅` — absence is not a zero — or why the function does not link.
-fn priced(entry: &Entry) -> String {
+fn priced(entry: &Row) -> String {
     match entry.value() {
         Ok(Some(value)) => format!("{value:.3}"),
         Ok(None) => "absent".to_owned(),
@@ -23,7 +28,7 @@ fn priced(entry: &Entry) -> String {
 
 /// A price in `list`'s column, five wide: `∅` for absent, `—` for a function
 /// that does not link.
-fn column(entry: &Entry) -> String {
+fn column(entry: &Row) -> String {
     match entry.value() {
         Ok(Some(value)) => format!("{value:.3}"),
         Ok(None) => "  ∅  ".to_owned(),
@@ -32,7 +37,7 @@ fn column(entry: &Entry) -> String {
 }
 
 /// Why a row is not the confirmed reading, whole — empty when it is.
-fn provisional(entry: &Entry) -> String {
+fn provisional(entry: &Row) -> String {
     match entry.confidence {
         Confidence::Confirmed => String::new(),
         Confidence::Provisional(reason) => {
@@ -65,10 +70,10 @@ fn under(untrusted: &[String]) -> String {
 /// is; a list of what to do next is the rows whose todo existed at `t` and
 /// whose outcome at `t` is nothing.
 pub fn list(reading: &Reading) -> String {
-    let mut rows: Vec<&Entry> = reading
+    let mut rows: Vec<&Row> = reading
         .entries
         .iter()
-        .filter(|entry| entry.is_open() && reading.existed(&entry.todo))
+        .filter(|entry| entry.is_open() && reading.existed(&entry.key))
         .collect();
     rows.sort_by(|a, b| list_order(a, b));
 
@@ -80,15 +85,15 @@ pub fn list(reading: &Reading) -> String {
     )];
     let width = rows
         .iter()
-        .map(|entry| entry.todo.as_str().len())
+        .map(|entry| entry.key.as_str().len())
         .max()
         .unwrap_or(0);
     for entry in rows {
         out.push(format!(
             "{}  {:width$}  {}{}",
             column(entry),
-            entry.todo.as_str(),
-            reading.body(&entry.todo),
+            entry.key.as_str(),
+            reading.body(&entry.key),
             provisional(entry)
         ));
     }
@@ -104,9 +109,9 @@ fn field(out: &mut Vec<String>, name: &str, value: impl AsRef<str>) {
 
 /// One todo in full, `None` when the DAG has never mentioned it.
 pub fn show(reading: &Reading, todo: &TodoId) -> Option<String> {
-    let entry = reading.entries.iter().find(|entry| &entry.todo == todo)?;
+    let entry = reading.entries.iter().find(|entry| &entry.key == todo)?;
     let mut out = Vec::new();
-    field(&mut out, "todo", entry.todo.as_str());
+    field(&mut out, "todo", entry.key.as_str());
     field(&mut out, "read at", iso(reading.at));
     field(&mut out, "state", entry.state());
     field(&mut out, "since", entry.at());
@@ -128,7 +133,7 @@ pub fn show(reading: &Reading, todo: &TodoId) -> Option<String> {
         &mut out,
         "content",
         entry
-            .content
+            .content()
             .iter()
             .map(|hash| hash.as_str())
             .collect::<Vec<_>>()

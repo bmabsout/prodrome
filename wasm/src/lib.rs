@@ -56,7 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::dag::{Dag, Finding, Unread};
 use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
-use prodrome::fold;
+use prodrome::fold::{self, Product};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Candidates, Instant};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy};
@@ -87,8 +87,8 @@ use wire::{
 type Record = prodrome::reference::Todo;
 
 type Event = TodoEvent<Record>;
-type Object = Envelope<Record>;
-type Node = registers::Node<Record>;
+type Object = Envelope<Event>;
+type Node = registers::Node<Event>;
 
 /// A refusal, as the exception a JS caller catches. Every entry point returns
 /// one rather than panicking: a browser that aborts inside the Wasm leaves the
@@ -235,7 +235,7 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
         }
         rows.push(row);
     }
-    let dag: Dag<Record> = Dag::from_prints(prints);
+    let dag: Dag<Event> = Dag::from_prints(prints);
     for (name, object) in dag.objects() {
         rows[index[name.as_str()]].describe(object);
     }
@@ -345,7 +345,7 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
 /// honest answer over objects that do not hash to their names.
 /// `EventStore::dag` draws the same line.
 struct Read {
-    dag: Dag<Record>,
+    dag: Dag<Event>,
     nodes: Vec<Node>,
 }
 
@@ -465,7 +465,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
         flat.extend(fold::flatten(prodrome, now, &policy).map_err(|e| refused(e.0))?);
     }
     let functions = Value::Object(
-        fold::link_specs(&flat, state.todos().map(|(todo, _)| todo))
+        fold::link_specs(&flat, state.entities().map(|(todo, _)| todo))
             .into_iter()
             .map(|(todo, term)| (todo, crate::json::to_json(&term)))
             .collect(),
@@ -476,9 +476,9 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     // `series_knots` reads back.
     let mut bindings = serde_json::Map::new();
     let mut tended = BTreeMap::new();
-    for (todo, stream) in state.todos() {
+    for (todo, stream) in state.entities() {
         let mut instants = BTreeSet::new();
-        for stamp in stream.iter().filter(|s| policy.standing(&s.event).binds()) {
+        for stamp in stream.iter().filter(|s| policy.standing(&*s.event).binds()) {
             for write in fold::Write::of(&stamp.event) {
                 match write {
                     fold::Write::State(_) => {
@@ -497,7 +497,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
         let mut timeline = Vec::new();
         let mut before = Candidates::from([None]);
         for at in instants {
-            let reading = fold::Registers::read(stream, Some(at), &policy).outcomes();
+            let reading = fold::read(stream, Some(at), &policy).outcomes();
             if reading != before {
                 timeline.push(json!({ "at": iso(at), "binding": json_reading(&reading) }));
                 before = reading;
@@ -556,10 +556,9 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
     let state = registers::fold(&read.nodes);
     let conflicts = Value::Object(
         state
-            .todos()
+            .entities()
             .filter_map(|(todo, stream)| {
-                let found =
-                    fold::Registers::read(stream, moment.map(instant_of), &policy).conflicts();
+                let found = fold::read(stream, moment.map(instant_of), &policy).conflicts();
                 (!found.is_empty()).then(|| {
                     let by_kind = found
                         .into_iter()
@@ -613,11 +612,11 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         .map_err(refused)?;
     let rows = prodrome::view::entries(&read.nodes, moment, &policy)
         .map_err(|e| refused(e.to_string()))?;
-    let mut listed: Vec<&prodrome::view::Entry> = rows.iter().collect();
+    let mut listed: Vec<&prodrome::view::Entry<Event>> = rows.iter().collect();
     listed.sort_by(|a, b| prodrome::view::list_order(a, b));
     let records: serde_json::Map<String, Value> = rows
         .iter()
-        .flat_map(|row| &row.content)
+        .flat_map(prodrome::view::Entry::content)
         .filter_map(|name| match read.dag.get(name).and_then(Envelope::event) {
             Some(TodoEvent::Authored(record)) => {
                 Some((name.as_str().to_owned(), json_record(record)))
@@ -647,7 +646,7 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         ),
         (
             "order",
-            strings(listed.iter().map(|row| row.todo.as_str().to_owned())),
+            strings(listed.iter().map(|row| row.key.as_str().to_owned())),
         ),
         ("records", Value::Object(records)),
         ("created", Value::Object(created)),

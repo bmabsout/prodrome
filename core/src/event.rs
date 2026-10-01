@@ -26,8 +26,6 @@
 //! is NOT a shipped string — `Sealed.prev` at genesis, `Woven.event` — it is an
 //! `Option`, and the printer puts the `''`/`None` back.
 
-use std::marker::PhantomData;
-
 use sha2::{Digest, Sha256};
 
 use crate::change::Change;
@@ -37,11 +35,10 @@ use crate::literal::{
     Vocabulary,
 };
 use crate::payload::{
-    as_string, datetime_field, record_signature, required, string_field, string_or_empty,
-    tuple_field, Payload,
+    as_string, datetime_field, required, string_field, string_or_empty, tuple_field, Payload,
 };
+use crate::schema::Schema;
 use crate::snapshot::Snapshot;
-use crate::term::schema::signatures;
 use crate::term::Term;
 
 // --- the names, as types ----------------------------------------------------
@@ -344,25 +341,26 @@ impl<P: Payload> TodoEvent<P> {
     }
 }
 
-/// The stored object (§3). `Sealed` and `Woven` are the legacy envelopes,
-/// read forever and written by no `append` (SPEC §3).
+/// The stored object (§3), holding an event of the schema `E`. `Sealed` and
+/// `Woven` are the legacy envelopes, read forever and written by no `append`
+/// (SPEC §3).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Envelope<P> {
+pub enum Envelope<E> {
     Sealed {
         prev: Option<Hash>,
-        event: TodoEvent<P>,
+        event: E,
     },
     Woven {
         parents: Vec<Hash>,
-        event: Option<TodoEvent<P>>,
+        event: Option<E>,
     },
     Genesis(Genesis),
-    Change(Change<P>),
+    Change(Change<E>),
     Snapshot(Snapshot),
 }
 
-impl<P> Envelope<P> {
-    pub fn event(&self) -> Option<&TodoEvent<P>> {
+impl<E> Envelope<E> {
+    pub fn event(&self) -> Option<&E> {
         match self {
             Envelope::Sealed { event, .. } => Some(event),
             Envelope::Woven { event, .. } => event.as_ref(),
@@ -371,7 +369,7 @@ impl<P> Envelope<P> {
         }
     }
 
-    pub fn into_event(self) -> Option<TodoEvent<P>> {
+    pub fn into_event(self) -> Option<E> {
         match self {
             Envelope::Sealed { event, .. } => Some(event),
             Envelope::Woven { event, .. } => event,
@@ -400,7 +398,7 @@ impl<P> Envelope<P> {
     }
 }
 
-pub fn parents_of<P>(envelope: &Envelope<P>) -> Vec<Hash> {
+pub fn parents_of<E>(envelope: &Envelope<E>) -> Vec<Hash> {
     match envelope {
         Envelope::Sealed { prev, .. } => prev.iter().cloned().collect(),
         Envelope::Woven { parents, .. } => parents.clone(),
@@ -512,7 +510,7 @@ pub fn mk_record<P: Payload>(
     })))
 }
 
-pub fn mk_sealed<P: Payload>(prev: Option<Hash>, event: TodoEvent<P>) -> Envelope<P> {
+pub fn mk_sealed<E: Schema>(prev: Option<Hash>, event: E) -> Envelope<E> {
     Envelope::Sealed { prev, event }
 }
 
@@ -534,10 +532,10 @@ pub(crate) fn sorted_distinct(
 }
 
 /// Two parents at least: one is a `Sealed`, none is genesis.
-pub fn mk_woven<P: Payload>(
+pub fn mk_woven<E: Schema>(
     parents: Vec<Hash>,
-    event: Option<TodoEvent<P>>,
-) -> Result<Envelope<P>, ProdromeError> {
+    event: Option<E>,
+) -> Result<Envelope<E>, ProdromeError> {
     if parents.len() < 2 {
         return Err(ProdromeError::invalid(format!(
             "Woven.parents must name at least two parents (one parent is a Sealed), got {}",
@@ -552,64 +550,45 @@ pub fn mk_woven<P: Payload>(
 
 // --- the vocabulary ----------------------------------------------------------
 
-/// The database's constructors, name and declared field order: the envelopes
-/// and the six kinds whose fields are its own semantics.
-pub const EVENT_SIGNATURES: &[(&str, &[&str])] = &[
+/// The envelopes' constructors, name and declared field order: the database's
+/// own, whatever the schema.
+pub const ENVELOPE_SIGNATURES: &[(&str, &[&str])] = &[
     ("Sealed", &["prev", "event"]),
     ("Woven", &["parents", "event"]),
     ("Genesis", &["label", "nonce"]),
     ("Change", &["genesis", "deps", "event"]),
     ("Snapshot", &["genesis", "tips", "previous"]),
-    ("Created", &["todo", "at", "actor", "text", "note"]),
-    ("Completed", &["todo", "at", "actor", "note"]),
-    ("Cancelled", &["todo", "at", "actor", "note"]),
-    ("Reopened", &["todo", "at", "actor", "note"]),
-    ("Tended", &["todo", "at", "actor", "note"]),
-    ("SpecRevised", &["todo", "at", "actor", "spec", "note"]),
 ];
 
-/// The whole vocabulary a stored artifact may use: §7's terms (a spec can nest
-/// anywhere in a `SpecRevised` or a record) plus §4's own kinds plus the
-/// PAYLOAD's — its record kind, whose fields are `todo, at, actor` and then
-/// `P::FIELDS`, and the constructors those fields nest. `datetime` and
-/// `timedelta` are the grammar's own and need no entry.
+/// The whole vocabulary a stored artifact may use: the envelopes, then the
+/// schema's own ([`crate::todo::TodoVocabulary`] for the todo's). `datetime`
+/// and `timedelta` are the grammar's own and need no entry.
 ///
-/// STILL A WHITELIST, and the core's half of it wins: a payload that named its
-/// record `Created` would not shadow §4's, it would be unreachable.
-pub struct EventVocabulary<P: Payload> {
-    /// `todo, at, actor` then `P::FIELDS` — owned, because it is the one
-    /// signature in the grammar that is not a compile-time table.
-    record: Vec<&'static str>,
-    payload: PhantomData<P>,
+/// STILL A WHITELIST, and the envelopes win: a schema that named a kind
+/// `Change` would not shadow §3's, it would be unreachable.
+pub struct EventVocabulary<E: Schema> {
+    schema: E::Vocabulary,
 }
 
-impl<P: Payload> EventVocabulary<P> {
-    pub fn new() -> EventVocabulary<P> {
+impl<E: Schema> EventVocabulary<E> {
+    pub fn new() -> EventVocabulary<E> {
         EventVocabulary {
-            record: record_signature::<P>(),
-            payload: PhantomData,
+            schema: E::Vocabulary::default(),
         }
     }
 }
 
-impl<P: Payload> Default for EventVocabulary<P> {
-    fn default() -> EventVocabulary<P> {
+impl<E: Schema> Default for EventVocabulary<E> {
+    fn default() -> EventVocabulary<E> {
         EventVocabulary::new()
     }
 }
 
-impl<P: Payload> Vocabulary for EventVocabulary<P> {
+impl<E: Schema> Vocabulary for EventVocabulary<E> {
     fn signature(&self, name: &str) -> Option<Signature<'_>> {
-        if let Some(signature) = signatures().signature(name) {
-            return Some(signature);
-        }
-        if let Some(signature) = Table(EVENT_SIGNATURES).find(name) {
-            return Some(signature);
-        }
-        if name == P::KIND {
-            return Some(Signature::Fields(&self.record));
-        }
-        Table(P::VOCABULARY).find(name)
+        Table(ENVELOPE_SIGNATURES)
+            .find(name)
+            .or_else(|| self.schema.signature(name))
     }
 }
 
@@ -711,14 +690,14 @@ impl<P: Payload> Authored<P> {
     }
 }
 
-impl<P: Payload> Envelope<P> {
+impl<E: Schema> Envelope<E> {
     pub fn to_value(&self) -> Value {
         match self {
             Envelope::Sealed { prev, event } => Value::call(
                 "Sealed",
                 vec![
                     field("prev", text(prev.as_ref().map_or("", Hash::as_str))),
-                    field("event", event.to_value()),
+                    field("event", Schema::to_value(event)),
                 ],
             ),
             Envelope::Woven { parents, event } => Value::call(
@@ -727,7 +706,7 @@ impl<P: Payload> Envelope<P> {
                     field("parents", hashes_value(parents)),
                     field(
                         "event",
-                        event.as_ref().map_or(Value::None, TodoEvent::to_value),
+                        event.as_ref().map_or(Value::None, Schema::to_value),
                     ),
                 ],
             ),
@@ -738,19 +717,19 @@ impl<P: Payload> Envelope<P> {
     }
 
     /// A literal in, an envelope out, through every `mk_*` rule.
-    pub fn from_value(value: &Value) -> Result<Envelope<P>, ProdromeError> {
+    pub fn from_value(value: &Value) -> Result<Envelope<E>, ProdromeError> {
         let call = value
             .as_call()
             .ok_or_else(|| ProdromeError::invalid("an object must be a Sealed or a Woven"))?;
         match call.name.as_str() {
             "Sealed" => Ok(mk_sealed(
                 optional_hash(call, "prev")?,
-                event_from_value(required(call, "event")?)?,
+                E::from_value(required(call, "event")?)?,
             )),
             "Woven" => {
                 let event = match call.field("event") {
                     None | Some(Value::None) => None,
-                    Some(other) => Some(event_from_value(other)?),
+                    Some(other) => Some(E::from_value(other)?),
                 };
                 mk_woven(hashes(call, "parents")?, event)
             }
@@ -805,18 +784,18 @@ pub(crate) fn event_from_value<P: Payload>(value: &Value) -> Result<TodoEvent<P>
 
 /// `print_literal` of an event — what every fold that needs a deterministic
 /// tiebreak sorts by.
-pub fn canonical<P: Payload>(event: &TodoEvent<P>) -> String {
+pub fn canonical<E: Schema>(event: &E) -> String {
     print_literal(&event.to_value())
 }
 
 /// An event's name apart from where it was written; never stored.
-pub fn event_id<P: Payload>(event: &TodoEvent<P>) -> Hash {
+pub fn event_id<E: Schema>(event: &E) -> Hash {
     Hash::of_bytes(canonical(event).as_bytes())
 }
 
 /// The canonical print of an envelope. This is the object's BYTES: the name is
 /// the sha256 of exactly this, and the file holds exactly this.
-pub fn canonical_envelope<P: Payload>(envelope: &Envelope<P>) -> String {
+pub fn canonical_envelope<E: Schema>(envelope: &Envelope<E>) -> String {
     print_literal(&envelope.to_value())
 }
 
@@ -825,14 +804,14 @@ pub fn canonical_envelope<P: Payload>(envelope: &Envelope<P>) -> String {
 /// Verification hashes the STORED BYTES instead (`store::EventStore::load`),
 /// never a reprint: git hashes bytes and not semantics, so that a printer
 /// change cannot false-alarm the whole store as tampered.
-pub fn seal_hash<P: Payload>(envelope: &Envelope<P>) -> Hash {
+pub fn seal_hash<E: Schema>(envelope: &Envelope<E>) -> Hash {
     Hash::of_bytes(canonical_envelope(envelope).as_bytes())
 }
 
 /// Read one stored object's text into an envelope, through the closed
-/// vocabulary — the core's kinds and the payload's — and every `mk_*` rule.
-pub fn parse_envelope<P: Payload>(text: &str) -> Result<Envelope<P>, ProdromeError> {
-    let vocabulary = EventVocabulary::<P>::new();
+/// vocabulary — the envelopes and the schema's — and every `mk_*` rule.
+pub fn parse_envelope<E: Schema>(text: &str) -> Result<Envelope<E>, ProdromeError> {
+    let vocabulary = EventVocabulary::<E>::new();
     Envelope::from_value(&parse_literal(text, &vocabulary)?)
 }
 
@@ -842,9 +821,9 @@ pub fn parse_envelope<P: Payload>(text: &str) -> Result<Envelope<P>, ProdromeErr
 /// print instead (a fold's input, a binding's argument), and it exists here
 /// rather than at those call sites because the vocabulary and the smart
 /// constructors are this module's, not theirs.
-pub fn parse_event<P: Payload>(text: &str) -> Result<TodoEvent<P>, ProdromeError> {
-    let vocabulary = EventVocabulary::<P>::new();
-    event_from_value(&parse_literal(text, &vocabulary)?)
+pub fn parse_event<E: Schema>(text: &str) -> Result<E, ProdromeError> {
+    let vocabulary = EventVocabulary::<E>::new();
+    E::from_value(&parse_literal(text, &vocabulary)?)
 }
 
 #[cfg(test)]
@@ -881,17 +860,17 @@ mod tests {
     fn a_woven_sorts_its_parents_and_refuses_fewer_than_two() {
         let a = Hash::new("a".repeat(64)).expect("hex");
         let b = Hash::new("b".repeat(64)).expect("hex");
-        assert!(mk_woven::<Todo>(vec![a.clone()], None).is_err());
-        assert!(mk_woven::<Todo>(vec![a.clone(), a.clone()], None).is_err());
-        let woven =
-            mk_woven::<Todo>(vec![b.clone(), a.clone()], None).expect("two distinct parents");
+        assert!(mk_woven::<TodoEvent<Todo>>(vec![a.clone()], None).is_err());
+        assert!(mk_woven::<TodoEvent<Todo>>(vec![a.clone(), a.clone()], None).is_err());
+        let woven = mk_woven::<TodoEvent<Todo>>(vec![b.clone(), a.clone()], None)
+            .expect("two distinct parents");
         assert_eq!(parents_of(&woven), vec![a, b]);
         assert!(woven.event().is_none());
     }
 
     #[test]
     fn a_spec_must_be_one_of_the_terms() {
-        let vocabulary = EventVocabulary::<Todo>::new();
+        let vocabulary = EventVocabulary::<TodoEvent<Todo>>::new();
         let flat = parse_literal("Flat(value=0.5)", &vocabulary).expect("parses");
         assert!(Term::from_value(&flat).is_ok());
         let not_a_term =

@@ -10,14 +10,14 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::vectors::{boolean, each, field, integer, moment_at, strings, text_at, vectors};
-use prodrome::event::{parse_event, Actor, Hash};
+use prodrome::event::{parse_event, Actor, Hash, TodoEvent};
 use prodrome::literal::Value;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::store::EventStore;
 use prodrome::view;
 
-type Store = EventStore<Todo, Untrusted>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 
 fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
@@ -129,7 +129,7 @@ fn every_case_writes_its_objects_and_reads_its_prices() {
             let todo = text_at(price, "todo");
             let row = rows
                 .iter()
-                .find(|row| row.genesis == genesis && row.todo.as_str() == todo)
+                .find(|row| row.genesis == genesis && row.key.as_str() == todo)
                 .unwrap_or_else(|| panic!("{title}: no row for {todo}"));
             assert_eq!(row.state(), text_at(price, "state"), "{title}: {todo}");
             match field(price, "value") {

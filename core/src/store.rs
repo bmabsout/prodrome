@@ -33,15 +33,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::change::mk_change;
 use crate::dag::{decode, tips_among, Dag, Finding};
-use crate::event::{canonical, mk_woven, parents_of, seal_hash, Envelope, Hash, TodoEvent};
+use crate::event::{canonical, mk_woven, parents_of, seal_hash, Envelope, Hash};
 use crate::genesis::mk_genesis;
 use crate::literal::ProdromeError;
-use crate::payload::Payload;
 use crate::policy::{Policy, Untrusted};
 use crate::registers::{deps_for, fold};
+use crate::schema::Schema;
 use crate::snapshot::mk_snapshot;
 
-/// A chain rooted at `root`, read under one host [`Policy`] (§5).
+/// A chain rooted at `root`, of the schema `E`, read under one host
+/// [`Policy`] (§5).
 ///
 /// THE STORE HOLDS THE POLICY, so callers do not each have to remember it and
 /// `verify` has the one it is asked about. The type parameter defaults to
@@ -49,14 +50,14 @@ use crate::snapshot::mk_snapshot;
 /// at all is a store nobody has configured — and `Untrusted::none()`, which
 /// stands behind every writer, is the only honest thing for that to mean.
 #[derive(Debug, Clone)]
-pub struct EventStore<P, Pol = Untrusted> {
+pub struct EventStore<E, Pol = Untrusted> {
     root: PathBuf,
     policy: Pol,
-    /// WHICH RECORD SHAPE THIS STORE HOLDS. A store is parsed against one
-    /// closed vocabulary (§2), and that vocabulary is the core's kinds plus
-    /// this payload's — so the payload is part of what a store IS, not an
-    /// argument to each read.
-    payload: PhantomData<P>,
+    /// WHICH SCHEMA THIS STORE HOLDS. A store is parsed against one closed
+    /// vocabulary (§2), the envelopes' and this schema's, so the schema is
+    /// part of what a store IS, not an argument to each read. No object
+    /// carries it.
+    schema: PhantomData<E>,
     /// THE PARENT INDEX: every object this handle (or a clone of it) has
     /// verified, by name, with the parents it names. Deriving the tips reads
     /// every object's parents, and loading a thousand objects to learn that is
@@ -84,12 +85,12 @@ struct Listing {
     garbage: Vec<String>,
 }
 
-impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
-    pub fn new(root: impl Into<PathBuf>, policy: Pol) -> EventStore<P, Pol> {
+impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
+    pub fn new(root: impl Into<PathBuf>, policy: Pol) -> EventStore<E, Pol> {
         EventStore {
             root: root.into(),
             policy,
-            payload: PhantomData,
+            schema: PhantomData,
             parents: Arc::default(),
             genesis: None,
         }
@@ -102,7 +103,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         self.parents.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn remember(&self, digest: &Hash, object: &Envelope<P>) {
+    fn remember(&self, digest: &Hash, object: &Envelope<E>) {
         self.index()
             .entry(digest.clone())
             .or_insert_with(|| parents_of(object));
@@ -193,7 +194,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
 
     /// Every object the store holds, each rehashed, refusing the first file
     /// that is not an object.
-    pub fn dag(&self) -> Result<Dag<P>, ProdromeError> {
+    pub fn dag(&self) -> Result<Dag<E>, ProdromeError> {
         let dag = self.read(&self.names()?).whole()?;
         for (name, object) in dag.objects() {
             self.remember(name, object);
@@ -201,7 +202,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         Ok(dag)
     }
 
-    fn read(&self, names: &[Hash]) -> Dag<P> {
+    fn read(&self, names: &[Hash]) -> Dag<E> {
         Dag::from_prints(names.iter().map(|name| (name.clone(), self.raw(name))))
     }
 
@@ -258,14 +259,14 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
 
     /// This handle, writing into the prodrome `genesis` begins; without one
     /// a handle writes into the store's only genesis.
-    pub fn in_genesis(self, genesis: Hash) -> EventStore<P, Pol> {
+    pub fn in_genesis(self, genesis: Hash) -> EventStore<E, Pol> {
         EventStore {
             genesis: Some(genesis),
             ..self
         }
     }
 
-    fn genesis(&self, dag: &Dag<P>) -> Result<Hash, ProdromeError> {
+    fn genesis(&self, dag: &Dag<E>) -> Result<Hash, ProdromeError> {
         let geneses = dag.geneses();
         let mut sole = geneses.iter();
         match (&self.genesis, sole.next(), sole.next()) {
@@ -301,8 +302,10 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
 
     /// Write `event` as a `Change` over the frontiers of the registers it
     /// writes, or, when the writer's prodrome already holds an object whose
-    /// event prints the same, write nothing and answer the first such.
-    pub fn append(&self, event: TodoEvent<P>) -> Result<Hash, ProdromeError> {
+    /// event prints the same, write nothing and answer the first such. A
+    /// write that would take an inflationary register below the reading it
+    /// supersedes is refused, and nothing is written.
+    pub fn append(&self, event: E) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         let dag = self.dag()?;
         let genesis = self.genesis(&dag)?;
@@ -315,7 +318,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         if let Some(node) = held {
             return Ok(node.name.clone());
         }
-        let deps = deps_for(&fold(&nodes), &prodrome, &event);
+        let deps = deps_for(&fold(&nodes), &prodrome, &event)?;
         self.write(&Envelope::Change(mk_change(genesis, deps, event)?))
     }
 
@@ -347,11 +350,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// who/when/why: a merge asserts structure, not a fact about a todo. A
     /// caller that wants the act attributed passes an ordinary `event`, and
     /// the object is a write and a join at once.
-    pub fn merge(
-        &self,
-        parents: Option<&[Hash]>,
-        event: Option<TodoEvent<P>>,
-    ) -> Result<Hash, ProdromeError> {
+    pub fn merge(&self, parents: Option<&[Hash]>, event: Option<E>) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
@@ -368,7 +367,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// already contain changes nothing; a tip that contains every tip we hold
     /// names them all beneath it, so they stop being tips (a FAST-FORWARD);
     /// anything else is a second tip. Answers `digest`.
-    pub fn adopt(&self, source: &EventStore<P, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
+    pub fn adopt(&self, source: &EventStore<E, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         self.copy_in(source, digest)?;
         Ok(digest.clone())
@@ -419,7 +418,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// replica is not trusted for being a replica. An object we already hold
     /// ends that branch of the walk: this store is closed under parents, so
     /// everything above one of ours is already here.
-    fn copy_in(&self, source: &EventStore<P, Pol>, digest: &Hash) -> Result<(), ProdromeError> {
+    fn copy_in(&self, source: &EventStore<E, Pol>, digest: &Hash) -> Result<(), ProdromeError> {
         self.copy_in_from(digest, |name| fs::read(source.object_path(name)).ok())
     }
 
@@ -468,7 +467,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
                     name.as_str()
                 )));
             };
-            let object = decode::<P>(&name, &raw).map_err(|why| why.refusal(&name))?;
+            let object = decode::<E>(&name, &raw).map_err(|why| why.refusal(&name))?;
             pending.push(Visit::Leave(name, raw));
             let named = parents_of(&object)
                 .into_iter()
@@ -527,7 +526,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// One object onto disk, content-addressed and idempotent: identical bytes
     /// at the target path are a no-op; DIFFERENT bytes at the same name are a
     /// sha256 collision or a corrupt store, and we stop rather than clobber.
-    fn write(&self, object: &Envelope<P>) -> Result<Hash, ProdromeError> {
+    fn write(&self, object: &Envelope<E>) -> Result<Hash, ProdromeError> {
         let text = crate::event::canonical_envelope(object);
         let digest = seal_hash(object);
         let objects = self.objects_dir();
@@ -552,7 +551,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// filename, then parse. Deliberately NOT a reparse→reprint→rehash — git
     /// hashes bytes and not semantics, so that a future printer change cannot
     /// false-alarm the whole store as tampered.
-    pub fn load(&self, digest: &Hash) -> Result<Envelope<P>, ProdromeError> {
+    pub fn load(&self, digest: &Hash) -> Result<Envelope<E>, ProdromeError> {
         let object = decode(digest, &self.raw(digest)?).map_err(|why| why.refusal(digest))?;
         self.remember(digest, &object);
         Ok(object)
@@ -643,7 +642,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     }
 
     /// The store's events, in the linearisation's order.
-    pub fn events(&self) -> Result<Vec<TodoEvent<P>>, ProdromeError> {
+    pub fn events(&self) -> Result<Vec<E>, ProdromeError> {
         Ok(self
             .dag()?
             .nodes()?
@@ -730,15 +729,15 @@ fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
 mod tests {
     use super::*;
     use crate::change::Change;
-    use crate::event::{mk_completed, mk_created, mk_reopened, mk_sealed, Actor};
+    use crate::event::{mk_completed, mk_created, mk_reopened, mk_sealed, Actor, TodoEvent};
     use crate::literal::Datetime;
     use crate::reference::Todo;
     use proptest::prelude::*;
 
-    /// The store these tests drive. The payload is the reference one because
-    /// a store has to hold SOME record shape; nothing below reads a field of
-    /// it.
-    type Store = EventStore<Todo>;
+    /// The store these tests drive. The schema is the todo one, with the
+    /// reference payload, because a store has to hold SOME schema; nothing
+    /// below reads a field of a record.
+    type Store = EventStore<TodoEvent<Todo>>;
 
     fn at(day: u32) -> Datetime {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
@@ -784,7 +783,7 @@ mod tests {
         store.write(&object).expect("writes")
     }
 
-    fn change(store: &Store, name: &Hash) -> Change<Todo> {
+    fn change(store: &Store, name: &Hash) -> Change<TodoEvent<Todo>> {
         match store.load(name).expect("loads") {
             Envelope::Change(change) => change,
             other => panic!("{} is not a change", other.name()),
@@ -1255,7 +1254,7 @@ mod tests {
                 );
             }
             let day = u32::try_from(crash).expect("a few days") + 1;
-            let next: Envelope<Todo> = mk_sealed(
+            let next: Envelope<TodoEvent<Todo>> = mk_sealed(
                 written.last().cloned(),
                 mk_reopened("alpha", at(day), "bassel", "").expect("valid"),
             );
