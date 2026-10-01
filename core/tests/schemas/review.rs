@@ -39,7 +39,7 @@ impl Order for Phase {
 impl Inflationary for Phase {}
 
 impl Phase {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Phase::Draft => "draft",
             Phase::Review => "review",
@@ -73,6 +73,12 @@ impl Pr {
                 "Pr must match ^[a-z0-9-]+$, got {text:?}"
             )))
         }
+    }
+}
+
+impl AsRef<str> for Pr {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }
 

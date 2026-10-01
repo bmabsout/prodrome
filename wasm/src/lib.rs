@@ -53,10 +53,62 @@
 //! TypeScript would have got subtly wrong.
 
 pub mod exports;
+// Some of the boundary's shapes are the reference module's alone.
+#[cfg_attr(not(feature = "reference"), allow(dead_code))]
 mod json;
+#[cfg(feature = "reference")]
 mod reference;
 #[cfg(test)]
+mod review;
+#[cfg(all(test, feature = "reference"))]
 mod snapshot;
+#[cfg_attr(not(feature = "reference"), allow(dead_code))]
 mod wire;
 
+#[cfg(feature = "reference")]
 pub use reference::*;
+
+/// A schema's exports, in ONE module beside every other schema's: a JS class
+/// named `$name` for the schema `$schema`, which must implement
+/// [`exports::Json`]. The invoking crate depends on `wasm-bindgen` at this
+/// crate's pinned version, which is the version of the `wasm-bindgen` CLI it
+/// builds its module with anyway.
+///
+/// ```text
+/// prodrome_wasm::schema!(Reviews = my_host::Review);
+/// ```
+///
+/// A macro because `#[wasm_bindgen]` exports no generic item: each method is
+/// one line, a call of the generic function in [`exports`] of the same name,
+/// so a schema costs its module the monomorphised functions and nothing else.
+///
+/// `new Reviews(objects)` reads the objects once (`[{hash, text}]`, see
+/// [`exports::Replica::of`]); every method asks its question of what was read.
+/// A refusal is the JS exception, never a panic. Call `free()` when done, or
+/// let the finaliser.
+#[macro_export]
+macro_rules! schema {
+    ($name:ident = $schema:ty) => {
+        #[doc = concat!("The exports of the schema `", stringify!($schema), "`.")]
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub struct $name($crate::exports::Replica<$schema>);
+
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        impl $name {
+            /// The objects, `[{hash, text}]`, read once at this schema.
+            #[wasm_bindgen(constructor)]
+            pub fn new(objects: &str) -> Result<$name, wasm_bindgen::JsError> {
+                $crate::exports::Replica::of(objects)
+                    .map($name)
+                    .map_err(|refusal| wasm_bindgen::JsError::new(&refusal))
+            }
+
+            /// §3: do these bytes hash to these names, form one DAG, and end
+            /// at which tips. Every row names its entity under the schema's
+            /// key.
+            pub fn verify(&self) -> Result<String, wasm_bindgen::JsError> {
+                $crate::exports::thrown($crate::exports::verify(&self.0))
+            }
+        }
+    };
+}
