@@ -22,13 +22,15 @@
 //! A schema crosses the boundary by [`Json`]: the field its events
 //! name an entity by, each register's name, and each value's JSON, a function
 //! of the value so that a reading's JSON is a function of the reading. A
-//! schema with a valuation adds [`PricedJson`], its reading's JSON.
+//! schema with a row adds [`RowJson`], its reading's JSON; `priced`, its
+//! `entries` and `prices`, asks for that row and the schema's
+//! [`prodrome::schema::History`] and [`prodrome::schema::Bind`] too.
 //! The todo schema has both, at any payload.
 //!
 //! A MODULE is a `cdylib` crate that depends on this one, on
 //! `prodrome-core`, and on `wasm-bindgen` at the version this crate pins
 //! (the version of the CLI it runs anyway); implements `Json` for each of
-//! its schemas (and `PricedJson` for each with a `Row`); and says, once
+//! its schemas (and `RowJson` for each `priced` one); and says, once
 //! per schema, `prodrome_wasm_exports::schema!(Reviews = Review);` or
 //! `prodrome_wasm_exports::schema!(Todos = TodoEvent<Record>, priced);`. It
 //! builds for `wasm32-unknown-unknown` and runs `wasm-bindgen` over the
@@ -89,7 +91,7 @@ pub trait Json: Schema<Key: AsRef<str>> {
 
 /// What a schema with a [`schema::Row`] says more to cross this boundary: its
 /// row's reading, as JSON.
-pub trait PricedJson: Json + schema::Row {
+pub trait RowJson: Json + schema::Row {
     /// A function of the reading alone, as [`Json::value`] is of a value.
     fn reading_json(reading: &Self::Reading) -> Value;
 }
@@ -115,7 +117,7 @@ impl<P: Payload> Json for TodoEvent<P> {
 /// A todo's reading: its candidate outcomes as the environment spells one
 /// (`null` open, a conflict as the array of its candidates), and the names
 /// of its candidate records.
-impl<P: Payload> PricedJson for TodoEvent<P> {
+impl<P: Payload> RowJson for TodoEvent<P> {
     fn reading_json(reading: &todo::Reading) -> Value {
         json!({
             "outcome": json_reading(&reading.outcome),
@@ -127,7 +129,7 @@ impl<P: Payload> PricedJson for TodoEvent<P> {
 /// A schema's exports, in ONE module beside every other schema's: a JS class
 /// named `$name` for the schema `$schema`, which must implement
 /// [`Json`], and where `priced` is said, also [`prodrome::schema::History`],
-/// [`prodrome::schema::Bind`] and [`PricedJson`]. The invoking
+/// [`prodrome::schema::Bind`] and [`RowJson`]. The invoking
 /// crate depends on `wasm-bindgen` at this
 /// crate's pinned version, which is the version of the `wasm-bindgen` CLI it
 /// builds its module with anyway.
@@ -670,7 +672,7 @@ fn moment<E: Schema>(read: &Read<'_, E>, at: Option<String>) -> Result<Datetime,
     read.moment(parse_moment("at", at)?)
 }
 
-fn json_entry<E: PricedJson>(entry: &Entry<E>) -> Value {
+fn json_entry<E: RowJson>(entry: &Entry<E>) -> Value {
     object(vec![
         ("genesis", json!(entry.genesis.as_ref().map(Hash::as_str))),
         (E::KEY, json!(entry.key.as_ref())),
@@ -711,7 +713,7 @@ fn json_entry<E: PricedJson>(entry: &Entry<E>) -> Value {
 /// its price (`value` a number, `"absent"` for `∅`, `null` where it does not
 /// link and `unlinked` says why), its conflicts by register, its function as
 /// its §2 print, and its stream.
-pub fn entries<E: PricedJson + History + Bind>(
+pub fn entries<E: RowJson + History + Bind>(
     replica: &Replica<E>,
     at: Option<String>,
     untrusted: &str,
