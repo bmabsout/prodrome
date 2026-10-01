@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::event::{Envelope, Hash};
-use crate::fold::{Frontier, Register};
+use crate::fold::{read, Product};
+use crate::literal::ProdromeError;
+use crate::policy::Everything;
 use crate::schema::Schema;
 
 /// The state the fold carries, compared by value.
@@ -195,36 +197,36 @@ pub fn since<'a, E: Schema>(state: &Folded<E>, nodes: &'a [Node<E>]) -> Vec<&'a 
 /// A change's deps: the latest writes among the frontiers of the registers
 /// `event` writes, read structurally — everything binds, at no moment. A
 /// write another of them descends from is superseded through it.
-pub fn deps_for<E: Schema>(state: &Folded<E>, genesis: &Genesis, event: &E) -> Vec<Hash> {
+///
+/// # Errors
+///
+/// The append's refusal, before any object exists: `event` writes an
+/// inflationary register below, or beside, the reading it supersedes
+/// ([`Product::grows`]).
+pub fn deps_for<E: Schema>(
+    state: &Folded<E>,
+    genesis: &Genesis,
+    event: &E,
+) -> Result<Vec<Hash>, ProdromeError> {
     let Some(stream) = state
         .prodromes
         .get(genesis)
         .and_then(|entities| entities.get(event.key()))
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
+    let registers = read(stream, None, &Everything);
+    registers.grows(event)?;
     let written: BTreeMap<&Hash, &Stamp<E>> = event
         .writes()
-        .flat_map(|register| frontier(stream, register).writes().to_vec())
-        .map(|stamp| (&stamp.name, stamp))
+        .flat_map(|register| registers.frontier(register).writes())
+        .map(|stamp| (&stamp.name, *stamp))
         .collect();
-    written
+    Ok(written
         .values()
         .filter(|stamp| !written.values().any(|later| later.descends(stamp)))
         .map(|stamp| stamp.name.clone())
-        .collect()
-}
-
-/// The frontier of one register over a whole stream: every write to it,
-/// joined.
-pub fn frontier<E: Schema>(stream: &[Stamp<E>], register: E::Register) -> Frontier<'_, E> {
-    let mut frontier = Frontier::default();
-    for stamp in stream {
-        if stamp.event.writes().any(|written| written == register) {
-            frontier.join(stamp);
-        }
-    }
-    frontier
+        .collect())
 }
 
 /// A set of small non-negative integers as a bitmap: set, test, union.

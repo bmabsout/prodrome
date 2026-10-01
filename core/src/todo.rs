@@ -8,7 +8,7 @@
 use std::marker::PhantomData;
 
 use crate::event::{event_from_value, Actor, TodoEvent, TodoId};
-use crate::fold::{Kind, Write};
+use crate::fold::{Discrete, Kind, RegisterType, Registers, Write};
 use crate::literal::{Datetime, ProdromeError, Signature, Table, Value, Vocabulary};
 use crate::payload::{record_signature, Payload};
 use crate::schema::Schema;
@@ -68,6 +68,8 @@ impl<P: Payload> Schema for TodoEvent<P> {
 
     const REGISTERS: &'static [Kind] = &[Kind::State, Kind::Spec, Kind::Content];
 
+    type Registers<'a> = Registers<'a, P>;
+
     fn to_value(&self) -> Value {
         TodoEvent::to_value(self)
     }
@@ -99,6 +101,48 @@ impl<P: Payload> Schema for TodoEvent<P> {
     /// is what a writer the policy does not stand behind is for.
     fn asks(&self) -> bool {
         !matches!(self, TodoEvent::Authored(_))
+    }
+}
+
+/// The state register: a todo's lifecycle, discrete.
+pub struct State;
+
+/// The spec register: a todo's authored price, discrete.
+pub struct Spec;
+
+/// The content register: a todo's record, discrete.
+pub struct Content;
+
+/// A discrete register's value is the WHOLE EVENT that wrote it, not the
+/// field it reads: two events that agree on a spec stay two candidates, as
+/// they always were.
+fn whole<P: Payload>(event: &TodoEvent<P>, kind: Kind) -> Option<Discrete<&TodoEvent<P>>> {
+    Schema::writes(event)
+        .any(|written| written == kind)
+        .then_some(Discrete(event))
+}
+
+impl<P: Payload> RegisterType<TodoEvent<P>> for State {
+    type Value<'e> = Discrete<&'e TodoEvent<P>>;
+
+    fn value(event: &TodoEvent<P>) -> Option<Discrete<&TodoEvent<P>>> {
+        whole(event, Kind::State)
+    }
+}
+
+impl<P: Payload> RegisterType<TodoEvent<P>> for Spec {
+    type Value<'e> = Discrete<&'e TodoEvent<P>>;
+
+    fn value(event: &TodoEvent<P>) -> Option<Discrete<&TodoEvent<P>>> {
+        whole(event, Kind::Spec)
+    }
+}
+
+impl<P: Payload> RegisterType<TodoEvent<P>> for Content {
+    type Value<'e> = Discrete<&'e TodoEvent<P>>;
+
+    fn value(event: &TodoEvent<P>) -> Option<Discrete<&TodoEvent<P>>> {
+        whole(event, Kind::Content)
     }
 }
 

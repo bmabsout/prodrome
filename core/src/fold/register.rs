@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use crate::fold::Inflationary;
+use crate::fold::{Inflationary, Order};
+use crate::schema::Schema;
 
 /// A join-semilattice: joining the same writes in any order is one value.
 pub trait Register: Default {
@@ -21,4 +22,16 @@ impl<T: Ord> Register for GrowSet<T> {
     fn join(&mut self, write: T) {
         self.insert(write);
     }
+}
+
+/// One register's type in a schema: its values under their order, and the
+/// value a write gives it.
+pub trait RegisterType<E: Schema> {
+    /// The register's values, under their order.
+    type Value<'e>: Order;
+
+    /// The value `event` writes to this register, `None` where it writes
+    /// none: the route, one register at a time. `Some` exactly for the events
+    /// whose [`Schema::writes`] names the register.
+    fn value(event: &E) -> Option<Self::Value<'_>>;
 }

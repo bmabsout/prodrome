@@ -17,6 +17,7 @@
 use std::fmt::Debug;
 
 use crate::event::Actor;
+use crate::fold::Product;
 use crate::literal::{Datetime, ProdromeError, Value, Vocabulary};
 
 /// A store's events and what they mean.
@@ -32,7 +33,11 @@ use crate::literal::{Datetime, ProdromeError, Value, Vocabulary};
 /// - [`Schema::key`], [`Schema::at`] and [`Schema::actor`] are what every
 ///   event says: about what, when its writer thought it was (data, never an
 ///   order), and who.
-/// - [`Schema::writes`] is the ROUTE's names: the registers whose frontier
+/// - [`Schema::Registers`] is an entity's REGISTERS, a [`Product`] of
+///   semilattices: its `join` is the route from an event to the writes it
+///   makes, each register a [`crate::fold::Frontier`] or an accumulating set,
+///   read under its [`crate::fold::RegisterType`].
+/// - [`Schema::writes`] is the route's NAMES: the registers whose frontier
 ///   this event joins and whose writes it therefore supersedes (§6). A register
 ///   that only accumulates, such as the todo's tendings, is not among them.
 /// - [`Schema::asks`] is the policy's question: an event it answers `false`
@@ -50,6 +55,9 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     /// Every register a write supersedes in, in the order a reading lists
     /// them.
     const REGISTERS: &'static [Self::Register];
+
+    /// An entity's registers: a product of semilattices.
+    type Registers<'a>: Product<'a, Self>;
 
     /// The event as a literal: every field, in declared order.
     fn to_value(&self) -> Value;

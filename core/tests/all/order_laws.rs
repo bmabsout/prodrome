@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use prodrome::event::{mk_completed, Hash, TodoEvent, TodoId};
-use prodrome::fold::{grows, maximal, Discrete, Frontier, Inflationary, Order, Registers, Total};
+use prodrome::fold::{grows, maximal, Discrete, Frontier, Inflationary, Order, Total};
 use prodrome::literal::Datetime;
 use prodrome::policy::Everything;
 use prodrome::reference::Todo;
@@ -151,7 +151,7 @@ fn frontier(folded: &Folded<TodoEvent<Todo>>) -> Frontier<'_, TodoEvent<Todo>> {
         .prodromes()
         .get(&None)
         .and_then(|todos| todos.get(&todo))
-        .map(|stream| Registers::read(stream, None, &Everything).state)
+        .map(|stream| prodrome::fold::read(stream, None, &Everything).state)
         .unwrap_or_default()
 }
 

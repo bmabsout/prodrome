@@ -497,7 +497,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
         let mut timeline = Vec::new();
         let mut before = Candidates::from([None]);
         for at in instants {
-            let reading = fold::Registers::read(stream, Some(at), &policy).outcomes();
+            let reading = fold::read(stream, Some(at), &policy).outcomes();
             if reading != before {
                 timeline.push(json!({ "at": iso(at), "binding": json_reading(&reading) }));
                 before = reading;
@@ -558,8 +558,7 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
         state
             .entities()
             .filter_map(|(todo, stream)| {
-                let found =
-                    fold::Registers::read(stream, moment.map(instant_of), &policy).conflicts();
+                let found = fold::read(stream, moment.map(instant_of), &policy).conflicts();
                 (!found.is_empty()).then(|| {
                     let by_kind = found
                         .into_iter()

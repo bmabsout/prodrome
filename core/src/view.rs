@@ -225,7 +225,7 @@ pub fn entries<P: Payload>(
     for (genesis, prodrome) in state.prodromes() {
         let confirmed: Vec<(&TodoId, Registers<P>)> = prodrome
             .iter()
-            .map(|(todo, stream)| (todo, Registers::read(stream, Some(now), policy)))
+            .map(|(todo, stream)| (todo, fold::read(stream, Some(now), policy)))
             .collect();
         let mut env = Env::new();
         for (todo, registers) in &confirmed {
@@ -240,7 +240,7 @@ pub fn entries<P: Payload>(
             let claimed = if stream.iter().all(|s| policy.standing(&s.event).binds()) {
                 outcome.clone()
             } else {
-                Registers::read(stream, Some(now), &Everything).outcomes()
+                fold::read(stream, Some(now), &Everything).outcomes()
             };
             let disputed = kinds(&claimed) != kinds(&outcome);
             let provisional_content = registers
