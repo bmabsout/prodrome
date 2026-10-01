@@ -97,8 +97,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
     /// Law 36 — A CHANGE RESTS ON WHAT ITS WRITER SAW. Each append descends
-    /// from every write to its entity the writer held, in any register:
-    /// happens-before is what the deps say, for one writer and across two.
+    /// from every write to its entity the writer held, in any register, and
+    /// from no other: happens-before is what the deps say, for one writer
+    /// and across two.
     /// So in the stream, a writer's own writes to one entity come in the
     /// order it wrote them, whatever their instants and registers, and a
     /// write that reached a writer before it wrote comes before its write.
@@ -115,7 +116,7 @@ proptest! {
         // Each side's writes, in the order it wrote them, with what of the
         // entity it held when it wrote.
         let mut written: [Vec<(Event, Hash)>; 2] = [Vec::new(), Vec::new()];
-        let mut seen: Vec<(Hash, BTreeSet<Hash>)> = Vec::new();
+        let mut seen: Vec<(Event, Hash, BTreeSet<Hash>)> = Vec::new();
         for (index, act) in acts.iter().enumerate() {
             match act {
                 Act::Append(side, draft, at) => {
@@ -134,8 +135,8 @@ proptest! {
                             "{:?} rests on {:?}, which its writer held", name, earlier
                         );
                     }
-                    written[*side].push((event, name.clone()));
-                    seen.push((name, held));
+                    written[*side].push((event.clone(), name.clone()));
+                    seen.push((event, name, held));
                 }
                 Act::Sync(from) => {
                     sync(&replicas[*from], &replicas[1 - from]).expect("syncs");
@@ -165,9 +166,13 @@ proptest! {
                 }
             }
         }
-        for (name, held) in &seen {
-            for earlier in held {
-                prop_assert!(state.descends(name, earlier));
+        for (event, name, held) in &seen {
+            for other in stream(&state, event) {
+                prop_assert_eq!(
+                    state.descends(name, &other.name),
+                    held.contains(&other.name),
+                    "{:?} descends from {:?} exactly when its writer held it", name, other.name
+                );
             }
         }
         for (_, stream) in state.entities() {

@@ -385,8 +385,8 @@ proptest! {
 
     /// Law 29 — A RE-PROPOSAL IS RECOGNISED. Rejected, a proposal leaves the
     /// staging store and a receipt keeps its name and `event_id`. Proposed
-    /// again over the same frontier it is the same object; over a frontier the
-    /// base moved, a twin with the same `event_id`.
+    /// again over the same heads it is the same object; over heads the base
+    /// moved, a twin with the same `event_id`.
     #[test]
     fn reproposal_is_recognised(
         shared in a_log(),
