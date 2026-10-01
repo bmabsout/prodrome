@@ -15,7 +15,7 @@ use prodrome::dag::{Dag, Finding};
 use prodrome::event::{
     canonical, canonical_envelope, event_id, seal_hash, Actor, Envelope, Hash, TodoEvent, TodoId,
 };
-use prodrome::fold::{Kind, Registers, Write};
+use prodrome::fold::{Kind, Product, Write};
 use prodrome::genesis::mk_genesis;
 use prodrome::policy::{Everything, Untrusted};
 use prodrome::reference::Todo;
@@ -25,7 +25,7 @@ use prodrome::view;
 use proptest::prelude::*;
 
 type Event = TodoEvent<Todo>;
-type Store = EventStore<Todo, Untrusted>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 
 fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
@@ -51,7 +51,7 @@ impl Scratch {
     /// so that two stores of one label are one prodrome.
     fn store(&self, name: &str, label: &str) -> Store {
         let store = Store::new(self.0.join(name), roster());
-        let genesis: Envelope<Todo> =
+        let genesis: Envelope<TodoEvent<Todo>> =
             Envelope::Genesis(mk_genesis(label, &"0".repeat(32)).expect("a genesis"));
         let digest = seal_hash(&genesis);
         let print = canonical_envelope(&genesis);
@@ -89,7 +89,7 @@ fn append(store: &Store, events: &[Event]) -> Vec<Hash> {
         .collect()
 }
 
-fn dag(store: &Store) -> Dag<Todo> {
+fn dag(store: &Store) -> Dag<TodoEvent<Todo>> {
     store.dag().expect("reads")
 }
 
@@ -202,10 +202,10 @@ proptest! {
         prop_assert_eq!(names(&store), held);
         let state = fold(&dag(&store).nodes().expect("reads"));
         let (_, stream) = state
-            .todos()
+            .entities()
             .find(|(todo, _)| *todo == change.event.todo())
             .expect("the todo");
-        let claimed = Registers::read(stream, None, &Everything);
+        let claimed = prodrome::fold::read(stream, None, &Everything);
         prop_assert!(
             [Kind::State, Kind::Spec].iter().all(|kind| !claimed.frontier(*kind).names().contains(&p)),
             "the rejected proposal is not back in the claimed reading"
@@ -275,7 +275,7 @@ proptest! {
         let t = moment(when);
         let mut rows = view::entries(&nodes(&a), t, &roster()).expect("folds");
         rows.extend(view::entries(&nodes(&b), t, &roster()).expect("folds"));
-        rows.sort_by(|x, y| (&x.genesis, &x.todo).cmp(&(&y.genesis, &y.todo)));
+        rows.sort_by(|x, y| (&x.genesis, &x.key).cmp(&(&y.genesis, &y.key)));
         prop_assert_eq!(view::entries(&nodes(&united), t, &roster()).expect("folds"), rows);
 
         prop_assert!(united.append(event.clone()).is_err(), "a writer names its genesis");

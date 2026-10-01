@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use prodrome::change::mk_change;
 use prodrome::event::{
     canonical, canonical_envelope, event_id, parents_of, parse_envelope, seal_hash, Actor,
-    Envelope, Hash, TodoEvent, EVENT_SIGNATURES,
+    Envelope, Hash, TodoEvent, ENVELOPE_SIGNATURES,
 };
 use prodrome::genesis::mk_genesis;
 use prodrome::payload::Payload;
@@ -22,6 +22,7 @@ use prodrome::policy::{Policy, Untrusted};
 use prodrome::reference::Todo;
 use prodrome::snapshot::mk_snapshot;
 use prodrome::term::schema::signatures;
+use prodrome::todo::TODO_SIGNATURES;
 use proptest::prelude::*;
 
 fn roster() -> Untrusted {
@@ -37,7 +38,7 @@ fn every_stored_object_is_a_typed_envelope_that_prints_back() {
     assert!(corpus.len() > 5, "a corpus, not a single object");
     for (name, envelope) in &corpus {
         let text = canonical_envelope(envelope);
-        let parsed = parse_envelope::<Todo>(&text)
+        let parsed = parse_envelope::<TodoEvent<Todo>>(&text)
             .unwrap_or_else(|e| panic!("object {}: {e}", name.as_str()));
         assert_eq!(&parsed, envelope, "object {}", name.as_str());
         assert_eq!(
@@ -117,7 +118,11 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
     }
     for kind in &kinds {
         assert!(
-            EVENT_SIGNATURES.iter().any(|(name, _)| name == kind) || *kind == Todo::KIND,
+            ENVELOPE_SIGNATURES
+                .iter()
+                .chain(TODO_SIGNATURES)
+                .any(|(name, _)| name == kind)
+                || *kind == Todo::KIND,
             "{kind} is outside SPEC §4"
         );
     }
@@ -158,7 +163,7 @@ fn a_name_outside_spec_4_is_refused_at_the_envelope() {
         "Snapshot(genesis='', tips=(), previous='')",
     ] {
         assert!(
-            parse_envelope::<Todo>(text).is_err(),
+            parse_envelope::<TodoEvent<Todo>>(text).is_err(),
             "must refuse {text:?}"
         );
     }
@@ -172,8 +177,9 @@ fn the_vocabulary_is_exactly_the_spec_s() {
     let mut names: Vec<&str> = signatures()
         .names()
         .chain(
-            EVENT_SIGNATURES
+            ENVELOPE_SIGNATURES
                 .iter()
+                .chain(TODO_SIGNATURES)
                 .chain(Todo::VOCABULARY.iter())
                 .map(|(name, _)| *name),
         )
@@ -229,7 +235,7 @@ fn name(byte: char) -> Hash {
 /// `previous`.
 #[test]
 fn the_new_objects_print_as_declared() {
-    let genesis: Envelope<Todo> =
+    let genesis: Envelope<TodoEvent<Todo>> =
         Envelope::Genesis(mk_genesis("suzatary", &"9f".repeat(16)).expect("a genesis"));
     assert_eq!(
         canonical_envelope(&genesis),
@@ -255,7 +261,7 @@ fn the_new_objects_print_as_declared() {
     assert_eq!(parents_of(&change), vec![name('a'), name('b')]);
     assert_eq!(change.event(), Some(&event));
 
-    let snapshot: Envelope<Todo> = Envelope::Snapshot(
+    let snapshot: Envelope<TodoEvent<Todo>> = Envelope::Snapshot(
         mk_snapshot(name('0'), vec![name('c'), name('a')], None).expect("a snapshot"),
     );
     assert_eq!(
@@ -284,7 +290,7 @@ fn the_new_constructors_refuse_what_section_3_forbids() {
 #[test]
 fn a_snapshot_rests_on_its_tips_and_its_previous() {
     let on = |previous| {
-        parents_of::<Todo>(&Envelope::Snapshot(
+        parents_of::<TodoEvent<Todo>>(&Envelope::Snapshot(
             mk_snapshot(name('0'), vec![name('b'), name('a')], previous).expect("a snapshot"),
         ))
     };
@@ -314,7 +320,7 @@ fn some_names(size: std::ops::Range<usize>) -> impl Strategy<Value = Vec<Hash>> 
     prop::collection::btree_set(a_name(), size).prop_map(|names| names.into_iter().rev().collect())
 }
 
-fn a_new_object() -> impl Strategy<Value = Envelope<Todo>> {
+fn a_new_object() -> impl Strategy<Value = Envelope<TodoEvent<Todo>>> {
     let events = common::events();
     prop_oneof![
         (".{0,12}", "[0-9a-f]{32}").prop_map(|(label, nonce)| Envelope::Genesis(
@@ -338,7 +344,7 @@ proptest! {
     #[test]
     fn a_new_object_prints_and_parses_back(object in a_new_object()) {
         let text = canonical_envelope(&object);
-        let parsed = parse_envelope::<Todo>(&text).expect("a canonical print parses");
+        let parsed = parse_envelope::<TodoEvent<Todo>>(&text).expect("a canonical print parses");
         prop_assert_eq!(&parsed, &object);
         prop_assert_eq!(canonical_envelope(&parsed), text);
         prop_assert_eq!(seal_hash(&parsed), seal_hash(&object));

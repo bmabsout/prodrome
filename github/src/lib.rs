@@ -413,14 +413,14 @@ fn record(issue: &Issue, at: Datetime, spec: Option<Term>) -> Result<TodoEvent<T
 
 /// What the store already says, as far as a delivery needs to know.
 struct Known<'a> {
-    dag: &'a Dag<Todo>,
+    dag: &'a Dag<TodoEvent<Todo>>,
     events: Vec<TodoEvent<Todo>>,
-    state: Folded<Todo>,
+    state: Folded<TodoEvent<Todo>>,
     genesis: Genesis,
 }
 
 impl<'a> Known<'a> {
-    fn of(dag: &'a Dag<Todo>) -> Result<Known<'a>, Error> {
+    fn of(dag: &'a Dag<TodoEvent<Todo>>) -> Result<Known<'a>, Error> {
         let nodes = dag.nodes()?;
         Ok(Known {
             dag,
@@ -673,7 +673,7 @@ fn proposed(
         return Ok(Vec::new());
     }
     let draft = mk_spec_revised(&todo, issue.updated_at, BOT, spec.clone(), &note)?;
-    let deps = registers::deps_for(&known.state, &known.genesis, &draft);
+    let deps = registers::deps_for(&known.state, &known.genesis, &draft)?;
     let at = known
         .dag
         .closure(deps)
@@ -706,7 +706,7 @@ fn rationale_of(reply: &str) -> String {
 pub fn plan(
     delivery: &Delivery,
     proposal: Option<&str>,
-    dag: &Dag<Todo>,
+    dag: &Dag<TodoEvent<Todo>>,
 ) -> Result<Result<Vec<TodoEvent<Todo>>, Skip>, Error> {
     meant(delivery, proposal, &Known::of(dag)?)
 }

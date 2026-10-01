@@ -37,7 +37,7 @@ use command::{Cli, Command, Price, Stamp};
 
 /// The store this binary reads and writes: the reference payload, under the
 /// reference policy.
-pub type Store = EventStore<Todo, Untrusted>;
+pub type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 
 /// A refusal, as a value. The three the core has, plus the one a command line
 /// adds: an argument that means nothing.
@@ -126,7 +126,7 @@ fn actor_of(stamp: &Stamp) -> Result<String, Error> {
 pub struct Reading {
     pub at: Datetime,
     pub untrusted: Vec<String>,
-    pub entries: Vec<Entry>,
+    pub entries: Vec<Entry<TodoEvent<Todo>>>,
     created: BTreeMap<TodoId, Datetime>,
     bodies: BTreeMap<TodoId, String>,
     details: BTreeMap<TodoId, String>,

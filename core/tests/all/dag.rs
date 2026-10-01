@@ -17,7 +17,7 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::vectors::{each, field, integer, strings, text_at, vectors};
-use prodrome::event::{parents_of, seal_hash, Actor, Hash};
+use prodrome::event::{parents_of, seal_hash, Actor, Hash, TodoEvent};
 use prodrome::literal::Value;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
@@ -25,7 +25,7 @@ use prodrome::store::EventStore;
 
 /// The vectors were taken with the reference payload, so the store these read
 /// them into holds that record shape.
-type Store = EventStore<Todo, Untrusted>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 fn roster() -> Untrusted {
     // The policy is the DEPLOYMENT's, never the engine's (§5) — it arrives as
     // a parameter here exactly as it does at every other call site. These
@@ -164,7 +164,7 @@ fn every_dag_vector_linearises_tips_parents_and_verifies_alike() {
         let objects = objects_of(dag);
         let store = materialise(dag);
         let read = store.dag().unwrap_or_else(|e| panic!("seed {seed}: {e}"));
-        let read: Vec<(Hash, &prodrome::event::Envelope<Todo>)> = read
+        let read: Vec<(Hash, &prodrome::event::Envelope<TodoEvent<Todo>>)> = read
             .linearise()
             .unwrap_or_else(|e| panic!("seed {seed}: {e}"))
             .into_iter()

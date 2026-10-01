@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stage 1 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 and 2 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -222,6 +222,17 @@ In this repository, each one PR:
 2. **Schema.** The trait (vocabulary, key, registers as a product, route,
    valuation), the todo schema as its reference instance, stores and folds
    generic over it, `view` over a schema with a valuation. Law 1 and law 6.
+   BUILT: `schema::Schema`, implemented by the event type itself, so a
+   schema's events are a closed sum and nothing else parses into one
+   (`TodoEvent<P>` is the todo schema, in `todo`); an entity's registers as
+   a `fold::Product` of `Frontier`s and grow-only sets, each read under a
+   `fold::RegisterType`; `schema::Valuation`, its price `Least` over a
+   reading's worlds by construction (`fold::price`); `EventStore`, `Dag`,
+   `Envelope`, `Change`, the fold, `registers`, `verify`, `Policy` and
+   `view::entries` generic over a schema, the append calling `grows` through
+   `Product::grows`. A review schema in the tests, with no valuation, runs
+   law 1 beside the todo's and law 4 through the append (SPEC laws 32 and
+   33); law 5 is SPEC law 24 and law 6 is law 22, every vector unchanged.
 3. **The wasm.** The exports read a store at a schema.
 
 In a host (the first one), after stage 2:

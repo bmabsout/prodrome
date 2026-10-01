@@ -19,7 +19,7 @@ use prodrome::snapshot::mk_snapshot;
 use prodrome::store::EventStore;
 use sha2::{Digest, Sha256};
 
-type Store = EventStore<Todo, Untrusted>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 
 fn at(day: u32) -> Datetime {
     Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
@@ -57,13 +57,13 @@ fn put(root: &Path, name: &str, bytes: &[u8]) {
     fs::write(root.join("objects").join(format!("{name}.py")), bytes).expect("writes");
 }
 
-fn write(root: &Path, object: &Envelope<Todo>) -> String {
+fn write(root: &Path, object: &Envelope<TodoEvent<Todo>>) -> String {
     let name = seal_hash(object).as_str().to_owned();
     put(root, &name, canonical_envelope(object).as_bytes());
     name
 }
 
-fn created(prev: Option<&str>, actor: &str, day: u32) -> Envelope<Todo> {
+fn created(prev: Option<&str>, actor: &str, day: u32) -> Envelope<TodoEvent<Todo>> {
     mk_sealed(
         prev.map(|name| Hash::new(name.to_owned()).expect("a name")),
         mk_created("alpha", at(day), actor, "", "").expect("valid"),
@@ -209,7 +209,7 @@ fn the_unreadable_directory_findings() {
     );
 }
 
-fn change(genesis: &str, deps: &[&str], event: TodoEvent<Todo>) -> Envelope<Todo> {
+fn change(genesis: &str, deps: &[&str], event: TodoEvent<Todo>) -> Envelope<TodoEvent<Todo>> {
     let hash = |name: &&str| Hash::new((*name).to_owned()).expect("a name");
     Envelope::Change(
         mk_change(hash(&genesis), deps.iter().map(hash).collect(), event).expect("a change"),

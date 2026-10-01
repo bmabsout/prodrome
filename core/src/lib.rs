@@ -19,7 +19,7 @@
 //! # Quick start
 //!
 //! ```
-//! use prodrome::event::{mk_created, mk_spec_revised, TodoId};
+//! use prodrome::event::{mk_created, mk_spec_revised, TodoEvent, TodoId};
 //! use prodrome::fold::{env, flatten, link_specs};
 //! use prodrome::fpl::{delta_from_hours, fulfillment, instant_of, link, mk_decay};
 //! use prodrome::literal::Datetime;
@@ -32,14 +32,15 @@
 //! # fn main() -> Result<(), prodrome::literal::ProdromeError> {
 //! # let dir = std::env::temp_dir().join("prodrome-quick-start");
 //! # let _ = std::fs::remove_dir_all(&dir);
-//! // A store is a directory. The first type parameter is the HOST's record
-//! // shape (§4): what this deployment attaches to a todo, as a
-//! // `payload::Payload`. `reference::Todo` is the one this repository's vectors
-//! // were taken with; a host implements its own. The second argument is the
-//! // deployment's STANDING policy (§5) — which events bind and which only
-//! // claim. `Untrusted` is the reference policy: a roster of actor names whose
-//! // lifecycle events are claims.
-//! let store = EventStore::<Todo>::new(&dir, Untrusted::none());
+//! // A store is a directory. Its type parameter is its SCHEMA: the events it
+//! // holds and what each writes (`schema::Schema`). `TodoEvent<P>` is the
+//! // todo schema, whose record kind carries the HOST's fields as a
+//! // `payload::Payload`; `reference::Todo` is the payload this repository's
+//! // vectors were taken with. The argument is the deployment's STANDING
+//! // policy (§5) — which events bind and which only claim. `Untrusted` is
+//! // the reference policy: a roster of actor names whose lifecycle events are
+//! // claims.
+//! let store = EventStore::<TodoEvent<Todo>>::new(&dir, Untrusted::none());
 //!
 //! // A prodrome begins with a genesis, and every write names it.
 //! store.init("quick start")?;
@@ -90,6 +91,8 @@
 //!
 //! Layout, one module per layer of the spec:
 //! - `literal`  — §2: the grammar, its printer (Python `repr` rules) and parser
+//! - `schema`   — §4–§6: a store's events, their entities and registers
+//! - `todo`     — the todo schema, the reference one: §4's kinds, §6's registers
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `genesis`, `change`, `snapshot` — §3: a prodrome, a change, an attestation
@@ -124,8 +127,10 @@ pub mod policy;
 #[cfg(feature = "reference")]
 pub mod reference;
 pub mod registers;
+pub mod schema;
 pub mod snapshot;
 pub mod store;
 pub mod term;
+pub mod todo;
 pub mod topo;
 pub mod view;

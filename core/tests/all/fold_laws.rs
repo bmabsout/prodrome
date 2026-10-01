@@ -31,7 +31,7 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::event::{mk_completed, mk_spec_revised, mk_tended, Actor, Hash, TodoEvent, TodoId};
-use prodrome::fold::{Kind, Registers, Write};
+use prodrome::fold::{Kind, Product, Write};
 use prodrome::fpl::{self, print_term, Env};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy, Untrusted};
@@ -50,9 +50,9 @@ use common::{
 /// These laws are about the FOLDS, not about a record's fields, so the payload
 /// they run under is the reference one — the shape the vector generator drew.
 type Event = TodoEvent<Todo>;
-type Chain = Node<Todo>;
-type Store = EventStore<Todo, Untrusted>;
-type State = Folded<Todo>;
+type Chain = Node<TodoEvent<Todo>>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
+type State = Folded<TodoEvent<Todo>>;
 
 /// The random log generator (`TODOS`, `ACTORS`, `WINDOW`, `origin`, `moment`,
 /// `far`, `Draft`, `a_random_spec`, `a_draft`, `a_schedule`, `realise`,
@@ -94,7 +94,7 @@ struct Folds {
     flatten: BTreeMap<String, String>,
 }
 
-fn folds(log: &[Event], t: Datetime, policy: &impl Policy<Todo>) -> Folds {
+fn folds(log: &[Event], t: Datetime, policy: &impl Policy<TodoEvent<Todo>>) -> Folds {
     Folds {
         env: env_at(log, t, policy),
         specs: specs_at(log, t, policy)
@@ -359,7 +359,7 @@ proptest! {
         for log in [&log, &shuffled] {
             let kept: Vec<Event> = log
                 .iter()
-                .filter(|event| policy.standing(event).binds())
+                .filter(|event| policy.standing(*event).binds())
                 .cloned()
                 .collect();
             // `authored_at` takes no policy and reads EVERY record, so the
@@ -407,8 +407,8 @@ proptest! {
 
             let (unwritten, written) = (fold(&before), fold(&after));
             let frontiers = |state: &State| -> Vec<(TodoId, Vec<Vec<Hash>>)> {
-                state.todos().map(|(todo, stream)| {
-                    let registers = Registers::read(stream, Some(fpl::instant_of(t)), &policy);
+                state.entities().map(|(todo, stream)| {
+                    let registers = prodrome::fold::read(stream, Some(fpl::instant_of(t)), &policy);
                     let names = [Kind::State, Kind::Spec, Kind::Content]
                         .map(|kind| registers.frontier(kind).names());
                     (todo.clone(), names.to_vec())
@@ -420,19 +420,19 @@ proptest! {
 
             let rows = view::entries(&before, t, &policy).expect("the log folds");
             for row in view::entries(&after, t, &policy).expect("the log folds") {
-                match rows.iter().find(|was| was.todo == row.todo) {
+                match rows.iter().find(|was| was.key == row.key) {
                     Some(was) => {
-                        prop_assert_eq!(&row.outcome, &was.outcome, "state");
+                        prop_assert_eq!(row.outcome(), was.outcome(), "state");
                         prop_assert_eq!(&row.claim, &was.claim, "claim");
                         prop_assert_eq!(row.spec(), was.spec(), "spec");
-                        prop_assert_eq!(&row.content, &was.content, "content");
+                        prop_assert_eq!(row.content(), was.content(), "content");
                     }
                     // The tending is the todo's first mention: an open row,
                     // unpriced and with no content, like any mention.
                     None => {
                         prop_assert!(row.is_open());
                         prop_assert_eq!(row.spec(), &fpl::mk_absent());
-                        prop_assert!(row.content.is_empty());
+                        prop_assert!(row.content().is_empty());
                     }
                 }
             }
@@ -629,7 +629,7 @@ fn nodes_from(store: &Store) -> Vec<Chain> {
 fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     events
         .iter()
-        .filter(|event| policy.standing(event).binds())
+        .filter(|event| policy.standing(*event).binds())
         .flat_map(|event| {
             Write::of(event)
                 .filter_map(|write| write.kind())
@@ -642,9 +642,9 @@ fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
 /// The registers of `nodes` with more than one live write.
 fn conflicted(nodes: &[Chain], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     fold(nodes)
-        .todos()
+        .entities()
         .flat_map(|(todo, stream)| {
-            Registers::read(stream, None, policy)
+            prodrome::fold::read(stream, None, policy)
                 .conflicts()
                 .into_keys()
                 .map(|kind| (kind, todo.clone()))
@@ -654,11 +654,11 @@ fn conflicted(nodes: &[Chain], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
 }
 
 /// The environment `nodes` fold to at `t`.
-fn env_of(nodes: &[Chain], t: Datetime, policy: &impl Policy<Todo>) -> Env {
+fn env_of(nodes: &[Chain], t: Datetime, policy: &impl Policy<TodoEvent<Todo>>) -> Env {
     let state = fold(nodes);
     let mut env = Env::new();
-    for (todo, stream) in state.todos() {
-        Registers::read(stream, Some(fpl::instant_of(t)), policy).bind(todo, &mut env);
+    for (todo, stream) in state.entities() {
+        prodrome::fold::read(stream, Some(fpl::instant_of(t)), policy).bind(todo, &mut env);
     }
     env
 }
@@ -770,31 +770,31 @@ proptest! {
         let prodrome = state.prodromes().get(&None).expect("a legacy prodrome");
 
         prop_assert_eq!(
-            rows.iter().map(|row| &row.todo).collect::<Vec<_>>(),
+            rows.iter().map(|row| &row.key).collect::<Vec<_>>(),
             prodrome.keys().collect::<Vec<_>>()
         );
         let functions = prodrome::fold::flatten(prodrome, now, &policy).expect("flattens");
         let specs = prodrome::fold::link_specs(&functions, prodrome.keys());
         let env = prodrome::fold::env(prodrome, now, &policy);
         for row in &rows {
-            let stream = &prodrome[&row.todo];
-            let registers = Registers::read(stream, Some(now), &policy);
-            prop_assert_eq!(&row.outcome, &registers.outcomes(), "outcome");
-            let claimed = Registers::read(stream, Some(now), &Everything).outcomes();
+            let stream = &prodrome[&row.key];
+            let registers = prodrome::fold::read(stream, Some(now), &policy);
+            prop_assert_eq!(row.outcome(), &registers.outcomes(), "outcome");
+            let claimed = prodrome::fold::read(stream, Some(now), &Everything).outcomes();
             let kinds = |c: &fpl::Candidates| -> BTreeSet<&str> {
                 c.iter().map(|b| b.map_or("open", |b| b.kind())).collect()
             };
             let disputed = kinds(&claimed) != kinds(&registers.outcomes());
-            prop_assert_eq!(&row.claim, &disputed.then_some(claimed), "claim");
-            let spec = functions.get(&row.todo).cloned().unwrap_or_else(fpl::mk_absent);
+            prop_assert_eq!(row.claim.as_ref().map(|claim| &claim.outcome), disputed.then_some(&claimed), "claim");
+            let spec = functions.get(&row.key).cloned().unwrap_or_else(fpl::mk_absent);
             prop_assert_eq!(row.spec(), &spec, "spec");
             let linked = fpl::link(&spec, &specs);
             prop_assert_eq!(row.value(), linked.as_ref().map(|l| fpl::fulfillment(l, now, &env)));
             let names: Vec<Hash> = registers.content.candidates().iter().map(|s| s.name.clone()).collect();
-            prop_assert_eq!(&row.content, &names, "content");
+            prop_assert_eq!(row.content(), &names, "content");
             prop_assert_eq!(&row.conflicts, &registers.conflicts(), "conflicts");
             let provisional = disputed
-                || registers.content.candidates().iter().any(|s| !policy.confirms(&s.event));
+                || registers.content.candidates().iter().any(|s| !policy.confirms(&*s.event));
             prop_assert_eq!(row.confidence.is_provisional(), provisional, "confidence");
             let names: Vec<&Hash> = stream.iter().map(|s| &s.name).collect();
             prop_assert_eq!(row.stream.iter().collect::<Vec<_>>(), names, "stream");
@@ -816,7 +816,7 @@ proptest! {
             diverged(&realise(&shared, 0), &branch(&mine, "mine"), &branch(&theirs, "theirs"));
         let nodes = nodes_from(&store);
         let state = fold(&nodes);
-        let chained = state.todos().all(|(_, stream)| {
+        let chained = state.entities().all(|(_, stream)| {
             stream.iter().all(|a| stream.iter().all(|b| {
                 a.name == b.name
                     || state.descends(&a.name, &b.name)
@@ -830,7 +830,8 @@ proptest! {
             let dag = view::entries(&nodes, t, &policy).expect("folds");
             let chain = view::entries(&chain_of(&linear), t, &policy).expect("folds");
             for (a, b) in dag.iter().zip(&chain) {
-                prop_assert_eq!((&a.todo, &a.outcome, &a.claim), (&b.todo, &b.outcome, &b.claim));
+                let claimed = |row: &view::Entry<Event>| row.claim.as_ref().map(|claim| claim.outcome.clone());
+                prop_assert_eq!((&a.key, a.outcome(), claimed(a)), (&b.key, b.outcome(), claimed(b)));
                 prop_assert_eq!((a.spec(), a.value(), a.confidence), (b.spec(), b.value(), b.confidence));
             }
         }
@@ -854,8 +855,8 @@ proptest! {
         for t in [moment(when), far()] {
         let now = fpl::instant_of(t);
         for row in view::entries(&nodes, t, &policy).expect("folds") {
-            let stream = &state.prodromes()[&None][&row.todo];
-            let registers = Registers::read(stream, Some(now), &policy);
+            let stream = &state.prodromes()[&None][&row.key];
+            let registers = prodrome::fold::read(stream, Some(now), &policy);
             if registers.state.candidates().len() < 2 && registers.spec.candidates().len() < 2 {
                 continue;
             }
@@ -888,13 +889,13 @@ proptest! {
                         })
                         .collect();
                     let rows = view::entries(&world, t, &policy).expect("folds");
-                    let value = rows.iter().find(|r| r.todo == row.todo).expect("a row").value();
+                    let value = rows.iter().find(|r| r.key == row.key).expect("a row").value();
                     if let Ok(Some(value)) = value {
                         least = Some(least.map_or(value, |l: f64| l.min(value)));
                     }
                 }
             }
-            prop_assert_eq!(row.value(), Ok(least), "{:?}", row.todo);
+            prop_assert_eq!(row.value(), Ok(least), "{:?}", row.key);
         }
         }
     }
@@ -914,7 +915,7 @@ proptest! {
             diverged(&realise(&shared, 0), &branch(&mine, "mine"), &branch(&theirs, "theirs"));
         let nodes = nodes_from(&store);
         let t = moment(when);
-        let sorted = |nodes: &[Chain]| -> Vec<view::Entry> {
+        let sorted = |nodes: &[Chain]| -> Vec<view::Entry<Event>> {
             let mut rows = view::entries(nodes, t, &policy).expect("folds");
             for row in &mut rows {
                 row.stream.sort();
@@ -940,8 +941,8 @@ proptest! {
             diverged(&realise(&shared, 0), &branch(&mine, "mine"), &branch(&theirs, "theirs"));
         let t = moment(when);
         let frontiers = |nodes: &[Chain]| -> BTreeMap<TodoId, [Vec<Hash>; 3]> {
-            fold(nodes).todos().map(|(todo, stream)| {
-                let registers = Registers::read(stream, Some(fpl::instant_of(t)), &policy);
+            fold(nodes).entities().map(|(todo, stream)| {
+                let registers = prodrome::fold::read(stream, Some(fpl::instant_of(t)), &policy);
                 (todo.clone(), [Kind::State, Kind::Spec, Kind::Content].map(|k| registers.frontier(k).names()))
             })
             .collect()
@@ -950,7 +951,7 @@ proptest! {
             view::entries(nodes, t, &policy)
                 .expect("folds")
                 .into_iter()
-                .map(|row| (row.todo.clone(), (row.outcome, row.price)))
+                .map(|row| (row.key.clone(), (row.reading.outcome, row.price)))
                 .collect()
         };
         let before = nodes_from(&store);
@@ -1161,9 +1162,9 @@ proptest! {
         let rows = view::entries(&chain_of(&log), t, &policy).expect("the log folds");
         let functions = flatten(&log, t, &policy).expect("the log folds");
         let env = env_at(&log, t, &policy);
-        let specs = prodrome::fold::link_specs(&functions, rows.iter().map(|row| &row.todo));
+        let specs = prodrome::fold::link_specs(&functions, rows.iter().map(|row| &row.key));
         for row in &rows {
-            let spec = functions.get(&row.todo).cloned().unwrap_or_else(fpl::mk_absent);
+            let spec = functions.get(&row.key).cloned().unwrap_or_else(fpl::mk_absent);
             prop_assert_eq!(row.spec(), &spec);
             let linked = fpl::link(&spec, &specs);
             prop_assert_eq!(
