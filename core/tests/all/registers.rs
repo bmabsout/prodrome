@@ -321,7 +321,7 @@ fn agreeing_twins_are_one_candidate() {
     assert_eq!(row.conflicts[&Kind::State], twins);
 }
 
-/// Law 21's footing: a change's deps are its own todo's frontiers, whatever
+/// Law 21's footing: a change's deps are its own todo's heads, whatever
 /// else the prodrome holds.
 #[test]
 fn deps_name_one_todo() {
@@ -339,14 +339,13 @@ fn deps_name_one_todo() {
     let again = mk_reopened("alpha", at(2), "bassel", "").expect("valid");
     assert_eq!(
         deps_for(&state, &genesis, &again).expect("no register here is inflationary"),
-        [alpha]
+        std::slice::from_ref(&alpha)
     );
     let tended = prodrome::event::mk_tended("alpha", at(2), "bassel", "").expect("valid");
-    assert!(
-        deps_for(&state, &genesis, &tended)
-            .expect("no register here is inflationary")
-            .is_empty(),
-        "a tending writes no frontier"
+    assert_eq!(
+        deps_for(&state, &genesis, &tended).expect("no register here is inflationary"),
+        [alpha],
+        "a tending supersedes nothing, and rests on what its writer saw"
     );
     assert!(
         deps_for(&state, &None, &again)

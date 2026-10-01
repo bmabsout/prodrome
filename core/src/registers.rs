@@ -354,9 +354,11 @@ pub fn since<'a, E: Schema>(state: &Folded<E>, nodes: &'a [Node<E>]) -> Vec<&'a 
         .collect()
 }
 
-/// A change's deps: the latest writes among the frontiers of the registers
-/// `event` writes, read structurally — everything binds, at no moment. A
-/// write another of them descends from is superseded through it.
+/// A change's deps: its entity's HEADS, the writes to it, in any register,
+/// that no other write to it descends from, read structurally — everything
+/// binds, at no moment. What the writer saw of the entity, as a commit's
+/// parents are what its author had: each written register's frontier is
+/// beneath them, and so is every other write the writer held.
 ///
 /// # Errors
 ///
@@ -375,18 +377,24 @@ pub fn deps_for<E: Schema>(
     else {
         return Ok(Vec::new());
     };
-    let registers = read(stream, None, &Everything);
-    registers.grows(event)?;
-    let written: BTreeMap<&Hash, &Stamp<E>> = event
-        .writes()
-        .flat_map(|register| registers.frontier(register).writes())
-        .map(|stamp| (&stamp.name, *stamp))
-        .collect();
-    Ok(written
-        .values()
-        .filter(|stamp| !written.values().any(|later| later.descends(stamp)))
+    read(stream, None, &Everything).grows(event)?;
+    Ok(heads(stream))
+}
+
+/// The writes of one entity's stream that no other write of it descends
+/// from, by name.
+pub fn heads<E: Schema>(stream: &[Stamp<E>]) -> Vec<Hash> {
+    let mut beneath = BitSet::default();
+    for stamp in stream {
+        beneath.union_with(&stamp.place.ancestry);
+    }
+    let mut heads: Vec<Hash> = stream
+        .iter()
+        .filter(|stamp| !beneath.contains(stamp.place.position))
         .map(|stamp| stamp.name.clone())
-        .collect())
+        .collect();
+    heads.sort();
+    heads
 }
 
 /// A set of small non-negative integers as a bitmap: set, test, union.

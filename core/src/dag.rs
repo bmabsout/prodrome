@@ -336,10 +336,9 @@ impl<E: Schema> Dag<E> {
             .collect()
     }
 
-    /// §3: each dep writes a register the change's event writes, and no
-    /// dep rests on another.
+    /// §3: each dep is a write to the change's entity, and no dep rests on
+    /// another.
     fn deps_findings(&self, name: &Hash, change: &Change<E>) -> Vec<Finding> {
-        let written = registers(Some(&change.event));
         let beneath: Vec<(&Hash, BTreeSet<Hash>)> = change
             .deps
             .iter()
@@ -351,8 +350,8 @@ impl<E: Schema> Dag<E> {
         let mut findings = Vec::new();
         for (dep, _) in &beneath {
             let held = self.objects.get(dep);
-            if held.is_some_and(|held| registers(held.event()).is_disjoint(&written)) {
-                findings.push(Finding::Unwritten {
+            if held.is_some_and(|held| held.event().map(Schema::key) != Some(change.event.key())) {
+                findings.push(Finding::Foreign {
                     change: name.clone(),
                     dep: (*dep).clone(),
                 });
@@ -400,14 +399,6 @@ impl<E: Schema> Dag<E> {
         }
         findings
     }
-}
-
-/// The registers an event writes, each of its entity.
-fn registers<E: Schema>(event: Option<&E>) -> BTreeSet<(&E::Key, E::Register)> {
-    event
-        .into_iter()
-        .flat_map(|event| event.writes().map(move |register| (event.key(), register)))
-        .collect()
 }
 
 /// The tips of a graph given as each name with the parents it names.

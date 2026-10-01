@@ -355,11 +355,12 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         self.write(&mut decision.memory, Verified::sealed(genesis))
     }
 
-    /// Write `event` as a `Change` over the frontiers of the registers it
-    /// writes, or, when the writer's prodrome already holds an object whose
-    /// event prints the same, write nothing and answer the first such. A
-    /// write that would take an inflationary register below the reading it
-    /// supersedes is refused, and nothing is written.
+    /// Write `event` as a `Change` over its entity's heads (every write to
+    /// that entity the writer holds that no other descends from), or, when
+    /// the writer's prodrome already holds an object whose event prints the
+    /// same, write nothing and answer the first such. A write that would take
+    /// an inflationary register below the reading it supersedes is refused,
+    /// and nothing is written.
     ///
     /// DECIDED ON THE MEMORY, UNDER THE LOCK. The look that brings the memory
     /// level with `objects/` is taken after the lock is, and every writer
@@ -643,8 +644,8 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     ///
     /// ⚠️ What that answer is, stated: the tips of what the store HOLDS. The
     /// set-aside object's parents are named by nothing readable, so they may
-    /// be tips again, and the next append writes over the frontiers of what
-    /// is held.
+    /// be tips again, and the next append writes over the heads of what is
+    /// held.
     ///
     /// ONLY A FILE THAT FAILS ITS HASH. One that hashes to its name is that
     /// object, whatever it holds — one this reader cannot parse may be a newer
@@ -903,8 +904,9 @@ mod tests {
         }
     }
 
-    /// An append writes a `Change` over the frontiers its event supersedes,
-    /// and appending the same event again writes nothing.
+    /// An append writes a `Change` over its entity's heads, whatever
+    /// registers they write, and appending the same event again writes
+    /// nothing.
     #[test]
     fn an_append_writes_a_change_over_what_it_supersedes() {
         let store = Store::new(scratch("chain"), roster());
@@ -919,15 +921,13 @@ mod tests {
             .append(mk_reopened("alpha", at(3), "bassel", "").expect("valid"))
             .expect("appends");
         assert_eq!(change(&store, &first).genesis, genesis);
-        assert!(
-            change(&store, &second).deps.is_empty(),
-            "Created writes no register"
+        assert_eq!(
+            change(&store, &second).deps,
+            std::slice::from_ref(&first),
+            "Created writes no register, and the writer saw it"
         );
         assert_eq!(change(&store, &third).deps, std::slice::from_ref(&second));
-        assert_eq!(
-            tips(&store),
-            [genesis, first, third.clone()].into_iter().collect()
-        );
+        assert_eq!(tips(&store), [genesis, third.clone()].into_iter().collect());
         assert_eq!(
             fs::read_dir(store.root())
                 .expect("the store is a directory")
@@ -942,7 +942,7 @@ mod tests {
         assert_eq!(store.events().expect("reads").len(), 3);
         assert_eq!(
             store.ancestors(&third).expect("walks"),
-            [second.clone()].into_iter().collect()
+            [first.clone(), second.clone()].into_iter().collect()
         );
         let held = order(&store).expect("reads");
         assert_eq!(store.append(done).expect("replays"), second);
@@ -1459,8 +1459,10 @@ mod tests {
     /// the command that sets it aside, and so does every append. Once it is
     /// quarantined the store answers again — the tips derive, the damaged
     /// object's parent among them, and an append writes a change over what is
-    /// held — and after that append as before it, `verify` is clean but for the receipt,
+    /// held, the parent among its heads — and after that append as before it, `verify` is clean but for the receipt,
     /// which stands in for the "chain broke" the tip resting on it would be.
+    /// Restored, the object puts a head the append saw beneath another, and
+    /// `verify` reports that dep as redundant.
     /// A healthy object is not quarantined: that would be hiding it.
     #[test]
     fn after_quarantine_the_store_answers_and_verify_holds_the_receipt() {
@@ -1518,14 +1520,28 @@ mod tests {
             .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .expect("the store writes again");
         assert_eq!(change(&fresh, &next).genesis, first);
-        assert_eq!(change(&fresh, &next).deps, [last]);
-        assert_eq!(tips(&fresh), [first, next].into_iter().collect());
+        // `first` is a head of `alpha` again, as far as the store can see.
+        let mut heads = vec![first.clone(), last.clone()];
+        heads.sort();
+        assert_eq!(change(&fresh, &next).deps, heads);
+        assert_eq!(tips(&fresh), [next.clone()].into_iter().collect());
         assert_eq!(findings(&fresh), vec![receipt]);
 
         // The repair: the object back from a replica, the receipt deleted.
+        // `next` was written over what was held, and `first` looked like a
+        // head then; restored, `middle` puts it beneath `last`, and verify
+        // says so. True and harmless: `next`'s ancestry is the same.
         fs::write(&path, text).expect("restores");
         fs::remove_dir_all(store.root().join("quarantine")).expect("deletes the receipt");
-        assert_eq!(findings(&fresh), Vec::<String>::new());
+        assert_eq!(
+            findings(&fresh),
+            vec![format!(
+                "change {} depends on {}, which its dep {} already rests on (SPEC §3)",
+                next.as_str(),
+                first.as_str(),
+                last.as_str()
+            )]
+        );
         let _ = fs::remove_dir_all(store.root());
     }
 
