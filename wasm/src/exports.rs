@@ -11,18 +11,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use prodrome::dag::{Dag, Finding, Unread};
 use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
 use prodrome::fold::{Kind, Product};
-use prodrome::fpl::{datetime_of, instant_of, iso, Instant};
+use prodrome::fpl::{datetime_of, instant_of, iso, print_term, Instant};
 use prodrome::literal::{Datetime, Value as Literal};
 use prodrome::payload::Payload;
 use prodrome::policy::Everything;
 use prodrome::registers::Node;
-use prodrome::schema::Schema;
+use prodrome::schema::{Schema, Valuation};
+use prodrome::todo;
+use prodrome::view::{list_order, Entry};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::wire::{
-    json_literal, object, parse_moment, parse_names, parse_objects, parse_untrusted, strings,
-    ObjectIn, Refusal,
+    json_env, json_literal, json_reading, object, parse_moment, parse_names, parse_objects,
+    parse_untrusted, strings, ObjectIn, Refusal,
 };
 
 /// What a schema says to cross this boundary, beside what it says to be
@@ -50,6 +52,13 @@ pub trait Json: Schema<Key: AsRef<str>> {
     fn value(&self, register: Self::Register) -> Value;
 }
 
+/// What a schema with a [`Valuation`] says more to cross this boundary: its
+/// row's reading, as JSON.
+pub trait PricedJson: Json + Valuation {
+    /// A function of the reading alone, as [`Json::value`] is of a value.
+    fn reading_json(reading: &Self::Reading) -> Value;
+}
+
 /// The todo schema, at any payload, crosses as it always has: each row names
 /// its todo. Here and not in a host, which could not implement this crate's
 /// trait for the core's type.
@@ -65,6 +74,18 @@ impl<P: Payload> Json for TodoEvent<P> {
     /// literal, by [`json_literal`]'s one mapping.
     fn value(&self, _kind: Kind) -> Value {
         json_literal(&Schema::to_value(self))
+    }
+}
+
+/// A todo's reading: its candidate outcomes as the environment spells one
+/// (`null` open, a conflict as the array of its candidates), and the names
+/// of its candidate records.
+impl<P: Payload> PricedJson for TodoEvent<P> {
+    fn reading_json(reading: &todo::Reading) -> Value {
+        json!({
+            "outcome": json_reading(&reading.outcome),
+            "content": names(&reading.content),
+        })
     }
 }
 
@@ -507,4 +528,110 @@ pub fn readings<E: Json>(
         }
     }
     printed(&object(vec![("readings", Value::Array(rows))]))
+}
+
+// --- §6.7 and §7: a schema's price -----------------------------------------------
+
+/// The moment a priced reading is taken at: `at` (ISO), or `None` for the
+/// latest instant the objects stamp ([`Read::moment`]).
+fn moment<E: Schema>(read: &Read<'_, E>, at: Option<String>) -> Result<Datetime, Refusal> {
+    read.moment(parse_moment("at", at)?)
+}
+
+fn json_entry<E: PricedJson>(entry: &Entry<E>) -> Value {
+    object(vec![
+        ("genesis", json!(entry.genesis.as_ref().map(Hash::as_str))),
+        (E::KEY, json!(entry.key.as_ref())),
+        ("reading", E::reading_json(&entry.reading)),
+        (
+            "claim",
+            entry.claim.as_ref().map_or(Value::Null, E::reading_json),
+        ),
+        ("unconfirmed", json!(entry.confidence.is_provisional())),
+        (
+            "value",
+            match entry.value() {
+                Ok(Some(value)) => json!(value),
+                Ok(None) => json!("absent"),
+                Err(_) => Value::Null,
+            },
+        ),
+        ("unlinked", json!(entry.unlinked().map(ToString::to_string))),
+        (
+            "conflicts",
+            Value::Object(
+                entry
+                    .conflicts
+                    .iter()
+                    .map(|(register, writes)| (E::register(*register).to_owned(), names(writes)))
+                    .collect(),
+            ),
+        ),
+        ("spec", json!(print_term(entry.spec()))),
+        ("stream", names(&entry.stream)),
+    ])
+}
+
+/// §6.7: every entity the objects mention, as the folds see it at `at` under
+/// `untrusted`, in §6.7's list order (most urgent first, then every row with
+/// no number, each by genesis and key). A row is its entity's confirmed
+/// reading, the claimed one where it disputes it, whether it is provisional,
+/// its price (`value` a number, `"absent"` for `∅`, `null` where it does not
+/// link and `unlinked` says why), its conflicts by register, its function as
+/// its §2 print, and its stream.
+pub fn entries<E: PricedJson>(
+    replica: &Replica<E>,
+    at: Option<String>,
+    untrusted: &str,
+) -> Result<String, Refusal> {
+    let read = replica.read()?;
+    let policy = parse_untrusted(untrusted)?;
+    let moment = moment(&read, at)?;
+    let mut rows =
+        prodrome::view::entries(read.nodes, moment, &policy).map_err(|e| e.to_string())?;
+    rows.sort_by(list_order);
+    printed(&object(vec![
+        ("at", Value::String(iso(instant_of(moment)))),
+        (
+            "entries",
+            Value::Array(rows.iter().map(json_entry).collect()),
+        ),
+    ]))
+}
+
+/// §6.1 and §6.4, per prodrome: the environment FPL's terms read at `at`
+/// under `untrusted`, and every entity's fulfillment function (`absent`
+/// where it has none), in [`crate::json`]'s term shape: what `link`,
+/// `fulfillment`, `explain` and `series_knots` take, so a page draws a price
+/// without a second reading of it.
+pub fn prices<E: PricedJson>(
+    replica: &Replica<E>,
+    at: Option<String>,
+    untrusted: &str,
+) -> Result<String, Refusal> {
+    let read = replica.read()?;
+    let policy = parse_untrusted(untrusted)?;
+    let moment = moment(&read, at)?;
+    let now = instant_of(moment);
+    let state = prodrome::registers::fold(read.nodes);
+    let mut prices = Vec::new();
+    for (genesis, prodrome) in state.prodromes() {
+        let functions = prodrome::fold::flatten(prodrome, now, &policy).map_err(|e| e.0)?;
+        let functions = prodrome::fold::link_specs(&functions, prodrome.keys())
+            .into_iter()
+            .map(|(key, term)| (key, crate::json::to_json(&term)))
+            .collect();
+        prices.push(object(vec![
+            ("genesis", json!(genesis.as_ref().map(Hash::as_str))),
+            (
+                "env",
+                json_env(&prodrome::fold::env(prodrome, now, &policy)),
+            ),
+            ("functions", Value::Object(functions)),
+        ]));
+    }
+    printed(&object(vec![
+        ("at", Value::String(iso(now))),
+        ("prices", Value::Array(prices)),
+    ]))
 }

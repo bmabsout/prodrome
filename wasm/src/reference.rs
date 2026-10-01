@@ -35,7 +35,7 @@ type Object = Envelope<Event>;
 
 // The todo schema's exports through the generic path, beside the free
 // functions below that have always answered for it: `new Todos(objects)`.
-crate::schema!(Todos = Event);
+crate::schema!(Todos = Event, priced);
 
 /// A refusal, as the exception a JS caller catches. Every entry point returns
 /// one rather than panicking: a browser that aborts inside the Wasm leaves the
