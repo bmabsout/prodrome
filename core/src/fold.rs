@@ -7,12 +7,14 @@
 //! linearisation picks a winner; a conflict is its candidates.
 
 mod frontier;
+mod order;
 mod register;
 mod write;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use frontier::Frontier;
+pub use order::{Discrete, Order, Total};
 pub use register::{GrowSet, Register};
 pub use write::{Kind, Write};
 
