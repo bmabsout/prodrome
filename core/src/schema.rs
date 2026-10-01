@@ -62,7 +62,7 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     const REGISTERS: &'static [Self::Register];
 
     /// An entity's registers: a product of semilattices.
-    type Registers<'a>: Product<'a, Self>;
+    type Registers<'a>: Product<'a, Schema = Self>;
 
     /// The event as a literal: every field, in declared order.
     fn to_value(&self) -> Value;
