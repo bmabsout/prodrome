@@ -14,12 +14,13 @@ mod write;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use frontier::Frontier;
-pub use order::{maximal, Discrete, Order, Total};
+pub use order::{grows, maximal, Discrete, Inflationary, Order, Total};
 pub use register::{GrowSet, Register};
 pub use write::{Kind, Write};
 
 use crate::event::{Authored, Hash, TodoEvent, TodoId};
 use crate::fpl::{self, Candidates, Env, FplError, Instant};
+use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
 use crate::registers::{Prodrome, Stamp};
@@ -205,6 +206,19 @@ impl<'a, P: Payload> Registers<'a, P> {
     }
 }
 
+/// The append path's refusal: `event` may not write an inflationary
+/// register a value below the reading it supersedes. Of the todo's
+/// registers only the tendings are inflationary, and a tending supersedes
+/// no write (its deps are `()`), so every event is admitted.
+pub fn admit<P: Payload>(event: &TodoEvent<P>) -> Result<(), ProdromeError> {
+    for write in Write::of(event) {
+        if let Write::Tend(at) = write {
+            grows::<GrowSet<Instant>>([], &GrowSet::from([at]))?;
+        }
+    }
+    Ok(())
+}
+
 /// `mine`, or `theirs` where `mine` is empty.
 fn or_first<T>(mine: Vec<T>, theirs: Vec<T>) -> Vec<T> {
     if mine.is_empty() {
@@ -327,7 +341,7 @@ pub fn link_specs<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_reopened, mk_sealed, seal_hash, Actor};
+    use crate::event::{mk_completed, mk_reopened, mk_sealed, mk_tended, seal_hash, Actor};
     use crate::fpl::{fulfillment, mk_flat, print_term};
     use crate::literal::Datetime;
     use crate::policy::Untrusted;
@@ -445,5 +459,15 @@ mod tests {
             mk_completed("alpha", at(3), "bassel", "").expect("valid"),
         ];
         assert!(flat(&log, at(9)).is_empty());
+    }
+
+    #[test]
+    fn the_todo_vocabulary_admits_every_event() {
+        let events: Vec<Event> = vec![
+            mk_tended("alpha", at(1), "writer", "").expect("valid"),
+            mk_completed("alpha", at(4), "writer", "").expect("valid"),
+            mk_reopened("alpha", at(5), "writer", "").expect("valid"),
+        ];
+        assert!(events.iter().all(|event| admit(event).is_ok()));
     }
 }

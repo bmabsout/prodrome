@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use crate::literal::ProdromeError;
+
 /// A partial order on a register's values: reflexive, antisymmetric and
 /// transitive (§9). It decides which concurrent values are redundant, never
 /// which write supersedes which; ancestry alone does that.
@@ -34,6 +36,27 @@ impl<T: Ord> Order for Total<T> {
 impl<T: Ord> Order for BTreeSet<T> {
     fn le(&self, other: &Self) -> bool {
         self.is_subset(other)
+    }
+}
+
+/// A register type's declaration that a write only grows it: its value is
+/// `≥` the reading it supersedes, so the reading of a union of histories is
+/// the join of their readings. Not trusted: the append path checks it with
+/// [`grows`].
+pub trait Inflationary: Order {}
+
+/// The append path's refusal for an inflationary register: `value` must
+/// stand at or above every value of the reading it supersedes.
+pub fn grows<'v, V: Inflationary + 'v>(
+    superseded: impl IntoIterator<Item = &'v V>,
+    value: &V,
+) -> Result<(), ProdromeError> {
+    if superseded.into_iter().all(|held| held.le(value)) {
+        Ok(())
+    } else {
+        Err(ProdromeError::invalid(
+            "a write to an inflationary register must not fall below the reading it supersedes",
+        ))
     }
 }
 

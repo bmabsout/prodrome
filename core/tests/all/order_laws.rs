@@ -1,11 +1,15 @@
 //! The register types' laws (`docs/design-register-types.md` §7): each
-//! order is a partial order, over generated values; and a register reads
-//! the maximal values of its frontier, over generated DAGs.
+//! order is a partial order, over generated values; a register reads the
+//! maximal values of its frontier, over generated DAGs; and an inflationary
+//! register refuses a write that would make its reading fall, so that its
+//! reading is a homomorphism, over two generated replicas.
 //!
 //! Beside the todo vocabulary's orders, a small state machine that no
 //! register of the vocabulary uses, so the laws see an order that is neither
-//! discrete, total nor inclusion. Its values ride in the notes of state
-//! writes, so they reach a frontier through the same fold as the todo's.
+//! discrete, total nor inclusion, and that is inflationary. Its values ride
+//! in the notes of state writes, so they reach a frontier through the same
+//! fold as the todo's, and its appends are refused by the same [`grows`] the
+//! store's append path calls.
 //!
 //! Law 6, that the todo vocabulary reads byte for byte as before, is every
 //! vector suite beside this one, unchanged.
@@ -13,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use prodrome::event::{mk_completed, Hash, TodoEvent, TodoId};
-use prodrome::fold::{maximal, Discrete, Frontier, Order, Registers, Total};
+use prodrome::fold::{grows, maximal, Discrete, Frontier, Inflationary, Order, Registers, Total};
 use prodrome::literal::Datetime;
 use prodrome::policy::Everything;
 use prodrome::reference::Todo;
@@ -41,6 +45,8 @@ impl Order for Phase {
 }
 
 const PHASES: [Phase; 4] = [Phase::Draft, Phase::Review, Phase::Merged, Phase::Closed];
+
+impl Inflationary for Phase {}
 
 fn a_phase() -> impl Strategy<Value = Phase> {
     prop::sample::select(PHASES.to_vec())
@@ -108,23 +114,25 @@ fn name(i: usize) -> Hash {
     Hash::new(format!("{:064x}", i + 1)).expect("64 hex")
 }
 
-/// The steps as legacy objects of one todo, each a state write carrying its
-/// value in its note.
+/// The `i`th object: a state write of `value`, carried in its note.
+fn node(i: usize, value: u8, day: u32, parents: Vec<Hash>) -> Node<Todo> {
+    let at = Datetime::new(2026, 9, 1 + day, 12, 0, 0, 0).expect("a real instant");
+    let event = mk_completed("alpha", at, "writer", &value.to_string()).expect("valid");
+    Node {
+        name: name(i),
+        parents,
+        event: Some(event),
+        genesis: None,
+    }
+}
+
+/// The steps as legacy objects of one todo.
 fn nodes(dag: &[Step]) -> Vec<Node<Todo>> {
     dag.iter()
         .enumerate()
         .map(|(i, (value, day, parents))| {
-            let at = Datetime::new(2026, 9, 1 + day, 12, 0, 0, 0).expect("a real instant");
-            let event = mk_completed("alpha", at, "writer", &value.to_string()).expect("valid");
-            Node {
-                name: name(i),
-                parents: (0..i.min(64))
-                    .filter(|j| parents >> j & 1 == 1)
-                    .map(name)
-                    .collect(),
-                event: Some(event),
-                genesis: None,
-            }
+            let parents = (0..i.min(64)).filter(|j| parents >> j & 1 == 1);
+            node(i, *value, *day, parents.map(name).collect())
         })
         .collect()
 }
@@ -139,7 +147,12 @@ fn value(stamp: &Stamp<Todo>) -> u8 {
 /// The todo's state frontier, read structurally.
 fn frontier(folded: &Folded<Todo>) -> Frontier<'_, Todo> {
     let todo = TodoId::new("alpha").expect("valid");
-    Registers::read(&folded.prodromes()[&None][&todo], None, &Everything).state
+    folded
+        .prodromes()
+        .get(&None)
+        .and_then(|todos| todos.get(&todo))
+        .map(|stream| Registers::read(stream, None, &Everything).state)
+        .unwrap_or_default()
 }
 
 /// Law 3 at one frontier under `order`: the reading is exactly the maximal
@@ -188,6 +201,87 @@ proptest! {
         }
         prop_assert_eq!(frontier.candidates(), twins_once);
     }
+}
+
+fn phase(stamp: &Stamp<Todo>) -> Phase {
+    PHASES[usize::from(value(stamp))]
+}
+
+/// The machine's reading of a replica's objects.
+fn reading(objects: &[Node<Todo>]) -> Vec<Phase> {
+    let folded = fold(objects);
+    let frontier = frontier(&folded);
+    frontier.read(phase).into_iter().map(phase).collect()
+}
+
+/// Two replicas' objects together, parents first: a name is its index.
+fn union(a: &[Node<Todo>], b: &[Node<Todo>]) -> Vec<Node<Todo>> {
+    let mut out = a.to_vec();
+    out.extend(
+        b.iter()
+            .filter(|o| !a.iter().any(|m| m.name == o.name))
+            .cloned(),
+    );
+    out.sort_by(|x, y| x.name.cmp(&y.name));
+    out
+}
+
+/// Two antichains as sets.
+fn same(a: &[Phase], b: &[Phase]) -> bool {
+    a.len() == b.len() && a.iter().all(|v| b.contains(v))
+}
+
+/// One step of two replicas: replica `.0` appends the phase `.1` indexes,
+/// or with `None` adopts everything the other holds.
+type Act = (usize, Option<u8>);
+
+fn acts() -> impl Strategy<Value = Vec<Act>> {
+    prop::collection::vec((0usize..2, prop::option::weighted(0.8, 0u8..4)), 0..16)
+}
+
+proptest! {
+    /// Law 4: an append whose value is not `≥` the reading it supersedes is
+    /// refused before any object carries it; every other is written over
+    /// the frontier it supersedes. Over every history so written, the
+    /// reading of a union is the join of the readings:
+    /// `read(h₁ ∪ h₂) = max(read(h₁) ∪ read(h₂))`.
+    #[test]
+    fn an_inflationary_reading_is_a_homomorphism(acts in acts()) {
+        let mut replicas: [Vec<Node<Todo>>; 2] = [Vec::new(), Vec::new()];
+        let mut written = 0;
+        for (side, act) in acts {
+            match act {
+                Some(index) => {
+                    let value = PHASES[usize::from(index)];
+                    let held = reading(&replicas[side]);
+                    let refused = grows(&held, &value).is_err();
+                    prop_assert_eq!(refused, !held.iter().all(|v| v.le(&value)));
+                    if !refused {
+                        let folded = fold(&replicas[side]);
+                        let deps = frontier(&folded).names();
+                        let object = node(written, index, 0, deps);
+                        replicas[side].push(object);
+                        written += 1;
+                    }
+                }
+                None => replicas[side] = union(&replicas[0], &replicas[1]),
+            }
+        }
+        let [h1, h2] = &replicas;
+        let joined: Vec<Phase> = [reading(h1), reading(h2)].concat();
+        prop_assert!(same(&reading(&union(h1, h2)), &maximal(&joined, |p| p)));
+    }
+}
+
+#[test]
+fn a_write_that_goes_back_is_refused() {
+    use Phase::*;
+    assert!(grows(&[], &Draft).is_ok());
+    assert!(grows(&[Draft, Review], &Merged).is_ok());
+    assert!(grows(&[Merged], &Merged).is_ok());
+    assert!(grows(&[Merged], &Closed).is_err());
+    assert!(grows(&[Review], &Draft).is_err());
+    assert!(grows(&[Merged, Closed], &Closed).is_err());
 }
 
 #[test]
