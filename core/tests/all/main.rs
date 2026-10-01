@@ -23,6 +23,7 @@ mod memory;
 mod order_laws;
 mod recur_vectors;
 mod registers;
+mod replica;
 mod review;
 mod schema_laws;
 mod series_vectors;

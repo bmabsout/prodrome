@@ -1,7 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 built, and stage 7's in-memory
-replica behind a store (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -347,7 +346,7 @@ In this repository, after stage 3:
    use (a batch as an overlay over its target, accepted by a sync of the
    objects picked), replacing a copy of the target and a deletion.
 
-   BUILT, its first part: the in-memory replica behind a store. An
+   BUILT. First the in-memory replica behind a store: an
    `EventStore` holds every object it has read, each verified once, with
    their tips and their fold (`store::memory`), and each look at the disk
    replica is a sync into it of exactly the objects it lacks: a name
@@ -356,16 +355,32 @@ In this repository, after stage 3:
    fold follows by `registers::Folded::insert`, which puts an object where
    the linearisation of the union puts it, so the memory is the fold of
    the object set whatever order the objects arrive in, never rebuilt from
-   the files. An append decides on the memory under the store's lock and
-   enters what it writes without reading it back; an adoption ends its walk
-   at what the memory holds. Laws, `core/tests/all/memory.rs`: a store read
-   incrementally reads as the same objects read cold (objects, fold,
-   readings, heads), an append through the memory writes byte for byte what
-   a cold one does, and law 7's pieces where an adoption meets the memory
-   (idempotent, order-free, an interrupted one completes, the reading after
-   it is the union's). Not yet: `sync` between two stores as a function, an
-   in-memory store that never touches a disk, and the overlay with its
-   flush.
+   the files. Laws, `core/tests/all/memory.rs`: a store read
+   incrementally reads as the same objects read cold, and an append
+   through the memory writes byte for byte what a cold one does.
+
+   Then the replicas. `store::Replica` is what every store is: it reads
+   (`Held`: its objects, their fold, its tips), appends, gives the print
+   held under a name, and receives, verifying every object before it takes
+   any, parents first (`memory::receive`, the walk every adoption shares).
+   `store::sync(from, to)` is `to.receive(from.tips())`, one function for
+   every pair. What an append writes is `Memory::change`, decided on what
+   is held, so `store::MemoryStore`, objects and prints in memory, writes
+   byte for byte what an `EventStore` holding the same objects writes.
+   `store::Overlay` writes to memory and reads the base's memory (its
+   objects and fold, shared) with its own objects admitted over it, taken
+   again when the base changes; `Overlay::flush` is `sync(overlay, base)`.
+   The coordinated decision is `store::Decision`, which only
+   `EventStore::decide` makes: the lock held, the memory level with the
+   directory, and an append written through. Two compile-fail doctests pin
+   that an overlay and a store in memory have none. The wasm exports'
+   classes gain `append(event, genesis)`, which seals an event into the
+   page's replica through a `MemoryStore` and answers the object to send
+   the host. Laws, `core/tests/all/replica.rs` (SPEC law 35): sync between
+   disk and memory in all four pairings is idempotent and order-free,
+   completes when cut short, and reads as the union; a store in memory
+   appends as a disk store does over any history; an overlay reads as its
+   union and its flush leaves the base reading it.
 
 ## 9. Non-goals
 

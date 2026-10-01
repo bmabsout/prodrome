@@ -8,7 +8,7 @@
 //! ONE MODULE, ANY SCHEMAS. `#[wasm_bindgen]` exports no generic item, so a module
 //! instantiates them with [`schema!`], once per schema, each as a JS class of
 //! its own name: `new Reviews(objects)` reads the objects once, and every
-//! method asks its question of what was read.
+//! method asks its question of what was read, or, `append`, writes into it.
 //!
 //! | method     | asks                                                         |
 //! | ---------- | ------------------------------------------------------------ |
@@ -18,6 +18,7 @@
 //! | `readings` | §6: each entity's registers, each its maximal writes          |
 //! | `entries`  | §6.7, `priced` only: every entity as the folds see it        |
 //! | `prices`   | §6.1, §6.4, `priced` only: the environment and every function |
+//! | `append`   | §3: an event sealed into this replica, and the object to send |
 //!
 //! A schema crosses the boundary by [`Json`]: the field its events
 //! name an entity by, each register's name, and each value's JSON, a function
@@ -45,8 +46,10 @@ pub mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::sync::Arc;
+
 use prodrome::dag::{Dag, Finding, Unread};
-use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
+use prodrome::event::{canonical_envelope, parents_of, parse_event, Envelope, Hash, TodoEvent};
 use prodrome::fold::{Kind, Product};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, Instant};
 use prodrome::literal::{Datetime, Value as Literal};
@@ -54,6 +57,7 @@ use prodrome::payload::Payload;
 use prodrome::policy::Everything;
 use prodrome::registers::Node;
 use prodrome::schema::{self, Bind, History, Schema};
+use prodrome::store::{MemoryStore, Replica as _};
 use prodrome::todo;
 use prodrome::view::{list_order, Entry};
 use serde_json::{json, Value};
@@ -192,6 +196,19 @@ macro_rules! schema {
             ) -> Result<String, wasm_bindgen::JsError> {
                 $crate::thrown($crate::readings(&self.0, at, untrusted))
             }
+
+            /// §3: `event`, its §2 print, sealed into this replica as a
+            /// `Change` over its own fold, in the prodrome `genesis` names
+            /// (`null`: the one last named, or the only one). Answers
+            /// `{hash, objects}`: the object's name, and `[{hash, text}]`,
+            /// what the host lacks of it, empty for a twin.
+            pub fn append(
+                &mut self,
+                event: &str,
+                genesis: Option<String>,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::append(&mut self.0, event, genesis))
+            }
         }
     };
     ($name:ident = $schema:ty, priced) => {
@@ -255,12 +272,15 @@ struct Sent {
 
 /// A set of objects, read once at the schema `E`: what every export below
 /// asks its question of. The bytes cross from JavaScript once, into the
-/// [`Dag`]; nothing here holds them twice.
-pub struct Replica<E> {
+/// [`Dag`]; nothing here holds them twice until the first [`append`], when
+/// the replica becomes a [`MemoryStore`] holding them with their prints.
+pub struct Replica<E: Schema> {
     sent: Vec<Sent>,
-    dag: Dag<E>,
+    dag: Arc<Dag<E>>,
     /// The objects in causal order, or why this set has no honest reading.
     nodes: Result<Vec<Node<E>>, Refusal>,
+    /// The store an append writes into, once one has.
+    store: Option<MemoryStore<E>>,
 }
 
 impl<E: Schema> Replica<E> {
@@ -292,7 +312,12 @@ impl<E: Schema> Replica<E> {
         }
         let dag = Dag::from_prints(prints);
         let nodes = Replica::order(&sent, &dag);
-        Ok(Replica { sent, dag, nodes })
+        Ok(Replica {
+            sent,
+            dag: Arc::new(dag),
+            nodes,
+            store: None,
+        })
     }
 
     /// The objects in causal order. It REFUSES where [`verify`] REPORTS, and
@@ -328,6 +353,75 @@ impl<E: Schema> Replica<E> {
             nodes,
         })
     }
+}
+
+// --- §3: append ------------------------------------------------------------------
+
+/// `event`, its §2 print at the schema `E`, sealed into `replica` as a
+/// `Change` (SPEC §3): its deps from the replica's own fold, a twin of an
+/// event it holds answered and nothing written, by the core's
+/// [`MemoryStore`], so the object is byte for byte the one the host's store
+/// would write holding what the replica holds. `genesis` names the prodrome
+/// to write into, and stays named; `None` keeps the one named before, or,
+/// never named, the only one.
+///
+/// Answers `{hash, objects}`: the object's name, and the objects to send
+/// the host, `[{hash, text}]` as [`Replica::of`] takes them, which a store
+/// adopts verified (`EventStore::adopt_objects`, or `receive`): the new
+/// object, or nothing for a twin. Every reading after it reads it.
+///
+/// # Errors
+///
+/// Objects with no honest reading, as every reading refuses them; an event
+/// or a genesis that does not parse; an append the store would refuse.
+pub fn append<E: Schema>(
+    replica: &mut Replica<E>,
+    event: &str,
+    genesis: Option<String>,
+) -> Result<String, Refusal> {
+    replica.read()?;
+    let event: E = parse_event(event).map_err(|e| format!("event: {e}"))?;
+    let mut store = if let Some(store) = replica.store.take() {
+        store
+    } else {
+        let dag = &replica.dag;
+        let store = MemoryStore::default();
+        store
+            .receive(dag.tips(), &|name| {
+                dag.get(name)
+                    .map(|object| canonical_envelope(object).into_bytes())
+            })
+            .map_err(|e| e.to_string())?;
+        store
+    };
+    if let Some(genesis) = genesis {
+        store = store.in_genesis(Hash::new(genesis).map_err(|e| format!("genesis: {e}"))?);
+    }
+    // The store's objects are shared with this replica's; let go of them, so
+    // the append extends them where they are rather than copying them.
+    replica.dag = Arc::new(Dag::from_iter([]));
+    let appended = store.append(event).map_err(|e| e.to_string());
+    let dag = store.held().map_err(|e| e.to_string())?.dag;
+    replica.store = Some(store);
+    replica.nodes = dag.nodes().map_err(|e| e.to_string());
+    replica.dag = dag;
+    let name = appended?;
+    let mut objects = Vec::new();
+    let sent = replica.sent.iter().any(|sent| sent.hash == name.as_str());
+    if let Some(object) = replica.dag.get(&name).filter(|_| !sent) {
+        replica.sent.push(Sent {
+            hash: name.as_str().to_owned(),
+            computed: name.as_str().to_owned(),
+            named: true,
+            twice: false,
+        });
+        let text = canonical_envelope(object);
+        objects.push(json!({ "hash": name.as_str(), "text": text }));
+    }
+    printed(&object(vec![
+        ("hash", json!(name.as_str())),
+        ("objects", Value::Array(objects)),
+    ]))
 }
 
 /// The objects, rehashed, parsed and put in causal order — what every fold
