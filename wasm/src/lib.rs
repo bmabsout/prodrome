@@ -56,7 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::dag::{Dag, Finding, Unread};
 use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
-use prodrome::fold;
+use prodrome::fold::{self, Product};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Candidates, Instant};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy};
@@ -612,11 +612,11 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         .map_err(refused)?;
     let rows = prodrome::view::entries(&read.nodes, moment, &policy)
         .map_err(|e| refused(e.to_string()))?;
-    let mut listed: Vec<&prodrome::view::Entry> = rows.iter().collect();
+    let mut listed: Vec<&prodrome::view::Entry<Event>> = rows.iter().collect();
     listed.sort_by(|a, b| prodrome::view::list_order(a, b));
     let records: serde_json::Map<String, Value> = rows
         .iter()
-        .flat_map(|row| &row.content)
+        .flat_map(|row| row.content())
         .filter_map(|name| match read.dag.get(name).and_then(Envelope::event) {
             Some(TodoEvent::Authored(record)) => {
                 Some((name.as_str().to_owned(), json_record(record)))
@@ -646,7 +646,7 @@ pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<Str
         ),
         (
             "order",
-            strings(listed.iter().map(|row| row.todo.as_str().to_owned())),
+            strings(listed.iter().map(|row| row.key.as_str().to_owned())),
         ),
         ("records", Value::Object(records)),
         ("created", Value::Object(created)),

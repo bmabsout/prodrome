@@ -129,7 +129,7 @@ fn every_case_writes_its_objects_and_reads_its_prices() {
             let todo = text_at(price, "todo");
             let row = rows
                 .iter()
-                .find(|row| row.genesis == genesis && row.todo.as_str() == todo)
+                .find(|row| row.genesis == genesis && row.key.as_str() == todo)
                 .unwrap_or_else(|| panic!("{title}: no row for {todo}"));
             assert_eq!(row.state(), text_at(price, "state"), "{title}: {todo}");
             match field(price, "value") {

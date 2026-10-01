@@ -420,19 +420,19 @@ proptest! {
 
             let rows = view::entries(&before, t, &policy).expect("the log folds");
             for row in view::entries(&after, t, &policy).expect("the log folds") {
-                match rows.iter().find(|was| was.todo == row.todo) {
+                match rows.iter().find(|was| was.key == row.key) {
                     Some(was) => {
-                        prop_assert_eq!(&row.outcome, &was.outcome, "state");
+                        prop_assert_eq!(row.outcome(), was.outcome(), "state");
                         prop_assert_eq!(&row.claim, &was.claim, "claim");
                         prop_assert_eq!(row.spec(), was.spec(), "spec");
-                        prop_assert_eq!(&row.content, &was.content, "content");
+                        prop_assert_eq!(row.content(), was.content(), "content");
                     }
                     // The tending is the todo's first mention: an open row,
                     // unpriced and with no content, like any mention.
                     None => {
                         prop_assert!(row.is_open());
                         prop_assert_eq!(row.spec(), &fpl::mk_absent());
-                        prop_assert!(row.content.is_empty());
+                        prop_assert!(row.content().is_empty());
                     }
                 }
             }
@@ -770,28 +770,28 @@ proptest! {
         let prodrome = state.prodromes().get(&None).expect("a legacy prodrome");
 
         prop_assert_eq!(
-            rows.iter().map(|row| &row.todo).collect::<Vec<_>>(),
+            rows.iter().map(|row| &row.key).collect::<Vec<_>>(),
             prodrome.keys().collect::<Vec<_>>()
         );
         let functions = prodrome::fold::flatten(prodrome, now, &policy).expect("flattens");
         let specs = prodrome::fold::link_specs(&functions, prodrome.keys());
         let env = prodrome::fold::env(prodrome, now, &policy);
         for row in &rows {
-            let stream = &prodrome[&row.todo];
+            let stream = &prodrome[&row.key];
             let registers = prodrome::fold::read(stream, Some(now), &policy);
-            prop_assert_eq!(&row.outcome, &registers.outcomes(), "outcome");
+            prop_assert_eq!(row.outcome(), &registers.outcomes(), "outcome");
             let claimed = prodrome::fold::read(stream, Some(now), &Everything).outcomes();
             let kinds = |c: &fpl::Candidates| -> BTreeSet<&str> {
                 c.iter().map(|b| b.map_or("open", |b| b.kind())).collect()
             };
             let disputed = kinds(&claimed) != kinds(&registers.outcomes());
-            prop_assert_eq!(&row.claim, &disputed.then_some(claimed), "claim");
-            let spec = functions.get(&row.todo).cloned().unwrap_or_else(fpl::mk_absent);
+            prop_assert_eq!(row.claim.as_ref().map(|claim| &claim.outcome), disputed.then_some(&claimed), "claim");
+            let spec = functions.get(&row.key).cloned().unwrap_or_else(fpl::mk_absent);
             prop_assert_eq!(row.spec(), &spec, "spec");
             let linked = fpl::link(&spec, &specs);
             prop_assert_eq!(row.value(), linked.as_ref().map(|l| fpl::fulfillment(l, now, &env)));
             let names: Vec<Hash> = registers.content.candidates().iter().map(|s| s.name.clone()).collect();
-            prop_assert_eq!(&row.content, &names, "content");
+            prop_assert_eq!(row.content(), &names, "content");
             prop_assert_eq!(&row.conflicts, &registers.conflicts(), "conflicts");
             let provisional = disputed
                 || registers.content.candidates().iter().any(|s| !policy.confirms(&*s.event));
@@ -830,7 +830,8 @@ proptest! {
             let dag = view::entries(&nodes, t, &policy).expect("folds");
             let chain = view::entries(&chain_of(&linear), t, &policy).expect("folds");
             for (a, b) in dag.iter().zip(&chain) {
-                prop_assert_eq!((&a.todo, &a.outcome, &a.claim), (&b.todo, &b.outcome, &b.claim));
+                let claimed = |row: &view::Entry<Event>| row.claim.as_ref().map(|claim| claim.outcome.clone());
+                prop_assert_eq!((&a.key, a.outcome(), claimed(a)), (&b.key, b.outcome(), claimed(b)));
                 prop_assert_eq!((a.spec(), a.value(), a.confidence), (b.spec(), b.value(), b.confidence));
             }
         }
@@ -854,7 +855,7 @@ proptest! {
         for t in [moment(when), far()] {
         let now = fpl::instant_of(t);
         for row in view::entries(&nodes, t, &policy).expect("folds") {
-            let stream = &state.prodromes()[&None][&row.todo];
+            let stream = &state.prodromes()[&None][&row.key];
             let registers = prodrome::fold::read(stream, Some(now), &policy);
             if registers.state.candidates().len() < 2 && registers.spec.candidates().len() < 2 {
                 continue;
@@ -888,13 +889,13 @@ proptest! {
                         })
                         .collect();
                     let rows = view::entries(&world, t, &policy).expect("folds");
-                    let value = rows.iter().find(|r| r.todo == row.todo).expect("a row").value();
+                    let value = rows.iter().find(|r| r.key == row.key).expect("a row").value();
                     if let Ok(Some(value)) = value {
                         least = Some(least.map_or(value, |l: f64| l.min(value)));
                     }
                 }
             }
-            prop_assert_eq!(row.value(), Ok(least), "{:?}", row.todo);
+            prop_assert_eq!(row.value(), Ok(least), "{:?}", row.key);
         }
         }
     }
@@ -914,7 +915,7 @@ proptest! {
             diverged(&realise(&shared, 0), &branch(&mine, "mine"), &branch(&theirs, "theirs"));
         let nodes = nodes_from(&store);
         let t = moment(when);
-        let sorted = |nodes: &[Chain]| -> Vec<view::Entry> {
+        let sorted = |nodes: &[Chain]| -> Vec<view::Entry<Event>> {
             let mut rows = view::entries(nodes, t, &policy).expect("folds");
             for row in &mut rows {
                 row.stream.sort();
@@ -950,7 +951,7 @@ proptest! {
             view::entries(nodes, t, &policy)
                 .expect("folds")
                 .into_iter()
-                .map(|row| (row.todo.clone(), (row.outcome, row.price)))
+                .map(|row| (row.key.clone(), (row.reading.outcome, row.price)))
                 .collect()
         };
         let before = nodes_from(&store);
@@ -1161,9 +1162,9 @@ proptest! {
         let rows = view::entries(&chain_of(&log), t, &policy).expect("the log folds");
         let functions = flatten(&log, t, &policy).expect("the log folds");
         let env = env_at(&log, t, &policy);
-        let specs = prodrome::fold::link_specs(&functions, rows.iter().map(|row| &row.todo));
+        let specs = prodrome::fold::link_specs(&functions, rows.iter().map(|row| &row.key));
         for row in &rows {
-            let spec = functions.get(&row.todo).cloned().unwrap_or_else(fpl::mk_absent);
+            let spec = functions.get(&row.key).cloned().unwrap_or_else(fpl::mk_absent);
             prop_assert_eq!(row.spec(), &spec);
             let linked = fpl::link(&spec, &specs);
             prop_assert_eq!(

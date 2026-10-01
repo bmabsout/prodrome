@@ -7,12 +7,17 @@
 
 use std::marker::PhantomData;
 
-use crate::event::{event_from_value, Actor, TodoEvent, TodoId};
+use std::collections::BTreeSet;
+
+use crate::event::{event_from_value, Actor, Hash, TodoEvent, TodoId};
 use crate::fold::{Discrete, Kind, RegisterType, Registers, Write};
+use crate::fpl::{Candidates, Env, FplError, Outcome};
 use crate::literal::{Datetime, ProdromeError, Signature, Table, Value, Vocabulary};
 use crate::payload::{record_signature, Payload};
-use crate::schema::Schema;
+use crate::policy::Policy;
+use crate::schema::{Schema, Valuation};
 use crate::term::schema::signatures;
+use crate::term::Term;
 
 /// The todo's six kinds, name and declared field order: lifecycle, care and
 /// price, whose fields are the database's semantics.
@@ -102,6 +107,67 @@ impl<P: Payload> Schema for TodoEvent<P> {
     fn asks(&self) -> bool {
         !matches!(self, TodoEvent::Authored(_))
     }
+}
+
+/// What a todo's row shows (§6.7): its candidate outcomes, `{None}` for
+/// open, and the NAMES of its candidate content records, sorted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reading {
+    pub outcome: Candidates,
+    pub content: Vec<Hash>,
+}
+
+/// FPL prices a todo (§6.4, §7): a flat 1.0 while resolved, else its spec on
+/// its checklist.
+impl<P: Payload> Valuation for TodoEvent<P> {
+    type Reading = Reading;
+
+    fn reading(registers: &Registers<'_, P>) -> Reading {
+        Reading {
+            outcome: registers.outcomes(),
+            content: registers
+                .content
+                .reading::<Content>()
+                .iter()
+                .map(|stamp| stamp.name.clone())
+                .collect(),
+        }
+    }
+
+    /// The candidates' kinds, `"open"` for none: the instants alone do not
+    /// dispute a binding.
+    fn disputes(confirmed: &Reading, claimed: &Reading) -> bool {
+        kinds(&confirmed.outcome) != kinds(&claimed.outcome)
+    }
+
+    /// A candidate content record the policy does not confirm: it binds, and
+    /// it is still its writer's.
+    fn unconfirmed(registers: &Registers<'_, P>, policy: &impl Policy<Self>) -> bool {
+        registers
+            .content
+            .reading::<Content>()
+            .iter()
+            .any(|stamp| !policy.confirms(&stamp.event))
+    }
+
+    fn bind(todo: &TodoId, registers: &Registers<'_, P>, env: &mut Env) {
+        registers.bind(todo, env);
+    }
+
+    fn worlds(
+        now: &Registers<'_, P>,
+        first: &Registers<'_, P>,
+        head: Option<&Term>,
+    ) -> Result<Vec<Term>, FplError> {
+        now.worlds(first, head)
+    }
+}
+
+fn kinds(candidates: &Candidates) -> BTreeSet<&'static str> {
+    candidates
+        .iter()
+        .map(|binding| binding.as_ref().map_or("open", Outcome::kind))
+        .collect()
 }
 
 /// The state register: a todo's lifecycle, discrete.

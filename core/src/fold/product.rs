@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 
+use crate::event::Hash;
 use crate::fold::Frontier;
 use crate::literal::ProdromeError;
 use crate::registers::Stamp;
@@ -21,6 +23,10 @@ pub trait Product<'a, E: Schema>: Default + Clone + Debug + PartialEq {
     /// The frontier of a register a write supersedes in.
     fn frontier(&self, register: E::Register) -> &Frontier<'a, E>;
 
+    /// The same, to join a write into that register alone: how the fold
+    /// builds each register's earliest writes (§6.4).
+    fn frontier_mut(&mut self, register: E::Register) -> &mut Frontier<'a, E>;
+
     /// The append's refusal (design §3.1): where `event` writes a register
     /// whose type is inflationary, its value must stand at or above that
     /// register's reading, which it supersedes. A schema with no inflationary
@@ -30,4 +36,14 @@ pub trait Product<'a, E: Schema>: Default + Clone + Debug + PartialEq {
     ///
     /// A write whose value falls below, or beside, the reading it supersedes.
     fn grows(&self, event: &E) -> Result<(), ProdromeError>;
+
+    /// Every register with more than one write in its frontier, each named
+    /// by its writes: what a human settles with the next one.
+    fn conflicts(&self) -> BTreeMap<E::Register, Vec<Hash>> {
+        E::REGISTERS
+            .iter()
+            .filter(|register| self.frontier(**register).is_conflict())
+            .map(|register| (*register, self.frontier(*register).names()))
+            .collect()
+    }
 }

@@ -275,7 +275,7 @@ proptest! {
         let t = moment(when);
         let mut rows = view::entries(&nodes(&a), t, &roster()).expect("folds");
         rows.extend(view::entries(&nodes(&b), t, &roster()).expect("folds"));
-        rows.sort_by(|x, y| (&x.genesis, &x.todo).cmp(&(&y.genesis, &y.todo)));
+        rows.sort_by(|x, y| (&x.genesis, &x.key).cmp(&(&y.genesis, &y.key)));
         prop_assert_eq!(view::entries(&nodes(&united), t, &roster()).expect("folds"), rows);
 
         prop_assert!(united.append(event.clone()).is_err(), "a writer names its genesis");

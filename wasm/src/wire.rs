@@ -442,9 +442,9 @@ pub fn json_record<P: Payload>(record: &Authored<P>) -> Value {
 /// rule and is deliberate: it is the value's IDENTITY (§3), it is what the
 /// vector compares, and no page reads it. A caller that wants the JSON shape
 /// has [`crate::term_json`], the §2 → §7 door.
-pub fn json_entry(entry: &Entry) -> Value {
+pub fn json_entry<P: Payload>(entry: &Entry<TodoEvent<P>>) -> Value {
     json!({
-        "todo": entry.todo.as_str(),
+        "todo": entry.key.as_str(),
         "state": entry.state(),
         "at": entry.at(),
         "claimed": entry.claimed(),
@@ -467,7 +467,7 @@ pub fn json_entry(entry: &Entry) -> Value {
                 })
                 .collect(),
         ),
-        "content": match &entry.content[..] {
+        "content": match entry.content() {
             [] => Value::Null,
             [one] => json!(one.as_str()),
             many => strings(many.iter().map(|name| name.as_str().to_owned())),
@@ -508,7 +508,11 @@ mod tests {
     use prodrome::fold::Kind;
     use prodrome::fpl::{instant_of, mk_flat};
     use prodrome::literal::Datetime;
+    use prodrome::reference::Todo;
+    use prodrome::todo::Reading;
     use prodrome::view::{Confidence, Price, Provisional};
+
+    type Row = Entry<TodoEvent<Todo>>;
 
     fn at(day: u32) -> Datetime {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
@@ -526,10 +530,13 @@ mod tests {
     /// never as `to_json`'s shape.
     #[test]
     fn an_entry_crosses_as_the_eleven_keys_the_page_reads() {
-        let entry = Entry {
+        let entry: Row = Entry {
             genesis: None,
-            todo: TodoId::new("alpha").expect("valid"),
-            outcome: [Some(Outcome::Completed(instant_of(at(3))))].into(),
+            key: TodoId::new("alpha").expect("valid"),
+            reading: Reading {
+                outcome: [Some(Outcome::Completed(instant_of(at(3))))].into(),
+                content: vec![name('a')],
+            },
             claim: None,
             confidence: Confidence::Provisional(Provisional::Content),
             price: Price {
@@ -537,7 +544,6 @@ mod tests {
                 value: Ok(Some(0.25)),
                 linked: Ok(fpl::Closed::of(mk_flat(0.25).expect("valid")).expect("closed")),
             },
-            content: vec![name('a')],
             conflicts: [(Kind::State, vec![name('b'), name('c')])]
                 .into_iter()
                 .collect(),
@@ -566,18 +572,23 @@ mod tests {
     /// `Absent()` and `null` — never a zero and never a missing key.
     #[test]
     fn an_open_unpriced_todo_crosses_as_absences_and_not_as_zeroes() {
-        let entry = Entry {
+        let entry: Row = Entry {
             genesis: None,
-            todo: TodoId::new("beta").expect("valid"),
-            outcome: [None].into(),
-            claim: Some([Some(Outcome::Cancelled(instant_of(at(5))))].into()),
+            key: TodoId::new("beta").expect("valid"),
+            reading: Reading {
+                outcome: [None].into(),
+                content: vec![],
+            },
+            claim: Some(Reading {
+                outcome: [Some(Outcome::Cancelled(instant_of(at(5))))].into(),
+                content: vec![],
+            }),
             confidence: Confidence::Provisional(Provisional::Claimed),
             price: Price {
                 spec: fpl::mk_absent(),
                 value: Ok(None),
                 linked: Ok(fpl::Closed::of(fpl::mk_absent()).expect("closed")),
             },
-            content: vec![],
             conflicts: BTreeMap::new(),
             stream: vec![],
         };
@@ -721,10 +732,13 @@ mod tests {
         );
         assert_eq!(parse_env(&json.to_string()).expect("round-trips"), env);
 
-        let entry = Entry {
+        let entry: Row = Entry {
             genesis: None,
-            todo: TodoId::new("alpha").expect("valid"),
-            outcome: candidates,
+            key: TodoId::new("alpha").expect("valid"),
+            reading: Reading {
+                outcome: candidates,
+                content: vec![name('a'), name('b')],
+            },
             claim: None,
             confidence: Confidence::Confirmed,
             price: Price {
@@ -732,7 +746,6 @@ mod tests {
                 value: Ok(None),
                 linked: Ok(fpl::Closed::of(fpl::mk_absent()).expect("closed")),
             },
-            content: vec![name('a'), name('b')],
             conflicts: BTreeMap::new(),
             stream: vec![],
         };
@@ -755,10 +768,13 @@ mod tests {
     /// A function that does not link crosses with no value and the reason.
     #[test]
     fn an_unlinked_entry_crosses_with_its_reason() {
-        let entry = Entry {
+        let entry: Row = Entry {
             genesis: None,
-            todo: TodoId::new("alpha").expect("valid"),
-            outcome: [None].into(),
+            key: TodoId::new("alpha").expect("valid"),
+            reading: Reading {
+                outcome: [None].into(),
+                content: vec![],
+            },
             claim: None,
             confidence: Confidence::Confirmed,
             price: Price {
@@ -766,7 +782,6 @@ mod tests {
                 value: Err(fpl::LinkError::Unknown("ghost".to_owned())),
                 linked: Err(fpl::LinkError::Unknown("ghost".to_owned())),
             },
-            content: vec![],
             conflicts: BTreeMap::new(),
             stream: vec![],
         };
