@@ -8,10 +8,11 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use crate::change::mk_change;
 use crate::dag::{decode, Dag, Unread};
 use crate::event::{canonical, canonical_envelope, parents_of, Envelope, Hash};
 use crate::literal::{Datetime, ProdromeError};
-use crate::registers::{fold, Folded, Genesis};
+use crate::registers::{deps_for, fold, Folded, Genesis};
 use crate::schema::Schema;
 
 /// A store's objects as it last read them, and their fold.
@@ -48,6 +49,10 @@ pub struct Memory<E: Schema> {
     geneses: BTreeSet<Hash>,
 }
 
+/// An object with the print it is named by: what a replica places, sends
+/// and holds.
+pub type Printed<E> = (Verified<E>, Vec<u8>);
+
 /// An object whose name is the hash of its bytes, which is the only way into
 /// a [`Memory`].
 pub struct Verified<E> {
@@ -58,9 +63,9 @@ pub struct Verified<E> {
 impl<E: Schema> Verified<E> {
     /// An object sealed here, and the print it is named by, which is what
     /// its file holds.
-    pub fn sealed(object: Envelope<E>) -> (Verified<E>, String) {
-        let print = canonical_envelope(&object);
-        let name = Hash::of_bytes(print.as_bytes());
+    pub fn sealed(object: Envelope<E>) -> Printed<E> {
+        let print = canonical_envelope(&object).into_bytes();
+        let name = Hash::of_bytes(&print);
         (Verified { name, object }, print)
     }
 
@@ -147,6 +152,56 @@ impl<E: Schema> Memory<E> {
 
     pub fn dag(&self) -> &Arc<Dag<E>> {
         &self.dag
+    }
+
+    /// The genesis a writer writes into: `chosen`, which must be held, or
+    /// else the only one.
+    ///
+    /// # Errors
+    ///
+    /// `chosen` not held; none held; several held and none chosen.
+    pub fn writer(&self, chosen: Option<&Hash>) -> Result<Hash, ProdromeError> {
+        let mut sole = self.geneses.iter();
+        match (chosen, sole.next(), sole.next()) {
+            (Some(mine), ..) if self.geneses.contains(mine) => Ok(mine.clone()),
+            (Some(mine), ..) => Err(ProdromeError::Store(format!(
+                "the store holds no genesis {}",
+                mine.as_str()
+            ))),
+            (None, Some(one), None) => Ok(one.clone()),
+            (None, None, _) => Err(ProdromeError::Store(
+                "the store has no genesis: `init` it first".to_owned(),
+            )),
+            (None, Some(_), Some(_)) => Err(ProdromeError::Store(format!(
+                "the store holds {} geneses: name the writer's with `in_genesis`",
+                self.geneses.len()
+            ))),
+        }
+    }
+
+    /// WHAT AN APPEND OF `event` WRITES, decided on what is held and the
+    /// same for every replica (SPEC §3): its name, and the object sealed
+    /// with its print, or no object where the writer's prodrome holds a
+    /// twin, whose name it is.
+    ///
+    /// # Errors
+    ///
+    /// [`Memory::writer`]'s, and the append's refusals: an inflationary
+    /// register written below its reading, a change no constructor makes.
+    pub fn change(
+        &mut self,
+        writer: Option<&Hash>,
+        event: E,
+    ) -> Result<(Hash, Option<Printed<E>>), ProdromeError> {
+        let genesis = self.writer(writer)?;
+        let prodrome = self.dag.key(&genesis);
+        if let Some(twin) = self.twin(&prodrome, &event)? {
+            return Ok((twin, None));
+        }
+        let deps = deps_for(self.folded()?, &prodrome, &event)?;
+        let (verified, print) =
+            Verified::sealed(Envelope::Change(mk_change(genesis, deps, event)?));
+        Ok((verified.name.clone(), Some((verified, print))))
     }
 
     /// The fold of what is held, across a parent set aside: taken from
@@ -312,6 +367,56 @@ impl<E: Schema> Memory<E> {
             }
         }
     }
+}
+
+/// WHAT A REPLICA LACKS of what `seeds` rest on, VERIFIED ON RECEIPT: a
+/// walk down from `seeds` through what each object names (its parents and
+/// its genesis), ending each branch at an object `held` holds, since a
+/// replica is closed under parents, and reading every other one by
+/// `print_of` and rehashing it against its name. Parents first, so every
+/// prefix of the answer, placed, is closed under parents.
+///
+/// # Errors
+///
+/// A name `print_of` has no print for ("missing object …, named as a
+/// parent"), and a print that does not hash to its name or does not parse.
+/// Nothing is answered unless everything verified.
+pub fn receive<E: Schema>(
+    held: impl Fn(&Hash) -> bool,
+    seeds: impl IntoIterator<Item = Hash>,
+    print_of: impl Fn(&Hash) -> Option<Vec<u8>>,
+) -> Result<Vec<Printed<E>>, ProdromeError> {
+    /// A depth-first walk, emitting an object once its parents are.
+    enum Visit<E> {
+        Enter(Hash),
+        Leave(Verified<E>, Vec<u8>),
+    }
+    let mut entered: BTreeSet<Hash> = BTreeSet::new();
+    let mut taken = Vec::new();
+    let mut pending: Vec<Visit<E>> = seeds.into_iter().map(Visit::Enter).collect();
+    while let Some(visit) = pending.pop() {
+        let name = match visit {
+            Visit::Leave(verified, print) => {
+                taken.push((verified, print));
+                continue;
+            }
+            Visit::Enter(name) => name,
+        };
+        if !entered.insert(name.clone()) || held(&name) {
+            continue;
+        }
+        let Some(print) = print_of(&name) else {
+            return Err(ProdromeError::Store(format!(
+                "missing object {}, named as a parent",
+                name.as_str()
+            )));
+        };
+        let verified = Verified::read(&name, &print).map_err(|why| why.refusal(&name))?;
+        let names = named(verified.object());
+        pending.push(Visit::Leave(verified, print));
+        pending.extend(names.into_iter().map(Visit::Enter));
+    }
+    Ok(taken)
 }
 
 /// What an object names: its parents, and the genesis of its prodrome.
