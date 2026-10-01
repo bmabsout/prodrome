@@ -34,7 +34,21 @@ are new constructors and no stored object changes; a legacy store derives,
 linearises and verifies as it did, and reads as it did wherever no register
 holds two candidates. The API breaks where a register had a winner.
 
+And register types, stage 1 (`docs/design-register-types.md`): a register's
+values are partially ordered and its reading is their maximal values. A
+MINOR change under this file's rule: the todo's registers are discrete, so
+every reading and every stored byte is as it was.
+
 ### Added
+
+- **`fold::Order` (SPEC §6):** a partial order on a register's values, with
+  `Discrete` (the default), `Total` and inclusion on a set as instances;
+  `fold::maximal` and `Frontier::read` are the completion, a register's
+  reading as the maximal values of its frontier. `fold::Inflationary`
+  declares a register that may only grow, and `fold::grows` is the refusal an
+  append of a write that goes back meets; no todo register supersedes a write
+  it could refuse, so the store calls it from stage 2's schemas. SPEC laws
+  30–32 and their evidence, `core/tests/all/order_laws.rs`.
 
 - **`Absent`, a new leaf of `TermF` (SPEC §7):** `∅` at every instant,
   printed `Absent()`, built by `fpl::mk_absent`. `∅` is the identity of
