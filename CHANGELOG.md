@@ -39,7 +39,38 @@ values are partially ordered and its reading is their maximal values. A
 MINOR change under this file's rule: the todo's registers are discrete, so
 every reading and every stored byte is as it was.
 
+And register types, stage 2: a store is opened at a SCHEMA, the type of its
+events, and the store, the fold, `verify` and the view are generic over one;
+the todo schema is the reference one. A MINOR change under this file's rule:
+no stored byte and no object name moves, and every vector reads as it did.
+The API breaks wherever a type was parameterised by the payload.
+
 ### Added
+
+- **`schema::Schema` (SPEC §4, §6, §8):** what a store's events are and what
+  each writes: the vocabulary (`Vocabulary`, `to_value`, `from_value`), the
+  `key`, `at` and `actor` of an event, the registers it supersedes in
+  (`Register`, `REGISTERS`, `writes`), an entity's registers as a
+  `fold::Product`, and which events a policy is asked about (`asks`). The
+  event type is the schema; `TodoEvent<P>` is the todo schema, in the new
+  `todo` module with its vocabulary `TodoVocabulary`, its register types
+  `State`, `Spec` and `Content`, and its row's `todo::Reading`.
+- **`fold::Product` and `fold::RegisterType`:** an entity's registers as a
+  product of semilattices joined by the schema's route, with each superseding
+  register's frontier by name, its conflicts, and the append's refusal
+  (`grows`); a register type names its values, their order and the value a
+  write gives it. `Frontier::reading` reads a frontier under one, and
+  `Frontier::grows` refuses a write below an inflationary one's reading.
+  `fold::read` is the one fold, over any schema.
+- **`schema::Valuation`:** the optional price of a schema's entities, a
+  reading's worlds each priced as a term, the reading `Least` over them
+  (`fold::price`), and what a priced row shows. An entity whose schema has
+  none has no row and no price.
+- `event::ENVELOPE_SIGNATURES` and `todo::TODO_SIGNATURES`, the two halves of
+  what `EVENT_SIGNATURES` was.
+- SPEC law 33, a reading is a function of the object set, over the todo
+  schema and a review schema in the tests (`core/tests/all/review.rs`,
+  `schema_laws.rs`), which also drive law 32 through the store's append.
 
 - **`fold::Order` (SPEC §6):** a partial order on a register's values, with
   `Discrete` (the default), `Total` and inclusion on a set as instances;
@@ -167,6 +198,28 @@ every reading and every stored byte is as it was.
   semilattice), and `conformance/change.py`, NEW and written by hand.
 
 ### Changed (breaking)
+
+- **A store's type parameter is its schema, the event type, where it was the
+  payload.** `EventStore<P, Pol>` is `EventStore<TodoEvent<P>, Pol>`, and so
+  `Dag`, `Envelope`, `Change`, `registers::{Node, Stamp, Folded, Prodrome}`,
+  `fold::Frontier`, `decode`, `parse_envelope`, `parse_event` and
+  `EventVocabulary`. `Policy<P>` is `Policy<E: Schema>`, and asks about
+  `&E`: a call through a blanket policy (`Untrusted`, `Everything`) on an
+  `Arc<E>` or a `&&E` names the event, `policy.standing(&*stamp.event)`.
+- `Folded::todos` is `Folded::entities`. `registers::deps_for` answers a
+  `Result`, refusing a write an inflationary register would refuse.
+- `fold::Registers::read(stream, at, policy)` is `fold::read(stream, at,
+  policy)`; `frontier` and `conflicts` are `fold::Product` methods, so a
+  caller imports the trait. `fold::env` and `fold::flatten` take any
+  `Valuation`, and `fold::link_specs` any key that reads as a string.
+- **`view::Entry` is `Entry<E: Valuation>`:** `todo` is `key`; `outcome` and
+  `content` are the todo `reading`'s fields, `entry.reading.outcome` and
+  `entry.reading.content`, read by `Entry::outcome()` and
+  `Entry::content()`; `claim` is the claimed `todo::Reading`;
+  `conflicts` is keyed by the schema's register names (`fold::Kind` for a
+  todo); `list_order` is generic.
+- `EVENT_SIGNATURES` is gone: `event::ENVELOPE_SIGNATURES` and
+  `todo::TODO_SIGNATURES` are its halves.
 
 - **A value is `Option<f64>`**, `None` being `∅`, so it cannot be read as a
   number: `fpl::fulfillment`, `Compiled::fulfillment`, `Explanation::value`
