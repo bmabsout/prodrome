@@ -27,7 +27,7 @@ use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
 use crate::registers::{Prodrome, Stamp};
-use crate::schema::{History, Price, Schema, Valuation};
+use crate::schema::{Bind, History, Price, Schema};
 use crate::term::Term;
 use crate::todo::{Content, Spec, State};
 
@@ -228,7 +228,7 @@ fn or_first<T>(mine: Vec<T>, theirs: Vec<T>) -> Vec<T> {
 
 /// §6.1 — the environment at `at`: what FPL's terms read of each entity (a
 /// todo's candidate bindings and its tendings).
-pub fn env<E: Valuation>(prodrome: &Prodrome<E>, at: Instant, policy: &impl Policy<E>) -> Env {
+pub fn env<E: Bind>(prodrome: &Prodrome<E>, at: Instant, policy: &impl Policy<E>) -> Env {
     let mut env = Env::new();
     for (key, stream) in prodrome {
         E::bind(key, &read(stream, Some(at), policy), &mut env);

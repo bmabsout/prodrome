@@ -15,7 +15,7 @@ use crate::fpl::{Candidates, Env, FplError, Outcome};
 use crate::literal::{Datetime, ProdromeError, Signature, Table, Value, Vocabulary};
 use crate::payload::{record_signature, Payload};
 use crate::policy::Policy;
-use crate::schema::{History, Price, Schema, Valuation};
+use crate::schema::{Bind, History, Price, Schema, Valuation};
 use crate::term::schema::signatures;
 use crate::term::Term;
 
@@ -137,8 +137,7 @@ impl<P: Payload> History for TodoEvent<P> {
     }
 }
 
-/// A todo's row shows its candidate outcomes and records, and a `Ref` to it
-/// reads its bindings and tendings.
+/// A todo's row shows its candidate outcomes and records.
 impl<P: Payload> Valuation for TodoEvent<P> {
     type Reading = Reading;
 
@@ -169,7 +168,10 @@ impl<P: Payload> Valuation for TodoEvent<P> {
             .iter()
             .any(|stamp| !policy.confirms(&stamp.event))
     }
+}
 
+/// A `Ref` to a todo reads its candidate bindings and its tendings.
+impl<P: Payload> Bind for TodoEvent<P> {
     fn bind(todo: &TodoId, registers: &Registers<'_, P>, env: &mut Env) {
         registers.bind(todo, env);
     }

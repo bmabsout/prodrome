@@ -132,11 +132,18 @@ pub trait History: Price {
     ) -> Result<Vec<Term>, FplError>;
 }
 
-/// What a priced row shows (§6.7), and what FPL's terms read of an entity.
-/// [`crate::view::entries`] asks for it, and nothing else does.
-///
-/// An entity's key is the name a `Ref` gives it, so it reads as a string.
-pub trait Valuation: History<Key: AsRef<str>> {
+/// What FPL's `Ref`s read of an entity in this store (§6.1, §7.2): its key is
+/// the name a `Ref` gives it, so it reads as a string, and [`Bind::bind`]
+/// records what the environment holds of it. An entity in ANOTHER store is
+/// a host's environment, passed in, never a method of a schema.
+pub trait Bind: Schema<Key: AsRef<str>> {
+    /// What FPL's terms read of an entity at a reading, recorded in `env`.
+    fn bind(key: &Self::Key, registers: &Self::Registers<'_>, env: &mut Env);
+}
+
+/// What a priced row shows (§6.7). [`crate::view::entries`] asks for it, and
+/// nothing else does.
+pub trait Valuation: History + Bind {
     /// What a priced row shows of an entity's registers.
     type Reading: Clone + PartialEq + std::fmt::Debug;
 
@@ -148,7 +155,4 @@ pub trait Valuation: History<Key: AsRef<str>> {
 
     /// Does the reading show a write the policy binds and does not confirm?
     fn unconfirmed(registers: &Self::Registers<'_>, policy: &impl Policy<Self>) -> bool;
-
-    /// What FPL's terms read of an entity (§6.1), recorded in `env`.
-    fn bind(key: &Self::Key, registers: &Self::Registers<'_>, env: &mut Env);
 }
