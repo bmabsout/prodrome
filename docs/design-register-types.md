@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 and 2 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -233,7 +233,21 @@ In this repository, each one PR:
    `Product::grows`. A review schema in the tests, with no valuation, runs
    law 1 beside the todo's and law 4 through the append (SPEC laws 32 and
    33); law 5 is SPEC law 24 and law 6 is law 22, every vector unchanged.
-3. **The wasm.** The exports read a store at a schema.
+3. **The wasm.** The exports read a store at a schema. BUILT: the exports
+   are generic over a schema (`prodrome-wasm-exports`, a library): `verify`, `tips`
+   and each prodrome's heads, `since` a replica's tips, and `readings`, each
+   register's maximal writes through `fold::Product::reading`, for any
+   schema; `entries` and `prices` for one with a `Valuation`. A schema
+   crosses the boundary by `Json` beside it (its key's field, its
+   registers' names, its values' JSON, a function of the value) and, priced,
+   `PricedJson` (its reading's JSON); not a bound on `Schema`, since
+   JSON is the boundary's and a schema read natively owes it nothing. A host
+   says `prodrome_wasm_exports::schema!(Name = Schema)`, with `, priced`
+   for a valuation, once per schema, each a JS class in ONE module, its own
+   `cdylib` crate. `prodrome-wasm` is the reference module, built the same
+   way: the todo schema at the reference payload, `Todos`, beside its old
+   exports, byte for byte; the tests' review schema runs through the
+   same macro over a small store.
 
 In a host (the first one), after stage 2:
 

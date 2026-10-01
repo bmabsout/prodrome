@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cli", "core", "github", "wasm"]
+members = ["cli", "core", "github", "wasm", "wasm/exports"]
 # Typst lives outside the core's workspace, with its own lock file: the
 # viewer's optional extra, never a dependency of `core/` or `cli/`.
 exclude = ["typst-wasm"]

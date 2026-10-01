@@ -70,10 +70,10 @@ fn history<E: Schema>(events: &[(E, u64)]) -> Vec<(Hash, Envelope<E>)> {
     objects
 }
 
-/// Every register's frontier, by name, for every entity: the reading the
-/// law is about, compared by object names because a fold's positions are
-/// its own business.
-type Reading<E> = BTreeMap<(Genesis, <E as Schema>::Key), Vec<Vec<Hash>>>;
+/// Every register's frontier and its reading by name ([`Product::reading`]),
+/// for every entity: what the law is about, compared by object names because
+/// a fold's positions are its own business.
+type Reading<E> = BTreeMap<(Genesis, <E as Schema>::Key), Vec<(Vec<Hash>, Vec<Hash>)>>;
 
 fn reading<E: Schema>(state: &Folded<E>) -> Reading<E> {
     let mut out = BTreeMap::new();
@@ -82,7 +82,11 @@ fn reading<E: Schema>(state: &Folded<E>) -> Reading<E> {
             let registers = read(stream, None, &Everything);
             let frontiers = E::REGISTERS
                 .iter()
-                .map(|register| registers.frontier(*register).names())
+                .map(|register| {
+                    let read = registers.reading(*register);
+                    let names = read.iter().map(|stamp| stamp.name.clone()).collect();
+                    (registers.frontier(*register).names(), names)
+                })
                 .collect();
             out.insert((genesis.clone(), key.clone()), frontiers);
         }

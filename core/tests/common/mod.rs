@@ -688,7 +688,7 @@ pub fn flatten(
 /// not link, a term as its §2 PRINT. That is
 /// deliberate and is what `conformance/view/*.py` is frozen against: the entry
 /// as a CONSUMER reads it, not as the `Entry` struct happens to be shaped.
-/// `wasm/src/wire.rs`'s own test pins the JSON spelling of these same fields.
+/// `wasm/exports/src/wire.rs`'s own test pins the JSON spelling of these same fields.
 pub fn entry_value(
     entry: &prodrome::view::Entry<prodrome::event::TodoEvent<prodrome::reference::Todo>>,
 ) -> Value {

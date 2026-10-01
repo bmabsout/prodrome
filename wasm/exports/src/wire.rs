@@ -1,6 +1,6 @@
 //! The JSON shapes that cross the boundary, and nothing else.
 //!
-//! `lib.rs` is the six exported functions; this is what their arguments and
+//! The exports are functions of JSON text; this is what their arguments and
 //! their answers LOOK like, written down once so that a page's own API module's
 //! mirror has a single thing to mirror. Everything is JSON text: a string in,
 //! a string out. That is deliberate — `serde-wasm-bindgen` would let a JS
@@ -10,8 +10,8 @@
 //!
 //! ONE INSTANT SHAPE IN AND OUT: `fpl::iso` (`2026-09-06T11:32:07`), what
 //! `datetime.isoformat()` prints and what every `at` on the JSON API carries.
-//! So `fold`'s `env` can be handed straight back to [`crate::fulfillment`],
-//! and `fold`'s `history` straight back to [`crate::series_knots`], with
+//! So `fold`'s `env` can be handed straight back to `fulfillment`,
+//! and `fold`'s `history` straight back to `series_knots`, with
 //! nothing rewritten in between — a translation step is where a second reading
 //! grows.
 //!
@@ -76,6 +76,16 @@ pub fn parse_untrusted(json_text: &str) -> Result<Untrusted, Refusal> {
     Ok(Untrusted::of(actors))
 }
 
+/// A JSON array of object names, each checked as one.
+pub fn parse_names(field: &str, json_text: &str) -> Result<Vec<Hash>, Refusal> {
+    let names: Vec<String> = serde_json::from_str(json_text)
+        .map_err(|e| format!("{field}: expected a list of object names ({e})"))?;
+    names
+        .into_iter()
+        .map(|name| Hash::new(name).map_err(|e| format!("{field}: {e}")))
+        .collect()
+}
+
 pub fn parse_instant(field: &str, text: &str) -> Result<Instant, Refusal> {
     fpl::parse_iso(text).map_err(|e| format!("{field}: {e}"))
 }
@@ -90,7 +100,7 @@ pub fn parse_term(field: &str, json_text: &str) -> Result<Term, Refusal> {
     crate::json::from_json(&value).map_err(|e| format!("{field}: {e}"))
 }
 
-/// `{"<todo>": <term>}` — what [`crate::link`] binds each `ref` to, every
+/// `{"<todo>": <term>}` — what `link` binds each `ref` to, every
 /// term in the JSON shape above.
 pub fn parse_specs(json_text: &str) -> Result<BTreeMap<String, Term>, Refusal> {
     let raw: BTreeMap<String, Value> =
@@ -274,7 +284,7 @@ impl History {
 ///
 /// ONE ENV SHAPE, and this is it — `{kind, at}` with an ISO instant, which is
 /// what `parse_env` reads, and therefore what a caller can hand straight back
-/// to [`crate::fulfillment`] without rewriting anything. [`json_entry`]'s `state`/`at` is a RENDERING of this
+/// to `fulfillment` without rewriting anything. [`json_entry`]'s `state`/`at` is a RENDERING of this
 /// (lowercased, `isoformat(" ")`), which `Entry::state`/`Entry::at` perform in
 /// the core so that both bindings spell it one way.
 pub fn json_binding(binding: Outcome) -> Value {
@@ -375,7 +385,7 @@ pub fn json_terms(terms: &BTreeMap<TodoId, Term>) -> Value {
 /// A TERM ARRIVES AS ITS LITERAL SHAPE HERE, not as [`crate::json::to_json`]'s — this
 /// mapping is a payload's, and a payload's fields are opaque to this crate. A
 /// caller that wants a term as `to_json` reads `fold`'s `specs`/`flatten`, or
-/// hands the print to [`crate::term_json`].
+/// hands the print to `term_json`.
 pub fn json_literal(value: &literal::Value) -> Value {
     match value {
         literal::Value::None => Value::Null,
@@ -441,7 +451,7 @@ pub fn json_record<P: Payload>(record: &Authored<P>) -> Value {
 /// `to_json`, which is the exception to this file's "terms travel as JSON"
 /// rule and is deliberate: it is the value's IDENTITY (§3), it is what the
 /// vector compares, and no page reads it. A caller that wants the JSON shape
-/// has [`crate::term_json`], the §2 → §7 door.
+/// has `term_json`, the §2 → §7 door.
 pub fn json_entry<P: Payload>(entry: &Entry<TodoEvent<P>>) -> Value {
     json!({
         "todo": entry.key.as_str(),

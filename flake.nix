@@ -56,6 +56,7 @@
             ./core/Cargo.toml
             ./github/Cargo.toml
             ./wasm/Cargo.toml
+            ./wasm/exports/Cargo.toml
           ] ++ paths);
         };
 
@@ -110,7 +111,7 @@
         # time, and pinning only one of them would make that failure a
         # `nix flake update` away.
         wasmArgs = profile: common // {
-          src = rustSrc [ ./core/src ./wasm/src ];
+          src = rustSrc [ ./core/src ./wasm/src ./wasm/exports/src ];
           nativeBuildInputs = [ pkgs.lld ];
           doCheck = false;
           buildPhaseCargoCommand = ''

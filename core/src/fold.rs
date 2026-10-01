@@ -101,6 +101,14 @@ impl<'a, P: Payload> Product<'a> for Registers<'a, P> {
         }
     }
 
+    fn reading(&self, kind: Kind) -> Vec<&'a Stamp<TodoEvent<P>>> {
+        match kind {
+            Kind::State => self.state.reading::<State>(),
+            Kind::Spec => self.spec.reading::<Spec>(),
+            Kind::Content => self.content.reading::<Content>(),
+        }
+    }
+
     /// No todo register is inflationary: a `Reopened` after a `Completed`
     /// goes back, which is why a todo's conflicts are shown and priced.
     fn grows(&self, _event: &TodoEvent<P>) -> Result<(), ProdromeError> {

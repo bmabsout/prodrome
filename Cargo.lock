@@ -456,6 +456,16 @@ name = "prodrome-wasm"
 version = "0.9.0"
 dependencies = [
  "prodrome-core",
+ "prodrome-wasm-exports",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "prodrome-wasm-exports"
+version = "0.9.0"
+dependencies = [
+ "prodrome-core",
  "serde",
  "serde_json",
  "sha2",
