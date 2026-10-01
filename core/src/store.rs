@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crate::change::mk_change;
 use crate::dag::{decode, tips_among, Dag, Finding};
 use crate::event::{canonical, mk_woven, parents_of, seal_hash, Envelope, Hash, TodoEvent};
+use crate::fold::admit;
 use crate::genesis::mk_genesis;
 use crate::literal::ProdromeError;
 use crate::payload::Payload;
@@ -302,6 +303,8 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
     /// Write `event` as a `Change` over the frontiers of the registers it
     /// writes, or, when the writer's prodrome already holds an object whose
     /// event prints the same, write nothing and answer the first such.
+    /// Refused, with nothing written, where it would make an inflationary
+    /// register's reading fall.
     pub fn append(&self, event: TodoEvent<P>) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         let dag = self.dag()?;
@@ -315,6 +318,7 @@ impl<P: Payload, Pol: Policy<P>> EventStore<P, Pol> {
         if let Some(node) = held {
             return Ok(node.name.clone());
         }
+        admit(&event)?;
         let deps = deps_for(&fold(&nodes), &prodrome, &event);
         self.write(&Envelope::Change(mk_change(genesis, deps, event)?))
     }
