@@ -1,7 +1,8 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01. Successor to `design-change-identity.md`, whose
-frontier this names as the universal part.
+Status: design, 2026-10-01; stage 1 built (§8). Successor to
+`design-change-identity.md`, whose frontier this names as the universal
+part.
 
 ## 0. Why
 
@@ -214,7 +215,9 @@ In this repository, each one PR:
 
 1. **Order and completion.** `Order` on values (a `Discrete<T>` default), the
    completion over `Frontier`, the inflationary refusal, laws 2 to 4. The
-   todo registers are discrete; law 6 holds.
+   todo registers are discrete; law 6 holds. BUILT: `fold::Order`,
+   `fold::maximal` and `Frontier::read`, `fold::Inflationary` and
+   `fold::grows` on the store's append path; SPEC §6 and laws 30 to 32.
 2. **Schema.** The trait (vocabulary, key, registers as a product, route,
    valuation), the todo schema as its reference instance, stores and folds
    generic over it, `view` over a schema with a valuation. Law 1 and law 6.
