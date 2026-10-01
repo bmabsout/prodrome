@@ -96,9 +96,10 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
 ///
 /// A reading in conflict holds more than one candidate. The core prices the
 /// reading as `Least` over their terms ([`crate::fold::price`]): the meet in
-/// the fulfillment order, "price a conflict as its most urgent candidate". It
-/// is not a register's join, and FPL's `Conj`, which aggregates different
-/// entities, is neither.
+/// the fulfillment order, "price a conflict as its most urgent candidate",
+/// whose top is `∅`, so a candidate that prices `∅` never lowers one that
+/// prices a number (law 34). It is not a register's join, and FPL's `Conj`,
+/// which aggregates different entities, is neither.
 pub trait Price: Schema {
     /// The term each candidate of the reading prices as, none for one that
     /// prices nothing. Empty: the entity has no price here.
