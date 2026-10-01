@@ -537,9 +537,9 @@ lowers anything it is composed with.
   terms are sampled and say so.
 - A term has ONE serialization and it is §2's literal print. A JavaScript
   boundary may carry a JSON shape of the same term — the reference one is
-  `prodrome-wasm`'s `json` module, lowercase kind tags and spans in hours —
-  but that is a boundary's business and not the database's, exactly as a
-  rendering is (§1).
+  `prodrome-wasm-exports`'s `json` module, lowercase kind tags and spans in
+  hours — but that is a boundary's business and not the database's, exactly
+  as a rendering is (§1).
 
 ### 7.1 The chain compiler
 

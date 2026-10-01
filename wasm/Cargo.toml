@@ -18,20 +18,18 @@ publish = false
 [lib]
 name = "prodrome_wasm"
 path = "src/lib.rs"
-# A cdylib and nothing else: this crate is a BOUNDARY, not a library anything
-# links against. `rlib` beside it would let the workspace's own tests reach in
-# and pin the wire shapes from Rust, which is the wrong place for them — the
-# shapes exist for a JavaScript reader, and a test that drives the built
-# module under node is where a
-# drift must fail.
+# A cdylib and nothing else: this crate is a MODULE, not a library anything
+# links against. The library is `prodrome-wasm-exports`, which this module,
+# like a host's, instantiates; the wire shapes are pinned where a JavaScript
+# reader meets them, by the snapshot of every export and by the viewer that
+# drives the built module.
 crate-type = ["cdylib"]
 
 [dependencies]
 prodrome-core = { path = "../core" }
+prodrome-wasm-exports = { path = "exports" }
 # Pinned to the EXACT patch the flake's `wasm-bindgen-cli_0_2_127` is: the
 # generator and the runtime negotiate over a schema version baked into both,
 # and a mismatch is a link error at bindgen time rather than a bug later.
 wasm-bindgen = "=0.2.127"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"

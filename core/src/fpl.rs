@@ -20,9 +20,9 @@
 //! [`Closed`] term, and only a closed term is evaluated, explained or sampled.
 //!
 //! NO JSON HERE. A term has ONE serialization and it is §2's literal print;
-//! the JSON shape a browser reads is `prodrome-wasm`'s `json` module, built on
-//! the types below, because JSON is JavaScript's literal grammar and this crate
-//! has its own.
+//! the JSON shape a browser reads is `prodrome-wasm-exports`'s `json` module,
+//! built on the types below, because JSON is JavaScript's literal grammar and
+//! this crate has its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 

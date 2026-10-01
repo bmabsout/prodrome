@@ -35,6 +35,15 @@ pub trait Product<'a>: Default + Clone + Debug + PartialEq {
         register: <Self::Schema as Schema>::Register,
     ) -> &mut Frontier<'a, Self::Schema>;
 
+    /// A register's READING, by name (design §3): the writes in its frontier
+    /// whose values are maximal under its type's order, each value named by
+    /// the least write carrying it. One write is a value; more is a conflict.
+    /// [`Frontier::reading`] under the register's [`crate::fold::RegisterType`],
+    /// which only the product knows, so a reader that holds a register's name
+    /// alone can read any schema.
+    fn reading(&self, register: <Self::Schema as Schema>::Register)
+        -> Vec<&'a Stamp<Self::Schema>>;
+
     /// The append's refusal (design §3.1): where `event` writes a register
     /// whose type is inflationary, its value must stand at or above that
     /// register's reading, which it supersedes. A schema with no inflationary
