@@ -59,7 +59,45 @@ what a `Ref` reads of an entity, and what a list row shows, are `History`,
 API only: `schema::Valuation` and the wasm's `PricedJson` never shipped in a
 release, and every vector and export reads byte for byte as it did.
 
+And a store remembers what it has read (`docs/design-register-types.md`
+§6.1, stage 7's in-memory replica): a handle verifies each object once and
+holds it with the fold of them all, so an append and a read cost the objects
+new since it last looked and not the store. At 3,500 objects (17.6 MB) a
+warm append falls from about 235 ms to about 15 ms and a warm read from
+about 120 ms to about 8 ms (`core/examples/store_cost.rs`). A MINOR change
+under this file's rule: no stored byte moves, every vector reads as it did,
+and a store read through its memory reads exactly as one read cold. The API
+breaks where `dag()` answered a copy.
+
 ### Added
+
+- **A store's memory (design §6.1, stage 7):** `EventStore` holds every
+  object it has read, each verified once (rehashed from its file, or sealed
+  by its own append), their tips and their fold. A read or an append lists
+  `objects/` and reads only the names the memory lacks; a held file is read
+  again only when its `stat` no longer matches what was seen when it was
+  verified (or it changed too recently for `stat` to tell, git's racily
+  clean), and `verify` still rehashes everything. An append decides its
+  twin check and its deps on the memory under the store's lock, after the
+  look that brings the memory level with the directory, so another
+  writer's objects are always in it. `EventStore::folded` answers the fold
+  (`fold(&dag.nodes_across_gaps()?)`), kept by insertion. Laws, in
+  `core/tests/all/memory.rs`: any interleaving of appends by this handle,
+  another and a fresh one, a third replica's files arriving in no causal
+  order, deletions and reads reads as a fresh handle does (objects, fold,
+  readings, heads); every append writes the bytes a fresh handle's would;
+  and an adoption through the memory is idempotent, order-free, completes
+  when interrupted, and reads as the union of the two directories.
+- **`Folded::insert`:** an object placed where the linearisation of the
+  union puts it, so the fold is an action of the object SET: in any
+  parents-first order, inserting is `fold` of the whole. It holds where
+  every object rests only on objects of its own scope (`Folded::local`,
+  true of every store an append wrote); elsewhere it answers
+  `registers::Elsewhere` and changes nothing. `Folded::push` is the monoid
+  action's step `extend` was made of, and `BitSet::open` makes room for a
+  position.
+- `core/examples/store_cost.rs`: an append and a read, cold and warm,
+  against a store of a host's size.
 
 - **`prodrome-wasm-exports`, the exports generic over a schema** (a new
   library crate, `wasm/exports/`): `Replica` reads a set of objects once at
@@ -246,6 +284,14 @@ release, and every vector and export reads byte for byte as it did.
 
 ### Changed (breaking)
 
+- **`EventStore::dag` answers `Arc<Dag<E>>`**, the memory's, where it
+  answered a copy; a caller that needs an owned `Dag` clones it.
+  `EventStore<E, Pol>` asks `E: Schema` of its type. `EventStore::load`
+  rereads one file and no longer feeds anything. `adopt` and
+  `adopt_objects` refuse a store holding a file that does not verify, as
+  every read of it does; quarantining the file first, then adopting the
+  object back, is the repair.
+
 - **`fold::Product` has a required method, `reading`**: a product names its
   registers' types, which only it knows. An implementation answers each
   register's `Frontier::reading` under that register's type.
@@ -332,6 +378,12 @@ release, and every vector and export reads byte for byte as it did.
 
 ### Fixed
 
+- **A handle sees a file change under a name it has read (SPEC §3).** The
+  parent index a handle kept said what it gave up: an object tampered with
+  after the handle verified it was not noticed by `tips()`. The memory keeps
+  each file's `stat` instead, and a file that no longer looks as it did is
+  read and verified again before anything is read from memory. Test:
+  `a_file_changed_under_a_held_name_is_read_again`.
 - **A write is durable (SPEC §3).** An object was written to `<name>.tmp`
   and renamed with no sync, so a power loss could leave a zero-length file
   under a name that promises content. It is now written to a randomly named
