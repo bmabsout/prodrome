@@ -148,11 +148,13 @@ impl<E: Valuation> Entry<E> {
 
 impl<P: Payload> Entry<TodoEvent<P>> {
     /// The confirmed candidate bindings.
+    #[must_use]
     pub fn outcome(&self) -> &Candidates {
         &self.reading.outcome
     }
 
     /// The NAMES of the candidate content records, sorted.
+    #[must_use]
     pub fn content(&self) -> &[Hash] {
         &self.reading.content
     }
@@ -227,6 +229,10 @@ fn lowered(candidates: &Candidates) -> String {
 /// under the CONFIRMED environment; `conflicts` every register with two
 /// writes; and `confidence` whether a claim was refused or a winning write is
 /// one the policy does not confirm.
+///
+/// # Errors
+///
+/// A function [`fold::flatten`] cannot build.
 pub fn entries<E: Valuation>(
     nodes: &[Node<E>],
     t: Datetime,
