@@ -188,3 +188,57 @@ fn every_export_answers_the_snapshot() {
     }
     assert_eq!(answers, SNAPSHOT);
 }
+
+/// The todo schema through the generic path, `Todos`, answers what the
+/// reference module's own exports do over the same DAG: the same findings,
+/// every row's price, provisionality, function and stream in the same list
+/// order, and the same functions to link against.
+#[test]
+fn the_todo_class_answers_as_the_reference_exports() {
+    let sent = json!(objects()
+        .iter()
+        .map(|(hash, text)| json!({ "hash": hash, "text": text }))
+        .collect::<Vec<_>>())
+    .to_string();
+    let todos = ok(crate::Todos::new(&sent));
+    let parse = |text: String| -> Value { serde_json::from_str(&text).expect("JSON") };
+
+    assert_eq!(ok(todos.verify()), ok(crate::verify_objects(&sent)));
+
+    let mine = parse(ok(todos.entries(None, UNTRUSTED)));
+    let theirs = parse(ok(crate::entries(&sent, None, UNTRUSTED)));
+    assert_eq!(mine["at"], theirs["at"]);
+    let rows = mine["entries"].as_array().expect("rows");
+    let order: Vec<&Value> = rows.iter().map(|row| &row["todo"]).collect();
+    let pinned: Vec<&Value> = theirs["order"].as_array().expect("order").iter().collect();
+    assert_eq!(order, pinned);
+    for row in rows {
+        let todo = &row["todo"];
+        let theirs = theirs["entries"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|entry| entry["todo"] == *todo)
+            .expect("the same todo");
+        for key in [
+            "value",
+            "unlinked",
+            "unconfirmed",
+            "spec",
+            "stream",
+            "conflicts",
+        ] {
+            assert_eq!(row[key], theirs[key], "{todo} {key}");
+        }
+    }
+
+    let prices = parse(ok(todos.prices(None, UNTRUSTED)));
+    let folded = parse(ok(crate::fold(&sent, None, UNTRUSTED)));
+    let prices = prices["prices"].as_array().expect("per prodrome");
+    assert_eq!(prices.len(), 1, "seed 1 is one prodrome");
+    assert_eq!(prices[0]["functions"], folded["functions"]);
+    assert_eq!(prices[0]["env"], folded["env"]);
+
+    let readings = parse(ok(todos.readings(None, UNTRUSTED)));
+    assert!(!readings["readings"].as_array().expect("rows").is_empty());
+}

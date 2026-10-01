@@ -70,12 +70,15 @@ pub use reference::*;
 
 /// A schema's exports, in ONE module beside every other schema's: a JS class
 /// named `$name` for the schema `$schema`, which must implement
-/// [`exports::Json`]. The invoking crate depends on `wasm-bindgen` at this
+/// [`exports::Json`], and where `priced` is said, also
+/// [`prodrome::schema::Valuation`] and [`exports::PricedJson`]. The invoking
+/// crate depends on `wasm-bindgen` at this
 /// crate's pinned version, which is the version of the `wasm-bindgen` CLI it
 /// builds its module with anyway.
 ///
 /// ```text
 /// prodrome_wasm::schema!(Reviews = my_host::Review);
+/// prodrome_wasm::schema!(Todos = prodrome::event::TodoEvent<my_host::Record>, priced);
 /// ```
 ///
 /// A macro because `#[wasm_bindgen]` exports no generic item: each method is
@@ -130,6 +133,33 @@ macro_rules! schema {
                 untrusted: &str,
             ) -> Result<String, wasm_bindgen::JsError> {
                 $crate::exports::thrown($crate::exports::readings(&self.0, at, untrusted))
+            }
+        }
+    };
+    ($name:ident = $schema:ty, priced) => {
+        $crate::schema!($name = $schema);
+
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        impl $name {
+            /// §6.7: every entity, as the folds see it at `at` (ISO, or
+            /// `null` for the latest instant the objects stamp) under
+            /// `untrusted`, in list order.
+            pub fn entries(
+                &self,
+                at: Option<String>,
+                untrusted: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::exports::thrown($crate::exports::entries(&self.0, at, untrusted))
+            }
+
+            /// §6.1 and §6.4, per prodrome: the environment, and every
+            /// entity's fulfillment function.
+            pub fn prices(
+                &self,
+                at: Option<String>,
+                untrusted: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::exports::thrown($crate::exports::prices(&self.0, at, untrusted))
             }
         }
     };
