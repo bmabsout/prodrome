@@ -250,19 +250,16 @@ pub fn entries<E: Valuation>(
             let stream = &prodrome[key];
             let reading = E::reading(&registers);
             // The readings differ only where the policy refuses a write.
-            let claimed = if stream.iter().all(|s| policy.standing(&*s.event).binds()) {
-                reading.clone()
-            } else {
-                E::reading(&fold::read(stream, Some(now), &Everything))
-            };
-            let disputed = E::disputes(&reading, &claimed);
+            let claim = (!stream.iter().all(|s| policy.standing(&*s.event).binds()))
+                .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
+                .filter(|claimed| E::disputes(&reading, claimed));
             let spec = functions.get(key).cloned().unwrap_or_else(fpl::mk_absent);
             let linked = fpl::link(&spec, &linkable);
             out.push(Entry {
                 genesis: genesis.clone(),
                 key: key.clone(),
-                claim: disputed.then_some(claimed),
-                confidence: Confidence::of(disputed, E::unconfirmed(&registers, policy)),
+                confidence: Confidence::of(claim.is_some(), E::unconfirmed(&registers, policy)),
+                claim,
                 reading,
                 price: Price {
                     value: linked
