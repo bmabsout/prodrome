@@ -21,13 +21,13 @@ pub use product::Product;
 pub use register::{GrowSet, Register, RegisterType};
 pub use write::{Kind, Write};
 
-use crate::event::{Authored, Hash, TodoEvent, TodoId};
+use crate::event::{Authored, TodoEvent, TodoId};
 use crate::fpl::{self, Candidates, Env, FplError, Instant};
 use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
 use crate::registers::{Prodrome, Stamp};
-use crate::schema::Schema;
+use crate::schema::{Schema, Valuation};
 use crate::term::Term;
 use crate::todo::{Content, Spec, State};
 
@@ -91,6 +91,14 @@ impl<'a, P: Payload> Product<'a, TodoEvent<P>> for Registers<'a, P> {
         }
     }
 
+    fn frontier_mut(&mut self, kind: Kind) -> &mut Frontier<'a, TodoEvent<P>> {
+        match kind {
+            Kind::State => &mut self.state,
+            Kind::Spec => &mut self.spec,
+            Kind::Content => &mut self.content,
+        }
+    }
+
     /// No todo register is inflationary: a `Reopened` after a `Completed`
     /// goes back, which is why a todo's conflicts are shown and priced.
     fn grows(&self, _event: &TodoEvent<P>) -> Result<(), ProdromeError> {
@@ -99,24 +107,6 @@ impl<'a, P: Payload> Product<'a, TodoEvent<P>> for Registers<'a, P> {
 }
 
 impl<'a, P: Payload> Registers<'a, P> {
-    /// The writes of `written` that no other write to their register precedes:
-    /// what each register held first. The state has nothing to fall back to.
-    fn earliest(written: &[&'a Stamp<TodoEvent<P>>]) -> Self {
-        let mut first = Registers::default();
-        for stamp in written {
-            for write in Write::of(&stamp.event) {
-                let preceded = written.iter().any(|other| {
-                    stamp.descends(other)
-                        && Write::of(&other.event).any(|w| w.kind() == write.kind())
-                });
-                if write.kind().is_some_and(|kind| kind != Kind::State) && !preceded {
-                    first.route(stamp, write);
-                }
-            }
-        }
-        first
-    }
-
     fn route(&mut self, stamp: &'a Stamp<TodoEvent<P>>, write: Write<'a, P>) {
         match write {
             Write::State(_) => self.state.join(stamp),
@@ -168,15 +158,6 @@ impl<'a, P: Payload> Registers<'a, P> {
             .collect()
     }
 
-    /// Every register with more than one write, each named by its writes.
-    pub fn conflicts(&self) -> BTreeMap<Kind, Vec<Hash>> {
-        [Kind::State, Kind::Spec, Kind::Content]
-            .into_iter()
-            .filter(|kind| self.frontier(*kind).is_conflict())
-            .map(|kind| (kind, self.frontier(kind).names()))
-            .collect()
-    }
-
     /// Record this todo in `env`: its bindings unless simply open, and its
     /// tendings.
     pub fn bind(&self, todo: &TodoId, env: &mut Env) {
@@ -190,10 +171,10 @@ impl<'a, P: Payload> Registers<'a, P> {
         }
     }
 
-    /// `Least` over the worlds in force, one candidate from each register,
+    /// The price of each world in force, one candidate from each register,
     /// falling back to `first` where a register is unwritten yet: a flat 1.0
     /// while resolved, else `checklist(spec, items)`, else `head`.
-    fn worlds(&self, first: &Self, head: Option<&Term>) -> Result<Option<Term>, FplError> {
+    pub(crate) fn worlds(&self, first: &Self, head: Option<&Term>) -> Result<Vec<Term>, FplError> {
         let mut specs: Vec<Option<&Term>> = or_first(self.specs(), first.specs())
             .into_iter()
             .map(Some)
@@ -222,11 +203,7 @@ impl<'a, P: Payload> Registers<'a, P> {
                 }
             }
         }
-        if terms.is_empty() {
-            Ok(None)
-        } else {
-            fpl::least_of(terms).map(Some)
-        }
+        Ok(terms)
     }
 }
 
@@ -239,16 +216,12 @@ fn or_first<T>(mine: Vec<T>, theirs: Vec<T>) -> Vec<T> {
     }
 }
 
-/// §6.1 — the environment at `at`: each todo's candidate bindings and its
-/// tendings.
-pub fn env<P: Payload>(
-    prodrome: &Prodrome<TodoEvent<P>>,
-    at: Instant,
-    policy: &impl Policy<TodoEvent<P>>,
-) -> Env {
+/// §6.1 — the environment at `at`: what FPL's terms read of each entity (a
+/// todo's candidate bindings and its tendings).
+pub fn env<E: Valuation>(prodrome: &Prodrome<E>, at: Instant, policy: &impl Policy<E>) -> Env {
     let mut env = Env::new();
-    for (todo, stream) in prodrome {
-        read(stream, Some(at), policy).bind(todo, &mut env);
+    for (key, stream) in prodrome {
+        E::bind(key, &read(stream, Some(at), policy), &mut env);
     }
     env
 }
@@ -289,37 +262,70 @@ pub fn content<P: Payload>(
         .collect()
 }
 
-/// §6.4 — each todo's history as of `at`, as ONE fulfillment function: a
+/// §6.4 — each entity's history as of `at`, as ONE fulfillment function: a
 /// piece at every instant one of its registers was written, the term in each
-/// `Least` over the worlds in force there. The head, extending to −∞, is the
-/// same over each register's earliest writes; a todo with no spec and no
-/// checklist has no function.
-pub fn flatten<P: Payload>(
-    prodrome: &Prodrome<TodoEvent<P>>,
+/// the price of the reading there. The head, extending to −∞, is the price of
+/// each register's earliest writes; an entity they price nothing has no
+/// function.
+pub fn flatten<E: Valuation>(
+    prodrome: &Prodrome<E>,
     at: Instant,
-    policy: &impl Policy<TodoEvent<P>>,
-) -> Result<BTreeMap<TodoId, Term>, FplError> {
+    policy: &impl Policy<E>,
+) -> Result<BTreeMap<E::Key, Term>, FplError> {
     let mut out = BTreeMap::new();
-    for (todo, stream) in prodrome {
+    for (key, stream) in prodrome {
         if let Some(function) = function(stream, at, policy)? {
-            out.insert(todo.clone(), function);
+            out.insert(key.clone(), function);
         }
     }
     Ok(out)
 }
 
-fn function<P: Payload>(
-    stream: &[Stamp<TodoEvent<P>>],
-    at: Instant,
-    policy: &impl Policy<TodoEvent<P>>,
+/// A reading's price (design §4): `Least` over the prices of its worlds, so
+/// a conflict prices as its most urgent candidate; none where no world has
+/// one.
+pub fn price<E: Valuation>(
+    now: &E::Registers<'_>,
+    first: &E::Registers<'_>,
+    head: Option<&Term>,
 ) -> Result<Option<Term>, FplError> {
-    let written: Vec<&Stamp<TodoEvent<P>>> = stream
+    let worlds = E::worlds(now, first, head)?;
+    if worlds.is_empty() {
+        Ok(None)
+    } else {
+        fpl::least_of(worlds).map(Some)
+    }
+}
+
+/// Each register's first writes among `written`: those no other write to it
+/// precedes.
+fn earliest<'a, E: Schema>(written: &[&'a Stamp<E>]) -> E::Registers<'a> {
+    let mut first = E::Registers::default();
+    for stamp in written {
+        for register in stamp.event.writes() {
+            let preceded = written
+                .iter()
+                .any(|other| stamp.descends(other) && other.event.writes().any(|r| r == register));
+            if !preceded {
+                first.frontier_mut(register).join(stamp);
+            }
+        }
+    }
+    first
+}
+
+fn function<E: Valuation>(
+    stream: &[Stamp<E>],
+    at: Instant,
+    policy: &impl Policy<E>,
+) -> Result<Option<Term>, FplError> {
+    let written: Vec<&Stamp<E>> = stream
         .iter()
         .filter(|stamp| admits(stamp, Some(at), policy))
-        .filter(|stamp| Write::of(&stamp.event).any(|write| write.kind().is_some()))
+        .filter(|stamp| stamp.event.writes().next().is_some())
         .collect();
-    let first = Registers::earliest(&written);
-    let Some(head) = first.worlds(&first, None)? else {
+    let first = earliest(&written);
+    let Some(head) = price::<E>(&E::Registers::default(), &first, None)? else {
         return Ok(None);
     };
     let moments: BTreeSet<Instant> = written
@@ -328,27 +334,26 @@ fn function<P: Payload>(
         .collect();
     let mut pieces = Vec::with_capacity(moments.len());
     for m in moments {
-        let registers = read(stream, Some(m), policy);
-        let term = registers.worlds(&first, Some(&head))?;
+        let term = price::<E>(&read(stream, Some(m), policy), &first, Some(&head))?;
         pieces.push((m, term.unwrap_or_else(|| head.clone())));
     }
     fpl::mk_piecewise(head, pieces).map(Some)
 }
 
-/// [`flatten`]'s functions as [`fpl::link`] reads them, over every todo in
-/// `known`: `Absent` where a known todo has none (§7.2).
-pub fn link_specs<'a>(
-    functions: &BTreeMap<TodoId, Term>,
-    known: impl IntoIterator<Item = &'a TodoId>,
+/// [`flatten`]'s functions as [`fpl::link`] reads them, over every entity in
+/// `known`: `Absent` where a known entity has none (§7.2).
+pub fn link_specs<'a, K: AsRef<str> + 'a>(
+    functions: &BTreeMap<K, Term>,
+    known: impl IntoIterator<Item = &'a K>,
 ) -> BTreeMap<String, Term> {
     let mut specs: BTreeMap<String, Term> = known
         .into_iter()
-        .map(|todo| (todo.as_str().to_owned(), fpl::mk_absent()))
+        .map(|key| (key.as_ref().to_owned(), fpl::mk_absent()))
         .collect();
     specs.extend(
         functions
             .iter()
-            .map(|(todo, term)| (todo.as_str().to_owned(), term.clone())),
+            .map(|(key, term)| (key.as_ref().to_owned(), term.clone())),
     );
     specs
 }

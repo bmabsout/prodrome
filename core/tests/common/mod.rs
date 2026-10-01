@@ -689,7 +689,9 @@ pub fn flatten(
 /// deliberate and is what `conformance/view/*.py` is frozen against: the entry
 /// as a CONSUMER reads it, not as the `Entry` struct happens to be shaped.
 /// `wasm/src/wire.rs`'s own test pins the JSON spelling of these same fields.
-pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
+pub fn entry_value(
+    entry: &prodrome::view::Entry<prodrome::event::TodoEvent<prodrome::reference::Todo>>,
+) -> Value {
     let conflicts: Vec<Value> = entry
         .conflicts
         .iter()
@@ -714,10 +716,7 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
     Value::call(
         "Row",
         vec![
-            (
-                "todo".to_owned(),
-                Value::Str(entry.todo.as_str().to_owned()),
-            ),
+            ("todo".to_owned(), Value::Str(entry.key.as_str().to_owned())),
             ("state".to_owned(), Value::Str(entry.state())),
             ("at".to_owned(), Value::Str(entry.at())),
             ("claimed".to_owned(), Value::Str(entry.claimed())),
@@ -736,7 +735,7 @@ pub fn entry_value(entry: &prodrome::view::Entry) -> Value {
             ("conflicts".to_owned(), Value::Tuple(conflicts)),
             (
                 "content".to_owned(),
-                match &entry.content[..] {
+                match entry.content() {
                     [] => Value::None,
                     [one] => Value::Str(one.as_str().to_owned()),
                     many => Value::Tuple(

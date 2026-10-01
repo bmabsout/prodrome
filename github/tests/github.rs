@@ -541,7 +541,7 @@ proptest! {
             reading
                 .entries
                 .iter()
-                .find(|entry| entry.todo.as_str() == "gh-1")
+                .find(|entry| entry.key.as_str() == "gh-1")
                 .map(|entry| entry.is_open())
         };
 

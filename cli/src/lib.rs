@@ -126,7 +126,7 @@ fn actor_of(stamp: &Stamp) -> Result<String, Error> {
 pub struct Reading {
     pub at: Datetime,
     pub untrusted: Vec<String>,
-    pub entries: Vec<Entry>,
+    pub entries: Vec<Entry<TodoEvent<Todo>>>,
     created: BTreeMap<TodoId, Datetime>,
     bodies: BTreeMap<TodoId, String>,
     details: BTreeMap<TodoId, String>,

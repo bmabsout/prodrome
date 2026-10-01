@@ -13,12 +13,17 @@
 //!
 //! [`crate::event::TodoEvent`] is the reference schema ([`crate::todo`]):
 //! §4's six kinds and the record kind, and every legacy envelope is read at it.
+//! A schema MAY price its entities ([`Valuation`]); one that does not has no
+//! price at all, which is not FPL's `Absent`.
 
 use std::fmt::Debug;
 
 use crate::event::Actor;
 use crate::fold::Product;
+use crate::fpl::{Env, FplError};
 use crate::literal::{Datetime, ProdromeError, Value, Vocabulary};
+use crate::policy::Policy;
+use crate::term::Term;
 
 /// A store's events and what they mean.
 ///
@@ -83,4 +88,46 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn asks(&self) -> bool {
         true
     }
+}
+
+/// A schema's PRICE (design §4): a map from an entity's reading to a §7 term,
+/// and what a priced row shows (§6.7). Optional: [`crate::view::entries`]
+/// asks for it, and nothing else does.
+///
+/// A reading in conflict holds more than one WORLD, one candidate from each
+/// register. [`Valuation::worlds`] prices each, and the core prices the
+/// reading as `Least` over them ([`crate::fold::price`]): the meet in the
+/// fulfillment order, "price a conflict as its most urgent world". It is not
+/// a register's join, and FPL's `Conj`, which aggregates different entities,
+/// is neither.
+///
+/// An entity's key is the name a `Ref` gives it, so it reads as a string.
+pub trait Valuation: Schema<Key: AsRef<str>> {
+    /// What a priced row shows of an entity's registers.
+    type Reading: Clone + PartialEq + std::fmt::Debug;
+
+    fn reading(registers: &Self::Registers<'_>) -> Self::Reading;
+
+    /// Does the CLAIMED reading, under every writer, dispute the confirmed
+    /// one where a reader should be told?
+    fn disputes(confirmed: &Self::Reading, claimed: &Self::Reading) -> bool;
+
+    /// Does the reading show a write the policy binds and does not confirm?
+    fn unconfirmed(registers: &Self::Registers<'_>, policy: &impl Policy<Self>) -> bool;
+
+    /// What FPL's terms read of an entity (§6.1), recorded in `env`.
+    fn bind(key: &Self::Key, registers: &Self::Registers<'_>, env: &mut Env);
+
+    /// The price of each world `now` holds, a register unwritten yet read as
+    /// it was first written (`first`), and `head` where a world prices
+    /// nothing else. Empty where the entity has no price there.
+    ///
+    /// # Errors
+    ///
+    /// A term a smart constructor refuses.
+    fn worlds(
+        now: &Self::Registers<'_>,
+        first: &Self::Registers<'_>,
+        head: Option<&Term>,
+    ) -> Result<Vec<Term>, FplError>;
 }
