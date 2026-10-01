@@ -76,6 +76,17 @@ disk has. A MINOR change under this file's rule: no stored byte moves,
 every vector and export reads as it did, and the reference module's
 classes gain a method.
 
+And a change rests on what its writer saw (SPEC §3, laws 36 and 37): its
+deps are its entity's heads, every write to it in any register that no
+other descends from, where they were the frontiers of the registers it
+writes. One writer's add and complete of one entity are no longer recorded
+as concurrent, so the stream orders them as written and no instant has to.
+A MINOR change under this file's rule: no shipped field changes and no
+stored object moves or reads differently; an append over a history writes
+a different object than before wherever its entity has a head outside the
+registers it writes. A reader before this one reports such a dep as
+writing no register its change writes.
+
 ### Added
 
 - **Replicas (design §6.1, stage 7, SPEC §3 and law 35):** `store::Replica`,
@@ -308,6 +319,20 @@ classes gain a method.
 
 ### Changed (breaking)
 
+- **A change's deps are its entity's heads (SPEC §3):** `registers::deps_for`
+  answers every write to the entity, in any register, that no other write
+  to it descends from (`registers::heads`), so the store on disk, the store
+  in memory, the overlay, a `Decision` and the wasm `append` all write
+  them. Supersession is unchanged and per register (§6.6): a write still
+  supersedes exactly the writes to its own registers it descends from.
+  `verify` accepts a dep in any register of the change's entity, and
+  reports one of another entity (`Finding::Foreign`, where
+  `Finding::Unwritten` reported a dep in no register the change writes).
+  `conformance/change.py`'s written objects and answers are derived again
+  under the rule; its bases, verify rows and prices are as they were. A
+  host changes nothing but what it expects of new objects' deps; one that
+  stamped its own writes instants apart to order them may stop.
+
 - **`EventStore::dag` answers `Arc<Dag<E>>`**, the memory's, where it
   answered a copy; a caller that needs an owned `Dag` clones it.
   `EventStore<E, Pol>` asks `E: Schema` of its type. `EventStore::load`
@@ -449,6 +474,12 @@ classes gain a method.
   `Sealed` and `Woven` are read as ever. A store with none of the new
   objects derives, linearises and verifies exactly as it did, and reads as
   it did wherever no register holds two candidates.
+- Every object written before a change's deps became its entity's heads
+  keeps its deps and reads exactly as it did: `conformance/dag.py`, every
+  other vector, `wasm/snapshots/dag-1.txt` and
+  `wasm/conformance/term-json.json` are unchanged. A replay of an event the
+  prodrome holds still writes nothing: the twin check compares the event,
+  not the deps.
 
 ## [0.9.0] - 2026-09-27
 

@@ -9,6 +9,29 @@ agreeing-twins rule is in, `Created` and `Tended` depend on nothing, terms
 add no deps, and `merge` stays for legacy stores. Sections A to G below answer
 the second round.
 
+**Superseded in part, 2026-10-01: a change's deps are its entity's heads.**
+§2 below decided that `deps` are the frontiers of the registers the event
+writes. That recorded one writer's add (the content register) and complete
+(the state register) of the same entity as concurrent, though the writer
+wrote one after the other: nothing causal ordered them, so a reader that
+needed "which came last" (an undo, a history in order) fell back on the
+stamped instant or the name, and a host stamped its acts a microsecond
+apart to order them. That is time deciding order, which SPEC §1 forbids.
+`deps` are now the entity's HEADS: every write to it the writer holds, in
+any register or none, that no other write to it descends from. Each written
+register's frontier is beneath them, so supersession is unchanged and per
+register: a write supersedes exactly the writes to its own registers it
+descends from. The alternative, "the written registers' frontiers plus the
+other heads seen", is the same set once reduced to an antichain, which §5
+requires, so it adds a case and nothing else. What is given up is that
+writes to different registers of one entity, made by a writer that saw one
+before writing the other, commute as names: the second's name now records
+the first. No reading changes with it (each register's frontier and
+reading are as they were); changes to different entities stay independent.
+Law 19's test is now over other entities, not other registers; laws 36
+and 37 are new (SPEC §9). Objects written before this keep their bytes and
+read as they did.
+
 ## The problem
 
 Reading the store the way the Pijul maintainers would:

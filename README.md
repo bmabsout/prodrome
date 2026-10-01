@@ -154,12 +154,16 @@ This example is the crate's doctest; `cargo test` compiles and runs it.
 
 **Objects and the DAG.** A prodrome begins with a `Genesis(label, nonce)`.
 An event is written as a `Change(genesis, deps, event)`, whose `deps` are
-the writes it supersedes in the registers it writes, so they never leave its
-todo; appending an event the prodrome already holds writes nothing. A
+what its writer saw of its todo: the todo's heads, every write to it that
+no other descends from, so they never leave its todo and a writer's own
+writes are ordered by causality, never by their instants. A write still
+supersedes only the writes to its own registers it descends from.
+Appending an event the prodrome already holds writes nothing. A
 `Snapshot(genesis, tips, previous)` attests everything written so far.
 Stores written earlier hold `Sealed` and `Woven` objects, read forever. An
 object's name is the hash of its canonical print, so a change's name is its
-genesis, its event and what it supersedes, wherever it was written.
+genesis, its event and what its writer held of its todo, wherever it was
+written.
 `verify` reports anything that does not hash to its name, rests on a missing
 parent, forms a cycle, or crosses from one genesis to another.
 

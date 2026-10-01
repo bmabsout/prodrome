@@ -144,12 +144,19 @@ since this grammar has tuples and no mapping.
     nothing back, and a host that means to assert it again, having seen the
     override, says something new — a new `at`, a new note.
   - Otherwise it writes `Change(genesis, deps, event)`. `deps` are the
-    union, over the registers `event` writes (§6.6), of each register's
-    frontier in the writer's genesis, less any write another of them rests
-    on, so they are an antichain. The frontiers are folded STRUCTURALLY:
-    under the policy where everything binds, and at no moment, because a
-    name records what its writer held and never a reader's policy or moment.
-    `Created` and `Tended` write no register, so their `deps` are `()`.
+    HEADS of `event`'s entity in the writer's genesis: every object the
+    writer holds whose event names that entity, in any register or none,
+    that no other such object descends from. They are an antichain, and
+    what the writer SAW of the entity, as a git commit's parents are what
+    its author had. Each register's frontier is beneath them, so a write
+    still supersedes what it supersedes (§6.6), and nothing else. The heads
+    are read STRUCTURALLY: under the policy where everything binds, and at
+    no moment, because a name records what its writer held and never a
+    reader's policy or moment. The first write to an entity has `deps` of
+    `()`. (Before 2026-10-01 `deps` were only the frontiers of the
+    registers `event` writes, so a writer's add and complete of one entity
+    were recorded as concurrent; objects written then keep their bytes and
+    read as they did.)
   - A write to an INFLATIONARY register (§6) whose value is not `≥` the
     reading it supersedes is refused before any object carries it, by the
     same structural reading. Of the todo's registers only the tendings are
@@ -157,13 +164,13 @@ since this grammar has tuples and no mapping.
     refused; a schema whose register supersedes and is inflationary is held
     to it (law 32).
 
-  A register is one entity's (one todo's, under the todo schema), so `deps`
-  never leave it: a store of changes is a disjoint union of per-entity DAGs,
-  and changes to different entities are concurrent. A change's name is a function of its genesis, its event and
-  the part of the past it supersedes, and of nothing else: two replicas that
-  agree about a register write byte-identical changes over it, whatever
-  else each holds. Two that disagree may each write one event over their own
-  frontier; those are TWINS, two objects with one `event_id`, each
+  `deps` never leave the entity (one todo, under the todo schema): a store
+  of changes is a disjoint union of per-entity DAGs, and changes to
+  different entities are concurrent. A change's name is a function of its
+  genesis, its event and what its writer held of its entity, and of nothing
+  else: two replicas that agree about an entity write byte-identical
+  changes to it, whatever else each holds. Two that disagree may each write
+  one event over their own heads; those are TWINS, two objects with one `event_id`, each
   superseding only what its own deps reach, and a register reads them as
   one candidate (§6).
 - **`snapshot()`** writes `Snapshot(genesis, tips, previous)`: the genesis's
@@ -175,9 +182,10 @@ since this grammar has tuples and no mapping.
   fold reads a snapshot, and no change depends on one. When to write one is
   the host's call.
 - **Linearisation** is Kahn's algorithm over parents with a min-heap on the
-  name: deterministic, and arbitrary between incomparable objects. It orders
-  a todo's `stream` (§6.7) and numbers objects for the ancestry index, and
-  decides no value (law 25). A missing parent or a cycle is a refusal.
+  name: deterministic, causal first, and arbitrary only between incomparable
+  objects, which the name orders and no instant does. It orders an entity's
+  `stream` (§6.7) and numbers objects for the ancestry index, and decides
+  no value (law 25). A missing parent or a cycle is a refusal.
 - `ancestors(x)` is the transitive parent closure; `concurrent(a, b)` holds
   when neither is an ancestor of the other.
 - **`verify`** reports an object not hashing to its name, a missing parent, a
@@ -193,8 +201,8 @@ since this grammar has tuples and no mapping.
   deps rest on, so it cannot be dated behind what it was written OVER. It
   also reports an object naming a genesis the store does not hold, an edge
   between geneses, a dep another dep of the same change rests on, a dep that
-  writes no register its change's event writes, and an object a snapshot
-  attests that the store lacks. There is no unreachable object and no stale
+  is not a write to its change's entity, and an object a snapshot attests
+  that the store lacks. There is no unreachable object and no stale
   head to report: every object is a tip or beneath one, and no tip rests on
   another.
 - **`quarantine(name)`** moves `objects/<name>.py` to `quarantine/<name>.py`
@@ -205,7 +213,9 @@ since this grammar has tuples and no mapping.
   (`prodrome quarantine <name>`). Set aside, the store is what it holds
   without it: `tips()` answers (the object's parents may be tips again), and
   `verify` reports the receipt until the object is restored from a replica
-  and the quarantined file deleted.
+  and the quarantined file deleted. An append made meanwhile rests on the
+  heads of what was held; once the object is back, a head it puts beneath
+  another is reported as a redundant dep, which changes no ancestry.
 - **`adopt(source, tip)`** copies in everything `tip` rests on that the store
   lacks, a change's or a snapshot's genesis included, verifying all of it
   before writing any, and writing parents before children, since an object
@@ -434,8 +444,13 @@ FPL, below. A content record joins whoever wrote it.
    the writes to it that no later write to it descends from. A `Tended`
    writes no register: it joins the tendings, a grow-only set kept beside the
    frontiers, so concurrent tendings are their union and never a conflict.
-   `extend(state, nodes)` is a monoid action. A write that descends from a
-   conflict settles it, and nothing else does: a merge settles nothing.
+   `extend(state, nodes)` is a monoid action. SUPERSESSION IS PER REGISTER:
+   a write supersedes exactly the writes TO ITS OWN REGISTERS that it
+   descends from, through any path; descending from a write in another
+   register supersedes nothing there, and a conflict is two or more writes
+   to one register none of which descends from another (law 37). A write
+   that descends from a conflict settles it, and nothing else does: a merge
+   settles nothing.
    Ancestry is indexed within each `(genesis, todo)` for changes, whose deps
    never leave a todo, and over every legacy object for legacy objects, so
    only a mixed store pays for both. `conflicts_of` names each register whose
@@ -459,8 +474,14 @@ FPL, below. A content record joins whoever wrote it.
    `conflicts = conflicts_of(confirmed)[todo]`; `stream` is every node whose
    event names the todo, in causal order — the one reading the linearisation
    orders, and since deps never leave a todo, Kahn's algorithm over the
-   todo's own objects. A todo whose events are all dated after `t` is still
-   a row, open and `absent`: `t` asks what is believed, not what exists. A
+   todo's own objects. CAUSALITY FIRST: a change rests on every write to
+   its entity its writer held (§3), so a writer's own writes to one entity
+   stream in the order it wrote them, whatever registers they touch and
+   whatever instants they carry (law 36), and a write that reached a writer
+   before it wrote streams before its write. The name breaks a tie only
+   between writes that truly were concurrent; no instant ever does, so a
+   host never stamps instants apart to order its own writes. A todo whose
+   events are all dated after `t` is still a row, open and `absent`: `t` asks what is believed, not what exists. A
    LIST of entries is in one order, defined here and by no host: ascending
    in value, ties by `(genesis, id)`, then every row with no number, `absent`
    or not linking, by `(genesis, id)`.
@@ -959,25 +980,26 @@ Laws 19–29 are §3's change identity and §6's candidates. Each names the
 property test under `core/tests/all/` that checks it, on the generators the
 laws above draw from, extended to diverging writers, replays, conflicts and
 several geneses. `conformance/change.py`, written BY HAND from laws 19–21,
-23, 24 and 28 like `link.py`, pins exact prints and names, a replay that
+23, 24 and 28 like `link.py` (its written objects derived again under law
+36's deps, every read unchanged), pins exact prints and names, a replay that
 writes nothing, a twin pair, a conflict priced as its most urgent world, two
 geneses united, a snapshot chain and a mixed store over a
 `conformance/dag.py` one (`change_vectors.rs`).
 
 19. **A name is its genesis, event and view.** `append(event)` writes a
-    function of its genesis, `event`, and the structural frontiers of the
-    registers `event` writes. Adding objects that write other registers, and
-    do not carry `event` (law 20), changes no name.
-    `change.rs::name_ignores_other_registers`.
+    function of its genesis, `event`, and the structural heads of `event`'s
+    entity. Adding objects of other entities, which do not carry `event`
+    (law 20), changes no name. `change.rs::name_ignores_other_entities`.
 20. **Append is idempotent.** Appending an event whose print the genesis
     holds writes nothing and answers the first object carrying it. Replaying
     any sequence of appends onto the store they produced leaves its object
     set unchanged, the replay after a rejection included (§3).
     `change.rs::replay_is_a_no_op`,
     `change.rs::replay_after_rejection_writes_nothing`.
-21. **Independence is structural.** `deps` never leave a todo, so changes to
-    different todos are concurrent, and a store written todo by todo is the
-    store written in time order. `change.rs::deps_name_one_todo`,
+21. **Independence is structural.** Every dep is a write to its change's
+    todo, so `deps` never leave a todo, changes to different todos are
+    concurrent, and a store written todo by todo is the store written in
+    time order. `change.rs::deps_name_one_todo`,
     `registers.rs::deps_name_one_todo`.
 22. **No stored byte moves.** Every `conformance/dag.py` store, and every
     generated store of `Sealed` and `Woven`, derives, linearises and
@@ -1081,6 +1103,21 @@ The design's law 7 is law 35: replicas, wherever each is held.
     `replica.rs::sync_is_the_join`,
     `replica.rs::a_store_in_memory_appends_what_a_disk_store_appends`,
     `replica.rs::an_overlay_reads_as_its_union_until_it_is_flushed`.
+
+Laws 36 and 37 are §3's deps and §6.6's supersession, on two writers whose
+replicas in memory sync in between and whose events are dated anywhere.
+
+36. **A change rests on what its writer saw.** Each append descends from
+    every write to its entity its writer held, in any register:
+    happens-before is what the deps say, for one writer and across writers.
+    So a writer's own successive writes to one entity stream in the order
+    it wrote them, whatever their registers and instants.
+    `causal.rs::a_change_rests_on_what_its_writer_saw`,
+    `causal.rs::an_add_then_a_complete_stream_in_the_order_written`.
+37. **Supersession is per register.** Each register's frontier is its
+    writes that no other write TO IT descends from: a write descending from
+    a write in another register supersedes nothing there.
+    `causal.rs::a_change_rests_on_what_its_writer_saw`.
 
 ## 10. Non-goals
 
