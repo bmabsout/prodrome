@@ -115,7 +115,7 @@ fn name(i: usize) -> Hash {
 }
 
 /// The `i`th object: a state write of `value`, carried in its note.
-fn node(i: usize, value: u8, day: u32, parents: Vec<Hash>) -> Node<Todo> {
+fn node(i: usize, value: u8, day: u32, parents: Vec<Hash>) -> Node<TodoEvent<Todo>> {
     let at = Datetime::new(2026, 9, 1 + day, 12, 0, 0, 0).expect("a real instant");
     let event = mk_completed("alpha", at, "writer", &value.to_string()).expect("valid");
     Node {
@@ -127,7 +127,7 @@ fn node(i: usize, value: u8, day: u32, parents: Vec<Hash>) -> Node<Todo> {
 }
 
 /// The steps as legacy objects of one todo.
-fn nodes(dag: &[Step]) -> Vec<Node<Todo>> {
+fn nodes(dag: &[Step]) -> Vec<Node<TodoEvent<Todo>>> {
     dag.iter()
         .enumerate()
         .map(|(i, (value, day, parents))| {
@@ -137,7 +137,7 @@ fn nodes(dag: &[Step]) -> Vec<Node<Todo>> {
         .collect()
 }
 
-fn value(stamp: &Stamp<Todo>) -> u8 {
+fn value(stamp: &Stamp<TodoEvent<Todo>>) -> u8 {
     match &*stamp.event {
         TodoEvent::Completed(e) => e.note.parse().expect("a value"),
         _ => unreachable!("every write is a completion"),
@@ -145,7 +145,7 @@ fn value(stamp: &Stamp<Todo>) -> u8 {
 }
 
 /// The todo's state frontier, read structurally.
-fn frontier(folded: &Folded<Todo>) -> Frontier<'_, Todo> {
+fn frontier(folded: &Folded<TodoEvent<Todo>>) -> Frontier<'_, TodoEvent<Todo>> {
     let todo = TodoId::new("alpha").expect("valid");
     folded
         .prodromes()
@@ -157,8 +157,11 @@ fn frontier(folded: &Folded<Todo>) -> Frontier<'_, Todo> {
 
 /// Law 3 at one frontier under `order`: the reading is exactly the maximal
 /// values, each once, and one value exactly when one is greatest.
-fn is_completion<V: Order + std::fmt::Debug>(frontier: &Frontier<Todo>, order: impl Fn(u8) -> V) {
-    let of = |stamp: &Stamp<Todo>| order(value(stamp));
+fn is_completion<V: Order + std::fmt::Debug>(
+    frontier: &Frontier<TodoEvent<Todo>>,
+    order: impl Fn(u8) -> V,
+) {
+    let of = |stamp: &Stamp<TodoEvent<Todo>>| order(value(stamp));
     let all: Vec<V> = frontier.writes().iter().map(|s| of(s)).collect();
     let read: Vec<V> = frontier.read(of).into_iter().map(of).collect();
     let maximal = |v: &V| !all.iter().any(|w| v.le(w) && !w.le(v));
@@ -193,7 +196,7 @@ proptest! {
     fn the_discrete_reading_is_the_candidates(dag in a_dag()) {
         let folded = fold(&nodes(&dag));
         let frontier = frontier(&folded);
-        let mut twins_once: Vec<&Stamp<Todo>> = Vec::new();
+        let mut twins_once: Vec<&Stamp<TodoEvent<Todo>>> = Vec::new();
         for stamp in frontier.writes() {
             if !twins_once.iter().any(|held| held.event == stamp.event) {
                 twins_once.push(stamp);
@@ -203,19 +206,19 @@ proptest! {
     }
 }
 
-fn phase(stamp: &Stamp<Todo>) -> Phase {
+fn phase(stamp: &Stamp<TodoEvent<Todo>>) -> Phase {
     PHASES[usize::from(value(stamp))]
 }
 
 /// The machine's reading of a replica's objects.
-fn reading(objects: &[Node<Todo>]) -> Vec<Phase> {
+fn reading(objects: &[Node<TodoEvent<Todo>>]) -> Vec<Phase> {
     let folded = fold(objects);
     let frontier = frontier(&folded);
     frontier.read(phase).into_iter().map(phase).collect()
 }
 
 /// Two replicas' objects together, parents first: a name is its index.
-fn union(a: &[Node<Todo>], b: &[Node<Todo>]) -> Vec<Node<Todo>> {
+fn union(a: &[Node<TodoEvent<Todo>>], b: &[Node<TodoEvent<Todo>>]) -> Vec<Node<TodoEvent<Todo>>> {
     let mut out = a.to_vec();
     out.extend(
         b.iter()
@@ -247,7 +250,7 @@ proptest! {
     /// `read(h₁ ∪ h₂) = max(read(h₁) ∪ read(h₂))`.
     #[test]
     fn an_inflationary_reading_is_a_homomorphism(acts in acts()) {
-        let mut replicas: [Vec<Node<Todo>>; 2] = [Vec::new(), Vec::new()];
+        let mut replicas: [Vec<Node<TodoEvent<Todo>>>; 2] = [Vec::new(), Vec::new()];
         let mut written = 0;
         for (side, act) in acts {
             match act {

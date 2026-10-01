@@ -1,5 +1,5 @@
 //! §6.6 — the DAG as the registers read it: each object's place and ancestry,
-//! and each todo's stream of writes.
+//! and each entity's stream of writes, under any [`Schema`].
 //!
 //! See ../../SPEC.md §6.6. [`crate::fold`] folds a stream into its
 //! registers; this module only says what descends from what.
@@ -10,66 +10,65 @@
 //!
 //! Ancestry is a [`BitSet`] over positions. A legacy object is placed among
 //! every legacy object, O(n²) bits for the store; a change's deps never leave
-//! its todo, so a change is placed within its `(genesis, todo)`, O(Σ kᵢ²).
+//! its entity, so a change is placed within its `(genesis, key)`, O(Σ kᵢ²).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::event::{Envelope, Hash, TodoEvent, TodoId};
-use crate::fold::{Registers, Write};
-use crate::payload::Payload;
-use crate::policy::Everything;
+use crate::event::{Envelope, Hash};
+use crate::fold::{Frontier, Register};
+use crate::schema::Schema;
 
 /// The state the fold carries, compared by value.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Folded<P> {
-    index: BTreeMap<Hash, Place>,
+pub struct Folded<E: Schema> {
+    index: BTreeMap<Hash, Place<E::Key>>,
     legacy: usize,
     attestations: BTreeSet<Hash>,
-    prodromes: BTreeMap<Genesis, Prodrome<P>>,
+    prodromes: BTreeMap<Genesis, Prodrome<E>>,
 }
 
 /// Which prodrome: a genesis object's name, or `None` for the legacy one.
 pub type Genesis = Option<Hash>;
 
-/// One prodrome's todos, each its stream of writes in causal order.
-pub type Prodrome<P> = BTreeMap<TodoId, Vec<Stamp<P>>>;
+/// One prodrome's entities, each its stream of writes in causal order.
+pub type Prodrome<E> = BTreeMap<<E as Schema>::Key, Vec<Stamp<E>>>;
 
-/// One object that carries an event, where its todo's registers can see it.
+/// One object that carries an event, where its entity's registers can see it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Stamp<P> {
+pub struct Stamp<E: Schema> {
     pub name: Hash,
-    pub event: Arc<TodoEvent<P>>,
-    place: Place,
+    pub event: Arc<E>,
+    place: Place<E::Key>,
 }
 
-impl<P> Stamp<P> {
-    /// Does this write descend from `earlier`, a write to the same todo?
-    pub fn descends(&self, earlier: &Stamp<P>) -> bool {
+impl<E: Schema> Stamp<E> {
+    /// Does this write descend from `earlier`, a write to the same entity?
+    pub fn descends(&self, earlier: &Stamp<E>) -> bool {
         self.place.ancestry.contains(earlier.place.position)
     }
 }
 
 /// A position in an index, and the positions of every ancestor in it.
 #[derive(Debug, Clone, PartialEq)]
-struct Place {
+struct Place<K> {
     position: usize,
     ancestry: BitSet,
-    scope: Option<(Hash, TodoId)>,
+    scope: Option<(Hash, K)>,
 }
 
 /// What the fold reads of a stored object. `genesis` is `None` for a legacy
 /// object, and for a change in the legacy prodrome.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Node<P> {
+pub struct Node<E> {
     pub name: Hash,
     pub parents: Vec<Hash>,
-    pub event: Option<TodoEvent<P>>,
+    pub event: Option<E>,
     pub genesis: Genesis,
 }
 
-impl<P: Payload> Node<P> {
-    pub fn of(name: Hash, envelope: &Envelope<P>) -> Node<P> {
+impl<E: Schema> Node<E> {
+    pub fn of(name: Hash, envelope: &Envelope<E>) -> Node<E> {
         let genesis = match envelope {
             Envelope::Genesis(_) => Some(name.clone()),
             other => other.genesis().cloned(),
@@ -83,8 +82,8 @@ impl<P: Payload> Node<P> {
     }
 }
 
-impl<P: Payload> Folded<P> {
-    pub fn empty() -> Folded<P> {
+impl<E: Schema> Folded<E> {
+    pub fn empty() -> Folded<E> {
         Folded {
             index: BTreeMap::new(),
             legacy: 0,
@@ -108,22 +107,22 @@ impl<P: Payload> Folded<P> {
         }
     }
 
-    pub fn prodromes(&self) -> &BTreeMap<Genesis, Prodrome<P>> {
+    pub fn prodromes(&self) -> &BTreeMap<Genesis, Prodrome<E>> {
         &self.prodromes
     }
 
-    /// Every prodrome's todos, for a reader keyed by todo id alone.
-    pub fn todos(&self) -> impl Iterator<Item = (&TodoId, &[Stamp<P>])> {
+    /// Every prodrome's entities, for a reader keyed by entity alone.
+    pub fn entities(&self) -> impl Iterator<Item = (&E::Key, &[Stamp<E>])> {
         self.prodromes
             .values()
             .flatten()
-            .map(|(todo, stream)| (todo, stream.as_slice()))
+            .map(|(key, stream)| (key, stream.as_slice()))
     }
 
-    fn place(&mut self, node: &Node<P>) -> Option<Place> {
+    fn place(&mut self, node: &Node<E>) -> Option<Place<E::Key>> {
         let scope = match (&node.genesis, &node.event) {
             (None, _) => None,
-            (Some(genesis), Some(event)) => Some((genesis.clone(), event.todo().clone())),
+            (Some(genesis), Some(event)) => Some((genesis.clone(), event.key().clone())),
             (Some(_), None) => return None,
         };
         let mut ancestry = BitSet::default();
@@ -138,10 +137,10 @@ impl<P: Payload> Folded<P> {
                 self.legacy += 1;
                 self.legacy - 1
             }
-            Some((genesis, todo)) => self
+            Some((genesis, key)) => self
                 .prodromes
                 .get(&Some(genesis.clone()))
-                .and_then(|todos| todos.get(todo))
+                .and_then(|entities| entities.get(key))
                 .map_or(0, Vec::len),
         };
         Some(Place {
@@ -154,7 +153,7 @@ impl<P: Payload> Folded<P> {
 
 /// Apply `nodes` (parents first) to `state`. Structure is folded for every
 /// object; standing and time are the readers' business.
-pub fn extend<P: Payload>(state: &Folded<P>, nodes: &[Node<P>]) -> Folded<P> {
+pub fn extend<E: Schema>(state: &Folded<E>, nodes: &[Node<E>]) -> Folded<E> {
     let mut next = state.clone();
     for node in nodes {
         if next.holds(&node.name) {
@@ -169,7 +168,7 @@ pub fn extend<P: Payload>(state: &Folded<P>, nodes: &[Node<P>]) -> Folded<P> {
             next.prodromes
                 .entry(node.genesis.clone())
                 .or_default()
-                .entry(event.todo().clone())
+                .entry(event.key().clone())
                 .or_default()
                 .push(Stamp {
                     name: node.name.clone(),
@@ -181,12 +180,12 @@ pub fn extend<P: Payload>(state: &Folded<P>, nodes: &[Node<P>]) -> Folded<P> {
     next
 }
 
-pub fn fold<P: Payload>(nodes: &[Node<P>]) -> Folded<P> {
+pub fn fold<E: Schema>(nodes: &[Node<E>]) -> Folded<E> {
     extend(&Folded::empty(), nodes)
 }
 
 /// The nodes `state` has not folded yet, in their given order.
-pub fn since<'a, P: Payload>(state: &Folded<P>, nodes: &'a [Node<P>]) -> Vec<&'a Node<P>> {
+pub fn since<'a, E: Schema>(state: &Folded<E>, nodes: &'a [Node<E>]) -> Vec<&'a Node<E>> {
     nodes
         .iter()
         .filter(|node| !state.holds(&node.name))
@@ -196,29 +195,36 @@ pub fn since<'a, P: Payload>(state: &Folded<P>, nodes: &'a [Node<P>]) -> Vec<&'a
 /// A change's deps: the latest writes among the frontiers of the registers
 /// `event` writes, read structurally — everything binds, at no moment. A
 /// write another of them descends from is superseded through it.
-pub fn deps_for<P: Payload>(
-    state: &Folded<P>,
-    genesis: &Genesis,
-    event: &TodoEvent<P>,
-) -> Vec<Hash> {
+pub fn deps_for<E: Schema>(state: &Folded<E>, genesis: &Genesis, event: &E) -> Vec<Hash> {
     let Some(stream) = state
         .prodromes
         .get(genesis)
-        .and_then(|todos| todos.get(event.todo()))
+        .and_then(|entities| entities.get(event.key()))
     else {
         return Vec::new();
     };
-    let registers = Registers::read(stream, None, &Everything);
-    let written: BTreeMap<&Hash, &Stamp<P>> = Write::of(event)
-        .filter_map(|write| write.kind())
-        .flat_map(|kind| registers.frontier(kind).writes())
-        .map(|stamp| (&stamp.name, *stamp))
+    let written: BTreeMap<&Hash, &Stamp<E>> = event
+        .writes()
+        .flat_map(|register| frontier(stream, register).writes().to_vec())
+        .map(|stamp| (&stamp.name, stamp))
         .collect();
     written
         .values()
         .filter(|stamp| !written.values().any(|later| later.descends(stamp)))
         .map(|stamp| stamp.name.clone())
         .collect()
+}
+
+/// The frontier of one register over a whole stream: every write to it,
+/// joined.
+pub fn frontier<E: Schema>(stream: &[Stamp<E>], register: E::Register) -> Frontier<'_, E> {
+    let mut frontier = Frontier::default();
+    for stamp in stream {
+        if stamp.event.writes().any(|written| written == register) {
+            frontier.join(stamp);
+        }
+    }
+    frontier
 }
 
 /// A set of small non-negative integers as a bitmap: set, test, union.

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use clap::Parser;
 use proptest::prelude::*;
 
-use prodrome::event::{canonical_envelope, seal_hash, Actor, Envelope};
+use prodrome::event::{canonical_envelope, seal_hash, Actor, Envelope, TodoEvent};
 use prodrome::genesis::mk_genesis;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
@@ -34,7 +34,7 @@ fn a_store() -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("objects")).expect("a store");
-    let genesis: Envelope<Todo> =
+    let genesis: Envelope<TodoEvent<Todo>> =
         Envelope::Genesis(mk_genesis("roadmap", &"0".repeat(32)).expect("a genesis"));
     let path = root
         .join("objects")

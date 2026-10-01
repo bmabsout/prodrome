@@ -29,14 +29,14 @@ use crate::term::Term;
 /// The state, spec and content are discrete; the tendings, a grow-only set,
 /// are ordered by inclusion.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Registers<'a, P> {
-    pub state: Frontier<'a, P>,
-    pub spec: Frontier<'a, P>,
-    pub content: Frontier<'a, P>,
+pub struct Registers<'a, P: Payload> {
+    pub state: Frontier<'a, TodoEvent<P>>,
+    pub spec: Frontier<'a, TodoEvent<P>>,
+    pub content: Frontier<'a, TodoEvent<P>>,
     pub tended: GrowSet<Instant>,
 }
 
-impl<P> Default for Registers<'_, P> {
+impl<P: Payload> Default for Registers<'_, P> {
     fn default() -> Self {
         Registers {
             state: Frontier::default(),
@@ -50,13 +50,21 @@ impl<P> Default for Registers<'_, P> {
 /// Does `stamp` join its registers at `at` (`None`: ever) under `policy`? A
 /// record joins whoever wrote it (§6.2, §6.3); every other write only where
 /// the policy binds it.
-fn admits<P: Payload>(stamp: &Stamp<P>, at: Option<Instant>, policy: &impl Policy<P>) -> bool {
+fn admits<P: Payload>(
+    stamp: &Stamp<TodoEvent<P>>,
+    at: Option<Instant>,
+    policy: &impl Policy<TodoEvent<P>>,
+) -> bool {
     at.is_none_or(|at| fpl::instant_of(stamp.event.at()) <= at)
         && (matches!(*stamp.event, TodoEvent::Authored(_)) || policy.standing(&stamp.event).binds())
 }
 
 impl<'a, P: Payload> Registers<'a, P> {
-    pub fn read(stream: &'a [Stamp<P>], at: Option<Instant>, policy: &impl Policy<P>) -> Self {
+    pub fn read(
+        stream: &'a [Stamp<TodoEvent<P>>],
+        at: Option<Instant>,
+        policy: &impl Policy<TodoEvent<P>>,
+    ) -> Self {
         let mut registers = Registers::default();
         for stamp in stream.iter().filter(|stamp| admits(stamp, at, policy)) {
             for write in Write::of(&stamp.event) {
@@ -68,7 +76,7 @@ impl<'a, P: Payload> Registers<'a, P> {
 
     /// The writes of `written` that no other write to their register precedes:
     /// what each register held first. The state has nothing to fall back to.
-    fn earliest(written: &[&'a Stamp<P>]) -> Self {
+    fn earliest(written: &[&'a Stamp<TodoEvent<P>>]) -> Self {
         let mut first = Registers::default();
         for stamp in written {
             for write in Write::of(&stamp.event) {
@@ -84,7 +92,7 @@ impl<'a, P: Payload> Registers<'a, P> {
         first
     }
 
-    fn join(&mut self, stamp: &'a Stamp<P>, write: Write<'a, P>) {
+    fn join(&mut self, stamp: &'a Stamp<TodoEvent<P>>, write: Write<'a, P>) {
         match write {
             Write::State(_) => self.state.join(stamp),
             Write::Spec(_) => self.spec.join(stamp),
@@ -93,7 +101,7 @@ impl<'a, P: Payload> Registers<'a, P> {
         }
     }
 
-    pub fn frontier(&self, kind: Kind) -> &Frontier<'a, P> {
+    pub fn frontier(&self, kind: Kind) -> &Frontier<'a, TodoEvent<P>> {
         match kind {
             Kind::State => &self.state,
             Kind::Spec => &self.spec,
@@ -216,7 +224,11 @@ fn or_first<T>(mine: Vec<T>, theirs: Vec<T>) -> Vec<T> {
 
 /// §6.1 — the environment at `at`: each todo's candidate bindings and its
 /// tendings.
-pub fn env<P: Payload>(prodrome: &Prodrome<P>, at: Instant, policy: &impl Policy<P>) -> Env {
+pub fn env<P: Payload>(
+    prodrome: &Prodrome<TodoEvent<P>>,
+    at: Instant,
+    policy: &impl Policy<TodoEvent<P>>,
+) -> Env {
     let mut env = Env::new();
     for (todo, stream) in prodrome {
         Registers::read(stream, Some(at), policy).bind(todo, &mut env);
@@ -227,9 +239,9 @@ pub fn env<P: Payload>(prodrome: &Prodrome<P>, at: Instant, policy: &impl Policy
 /// §6.2 — each todo's candidate specs at `at`. Absence is not zero: a todo
 /// missing here has no price, not a price of nothing.
 pub fn specs<P: Payload>(
-    prodrome: &Prodrome<P>,
+    prodrome: &Prodrome<TodoEvent<P>>,
     at: Instant,
-    policy: &impl Policy<P>,
+    policy: &impl Policy<TodoEvent<P>>,
 ) -> BTreeMap<TodoId, Vec<Term>> {
     prodrome
         .iter()
@@ -244,7 +256,7 @@ pub fn specs<P: Payload>(
 /// §6.3 — each todo's candidate records at `at`, whoever wrote them: the
 /// reader marks an unconfirmed one ([`crate::view::Provisional::Content`]).
 pub fn content<P: Payload>(
-    prodrome: &Prodrome<P>,
+    prodrome: &Prodrome<TodoEvent<P>>,
     at: Instant,
 ) -> BTreeMap<TodoId, Vec<Authored<P>>> {
     prodrome
@@ -266,9 +278,9 @@ pub fn content<P: Payload>(
 /// same over each register's earliest writes; a todo with no spec and no
 /// checklist has no function.
 pub fn flatten<P: Payload>(
-    prodrome: &Prodrome<P>,
+    prodrome: &Prodrome<TodoEvent<P>>,
     at: Instant,
-    policy: &impl Policy<P>,
+    policy: &impl Policy<TodoEvent<P>>,
 ) -> Result<BTreeMap<TodoId, Term>, FplError> {
     let mut out = BTreeMap::new();
     for (todo, stream) in prodrome {
@@ -280,11 +292,11 @@ pub fn flatten<P: Payload>(
 }
 
 fn function<P: Payload>(
-    stream: &[Stamp<P>],
+    stream: &[Stamp<TodoEvent<P>>],
     at: Instant,
-    policy: &impl Policy<P>,
+    policy: &impl Policy<TodoEvent<P>>,
 ) -> Result<Option<Term>, FplError> {
-    let written: Vec<&Stamp<P>> = stream
+    let written: Vec<&Stamp<TodoEvent<P>>> = stream
         .iter()
         .filter(|stamp| admits(stamp, Some(at), policy))
         .filter(|stamp| Write::of(&stamp.event).any(|write| write.kind().is_some()))
@@ -337,7 +349,7 @@ mod tests {
     type Event = TodoEvent<Todo>;
 
     /// A log as its writer's chain, folded to its one prodrome.
-    fn prodrome(log: &[Event]) -> Prodrome<Todo> {
+    fn prodrome(log: &[Event]) -> Prodrome<Event> {
         let mut prev = None;
         let mut nodes = Vec::new();
         for event in log {
@@ -349,7 +361,7 @@ mod tests {
         fold(&nodes).prodromes()[&None].clone()
     }
 
-    fn env_at(log: &[Event], t: Datetime, policy: &impl Policy<Todo>) -> Env {
+    fn env_at(log: &[Event], t: Datetime, policy: &impl Policy<Event>) -> Env {
         env(&prodrome(log), fpl::instant_of(t), policy)
     }
 

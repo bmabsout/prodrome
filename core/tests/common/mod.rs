@@ -151,7 +151,7 @@ use prodrome::term::Term;
 /// — the record shape `conformance/*.py` was taken with, and therefore the
 /// one every vector in this repository round-trips under.
 pub type Event = TodoEvent<Todo>;
-pub type Object = Envelope<Todo>;
+pub type Object = Envelope<TodoEvent<Todo>>;
 
 /// A moment in the corpus's window, with microseconds where §2's seventh
 /// argument has to be exercised.
@@ -589,8 +589,8 @@ pub fn a_log_with_absence() -> impl Strategy<Value = Vec<Event>> {
 
 /// The legacy writer: `event` sealed on every tip of `store`, as every store
 /// before changes were written.
-pub fn seal<Pol: prodrome::policy::Policy<Todo>>(
-    store: &prodrome::store::EventStore<Todo, Pol>,
+pub fn seal<Pol: prodrome::policy::Policy<TodoEvent<Todo>>>(
+    store: &prodrome::store::EventStore<TodoEvent<Todo>, Pol>,
     event: Event,
 ) -> Hash {
     let on: Vec<Hash> = store.tips().expect("the tips derive").into_iter().collect();
@@ -608,7 +608,7 @@ pub fn seal<Pol: prodrome::policy::Policy<Todo>>(
 
 /// A log as the chain a single writer builds: each object sealed on the one
 /// before, so the node's parents are real and its name is its own hash.
-pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {
+pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<TodoEvent<Todo>>> {
     let mut prev: Option<Hash> = None;
     let mut nodes = Vec::with_capacity(log.len());
     for event in log {
@@ -621,7 +621,7 @@ pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<Todo>> {
 }
 
 /// A log's one prodrome, folded from the chain its writer built.
-pub fn prodrome_of(log: &[Event]) -> prodrome::registers::Prodrome<Todo> {
+pub fn prodrome_of(log: &[Event]) -> prodrome::registers::Prodrome<TodoEvent<Todo>> {
     let state = prodrome::registers::fold(&chain_of(log));
     state
         .prodromes()
@@ -635,7 +635,7 @@ pub fn prodrome_of(log: &[Event]) -> prodrome::registers::Prodrome<Todo> {
 pub fn env_at(
     log: &[Event],
     t: Datetime,
-    policy: &impl prodrome::policy::Policy<Todo>,
+    policy: &impl prodrome::policy::Policy<TodoEvent<Todo>>,
 ) -> prodrome::fpl::Env {
     prodrome::fold::env(&prodrome_of(log), fpl::instant_of(t), policy)
 }
@@ -654,7 +654,7 @@ fn only<T>(map: BTreeMap<TodoId, Vec<T>>) -> BTreeMap<TodoId, T> {
 pub fn specs_at(
     log: &[Event],
     t: Datetime,
-    policy: &impl prodrome::policy::Policy<Todo>,
+    policy: &impl prodrome::policy::Policy<TodoEvent<Todo>>,
 ) -> BTreeMap<TodoId, Term> {
     only(prodrome::fold::specs(
         &prodrome_of(log),
@@ -675,7 +675,7 @@ pub fn authored_at(log: &[Event], t: Datetime) -> BTreeMap<TodoId, Authored<Todo
 pub fn flatten(
     log: &[Event],
     t: Datetime,
-    policy: &impl prodrome::policy::Policy<Todo>,
+    policy: &impl prodrome::policy::Policy<TodoEvent<Todo>>,
 ) -> Result<BTreeMap<TodoId, Term>, prodrome::fpl::FplError> {
     prodrome::fold::flatten(&prodrome_of(log), fpl::instant_of(t), policy)
 }

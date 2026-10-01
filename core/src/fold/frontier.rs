@@ -1,24 +1,25 @@
-use crate::event::{Hash, TodoEvent};
+use crate::event::Hash;
 use crate::fold::order::{maximal, Discrete, Order};
 use crate::fold::Register;
 use crate::registers::Stamp;
+use crate::schema::Schema;
 
 /// The writes to one register that no other write descends from, sorted by
 /// name. Empty is unwritten; more than one is a conflict.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Frontier<'a, P>(Vec<&'a Stamp<P>>);
+pub struct Frontier<'a, E: Schema>(Vec<&'a Stamp<E>>);
 
-impl<P> Default for Frontier<'_, P> {
+impl<E: Schema> Default for Frontier<'_, E> {
     fn default() -> Self {
         Frontier(Vec::new())
     }
 }
 
-impl<'a, P> Register for Frontier<'a, P> {
-    type Write = &'a Stamp<P>;
+impl<'a, E: Schema> Register for Frontier<'a, E> {
+    type Write = &'a Stamp<E>;
 
     /// The maximal writes of the union, whatever order they arrive in.
-    fn join(&mut self, write: &'a Stamp<P>) {
+    fn join(&mut self, write: &'a Stamp<E>) {
         if self
             .0
             .iter()
@@ -32,8 +33,8 @@ impl<'a, P> Register for Frontier<'a, P> {
     }
 }
 
-impl<'a, P: PartialEq> Frontier<'a, P> {
-    pub fn writes(&self) -> &[&'a Stamp<P>] {
+impl<'a, E: Schema> Frontier<'a, E> {
+    pub fn writes(&self) -> &[&'a Stamp<E>] {
         &self.0
     }
 
@@ -47,7 +48,7 @@ impl<'a, P: PartialEq> Frontier<'a, P> {
 
     /// The register's reading: the writes whose values are maximal under
     /// the values' order, each value named by the least write carrying it.
-    pub fn read<V: Order>(&self, value: impl Fn(&'a Stamp<P>) -> V) -> Vec<&'a Stamp<P>> {
+    pub fn read<V: Order>(&self, value: impl Fn(&'a Stamp<E>) -> V) -> Vec<&'a Stamp<E>> {
         maximal(&self.0, value)
     }
 
@@ -55,7 +56,7 @@ impl<'a, P: PartialEq> Frontier<'a, P> {
     /// own: agreeing twins are one candidate. The value is the whole event,
     /// not the field the register reads, so two events that agree on a spec
     /// stay two candidates as they always were.
-    pub fn candidates(&self) -> Vec<&'a Stamp<P>> {
-        self.read(|stamp| Discrete::<&TodoEvent<P>>(&stamp.event))
+    pub fn candidates(&self) -> Vec<&'a Stamp<E>> {
+        self.read(|stamp| Discrete::<&E>(&stamp.event))
     }
 }
