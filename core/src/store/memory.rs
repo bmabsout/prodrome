@@ -26,6 +26,11 @@ use crate::schema::Schema;
 /// linearisation of the union puts it, and what insertion cannot do (an
 /// object gone, one that something held names, one resting on another scope)
 /// sets the fold aside, to be taken again from memory, never from the files.
+///
+/// INCREMENTAL EQUALS COLD: after any looks, admissions and forgettings, a
+/// memory is what one fresh look at the same files makes, its fold
+/// `fold(&dag.nodes_across_gaps()?)`, its tips `dag.tips()` and its geneses
+/// `dag.geneses()` (`core/tests/all/memory.rs`).
 pub struct Memory<E: Schema> {
     dag: Arc<Dag<E>>,
     folded: Option<Arc<Folded<E>>>,
@@ -39,6 +44,8 @@ pub struct Memory<E: Schema> {
     /// twin check reads the objects whose events print the same and no
     /// other.
     twins: BTreeMap<Hash, BTreeSet<Hash>>,
+    /// Each held `Genesis`, and the least legacy root: [`Dag::geneses`].
+    geneses: BTreeSet<Hash>,
 }
 
 /// An object whose name is the hash of its bytes, which is the only way into
@@ -134,6 +141,7 @@ impl<E: Schema> Memory<E> {
             wanted: BTreeSet::new(),
             files: BTreeMap::new(),
             twins: BTreeMap::new(),
+            geneses: BTreeSet::new(),
         }
     }
 
@@ -182,6 +190,11 @@ impl<E: Schema> Memory<E> {
         &self.tips
     }
 
+    /// Every prodrome's genesis, as [`Dag::geneses`] answers it.
+    pub fn geneses(&self) -> &BTreeSet<Hash> {
+        &self.geneses
+    }
+
     /// The held names, each with its file as it was seen.
     pub fn files(&self) -> &BTreeMap<Hash, Option<Seen>> {
         &self.files
@@ -196,20 +209,14 @@ impl<E: Schema> Memory<E> {
     }
 
     /// Forget `gone` and take in `fresh`, each with its file as it was seen
-    /// before it was read. The tips and the fold follow, each fresh object
-    /// in turn, parents first: the fold by [`Folded::insert`], or set aside
-    /// where insertion cannot say.
-    ///
-    /// # Errors
-    ///
-    /// A cycle among what is held, which only a hash collision could make.
-    pub fn admit(
-        &mut self,
-        gone: &[Hash],
-        fresh: Vec<(Verified<E>, Option<Seen>)>,
-    ) -> Result<(), ProdromeError> {
+    /// before it was read. The tips, the geneses and the fold follow, each
+    /// fresh object in turn, parents first: the fold by [`Folded::insert`].
+    /// Where that cannot say (an object gone, one a held object names, one
+    /// resting on another scope), the tips and the geneses are taken again
+    /// from the held DAG and the fold is set aside until it is asked for.
+    pub fn admit(&mut self, gone: &[Hash], fresh: Vec<(Verified<E>, Option<Seen>)>) {
         if gone.is_empty() && fresh.is_empty() {
-            return Ok(());
+            return;
         }
         let extends = gone.is_empty()
             && fresh
@@ -237,18 +244,21 @@ impl<E: Schema> Memory<E> {
             dag.insert(name.clone(), object);
             names.insert(name);
         }
-        if !extends {
-            self.folded = None;
-            self.tips = dag.tips();
-            self.wanted = dag
-                .objects()
-                .values()
-                .flat_map(named)
-                .filter(|named| dag.get(named).is_none())
-                .collect();
-            return Ok(());
-        }
-        let order = dag.order_among(&names.iter().collect())?;
+        let order = match dag.order_among(&names.iter().collect()) {
+            Ok(order) if extends => order,
+            _ => {
+                self.folded = None;
+                self.tips = dag.tips();
+                self.geneses = dag.geneses();
+                self.wanted = dag
+                    .objects()
+                    .values()
+                    .flat_map(named)
+                    .filter(|named| dag.get(named).is_none())
+                    .collect();
+                return;
+            }
+        };
         for name in &order {
             let object = dag.get(name).expect("admitted above");
             for parent in parents_of(object) {
@@ -260,6 +270,22 @@ impl<E: Schema> Memory<E> {
                     .into_iter()
                     .filter(|named| dag.get(named).is_none()),
             );
+            match object {
+                Envelope::Genesis(_) => {
+                    self.geneses.insert(name.clone());
+                }
+                // A legacy root: `geneses` keeps the least.
+                Envelope::Sealed { prev: None, .. } => {
+                    let root = self.geneses.iter().find(|held| dag.is_root(held)).cloned();
+                    if root.as_ref().is_none_or(|root| name < root) {
+                        self.geneses.insert(name.clone());
+                        if let Some(root) = root {
+                            self.geneses.remove(&root);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         if let Some(folded) = &mut self.folded {
             let folded = Arc::make_mut(folded);
@@ -271,7 +297,6 @@ impl<E: Schema> Memory<E> {
                 self.folded = None;
             }
         }
-        Ok(())
     }
 }
 
