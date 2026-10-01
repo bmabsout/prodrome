@@ -27,7 +27,7 @@ use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
 use crate::registers::{Prodrome, Stamp};
-use crate::schema::{Schema, Valuation};
+use crate::schema::{Bind, History, Price, Schema};
 use crate::term::Term;
 use crate::todo::{Content, Spec, State};
 
@@ -228,7 +228,7 @@ fn or_first<T>(mine: Vec<T>, theirs: Vec<T>) -> Vec<T> {
 
 /// §6.1 — the environment at `at`: what FPL's terms read of each entity (a
 /// todo's candidate bindings and its tendings).
-pub fn env<E: Valuation>(prodrome: &Prodrome<E>, at: Instant, policy: &impl Policy<E>) -> Env {
+pub fn env<E: Bind>(prodrome: &Prodrome<E>, at: Instant, policy: &impl Policy<E>) -> Env {
     let mut env = Env::new();
     for (key, stream) in prodrome {
         E::bind(key, &read(stream, Some(at), policy), &mut env);
@@ -274,14 +274,14 @@ pub fn content<P: Payload>(
 
 /// §6.4 — each entity's history as of `at`, as ONE fulfillment function: a
 /// piece at every instant one of its registers was written, the term in each
-/// the price of the reading there. The head, extending to −∞, is the price of
-/// each register's earliest writes; an entity they price nothing has no
-/// function.
+/// `Least` over that [`History::moment`]'s terms. The head, extending to −∞,
+/// is the price of each register's earliest writes; an entity they price
+/// nothing has no function.
 ///
 /// # Errors
 ///
 /// A piece a smart constructor refuses.
-pub fn flatten<E: Valuation>(
+pub fn flatten<E: History>(
     prodrome: &Prodrome<E>,
     at: Instant,
     policy: &impl Policy<E>,
@@ -295,23 +295,23 @@ pub fn flatten<E: Valuation>(
     Ok(out)
 }
 
-/// A reading's price (design §4): `Least` over the prices of its worlds, so
-/// a conflict prices as its most urgent candidate; none where no world has
-/// one.
+/// A reading's price (design §4): `Least` over the terms its candidates
+/// price as ([`Price::terms`]), so a conflict prices as its most urgent
+/// candidate; none where no candidate has one.
 ///
 /// # Errors
 ///
-/// A world's price a smart constructor refuses.
-pub fn price<E: Valuation>(
-    now: &E::Registers<'_>,
-    first: &E::Registers<'_>,
-    head: Option<&Term>,
-) -> Result<Option<Term>, FplError> {
-    let worlds = E::worlds(now, first, head)?;
-    if worlds.is_empty() {
+/// A candidate's term a smart constructor refuses.
+pub fn price<E: Price>(registers: &E::Registers<'_>) -> Result<Option<Term>, FplError> {
+    least(E::terms(registers)?)
+}
+
+/// `Least` over `terms`, the meet in the fulfillment order; none for none.
+fn least(terms: Vec<Term>) -> Result<Option<Term>, FplError> {
+    if terms.is_empty() {
         Ok(None)
     } else {
-        fpl::least_of(worlds).map(Some)
+        fpl::least_of(terms).map(Some)
     }
 }
 
@@ -332,7 +332,7 @@ fn earliest<'a, E: Schema>(written: &[&'a Stamp<E>]) -> E::Registers<'a> {
     first
 }
 
-fn function<E: Valuation>(
+fn function<E: History>(
     stream: &[Stamp<E>],
     at: Instant,
     policy: &impl Policy<E>,
@@ -343,7 +343,7 @@ fn function<E: Valuation>(
         .filter(|stamp| stamp.event.writes().next().is_some())
         .collect();
     let first = earliest(&written);
-    let Some(head) = price::<E>(&E::Registers::default(), &first, None)? else {
+    let Some(head) = least(E::moment(&E::Registers::default(), &first, None)?)? else {
         return Ok(None);
     };
     let moments: BTreeSet<Instant> = written
@@ -352,7 +352,11 @@ fn function<E: Valuation>(
         .collect();
     let mut pieces = Vec::with_capacity(moments.len());
     for m in moments {
-        let term = price::<E>(&read(stream, Some(m), policy), &first, Some(&head))?;
+        let term = least(E::moment(
+            &read(stream, Some(m), policy),
+            &first,
+            Some(&head),
+        )?)?;
         pieces.push((m, term.unwrap_or_else(|| head.clone())));
     }
     fpl::mk_piecewise(head, pieces).map(Some)
