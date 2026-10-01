@@ -46,7 +46,7 @@ pub trait Replica<E: Schema> {
     /// unchecked: whoever receives it verifies it.
     fn print(&self, name: &Hash) -> Option<Vec<u8>>;
 
-    /// Write `event` as a `Change` over the frontiers it supersedes in this
+    /// Write `event` as a `Change` over its entity's heads in this
     /// replica, or nothing where it holds a twin (SPEC §3): the decision is
     /// the same wherever the objects are held, so two replicas holding the
     /// same objects write the same bytes.
