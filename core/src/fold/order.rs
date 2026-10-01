@@ -36,3 +36,25 @@ impl<T: Ord> Order for BTreeSet<T> {
         self.is_subset(other)
     }
 }
+
+/// The free completion of the order: the items whose values are maximal,
+/// one per value, the first that carries it. One is a value; more is a
+/// conflict. Under [`Discrete`] it is every distinct value.
+pub fn maximal<T: Copy, V: Order>(items: &[T], value: impl Fn(T) -> V) -> Vec<T> {
+    let mut out: Vec<T> = Vec::with_capacity(items.len());
+    for &item in items {
+        let v = value(item);
+        let dominated = items.iter().any(|&other| {
+            let w = value(other);
+            v.le(&w) && !w.le(&v)
+        });
+        let held = out.iter().any(|&kept| {
+            let w = value(kept);
+            v.le(&w) && w.le(&v)
+        });
+        if !dominated && !held {
+            out.push(item);
+        }
+    }
+    out
+}
