@@ -1,23 +1,18 @@
-use crate::event::{
-    event_from_value, field, hashes, hashes_value, sorted_distinct, Hash, TodoEvent,
-};
+use crate::event::{field, hashes, hashes_value, sorted_distinct, Hash};
 use crate::literal::{Call, ProdromeError, Value};
-use crate::payload::{required, string_field, Payload};
+use crate::payload::{required, string_field};
+use crate::schema::Schema;
 
 /// `Change(genesis, deps, event)`: an event named by its prodrome and the
 /// writes it supersedes, never by where it was written.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Change<P> {
+pub struct Change<E> {
     pub genesis: Hash,
     pub deps: Vec<Hash>,
-    pub event: TodoEvent<P>,
+    pub event: E,
 }
 
-pub fn mk_change<P>(
-    genesis: Hash,
-    deps: Vec<Hash>,
-    event: TodoEvent<P>,
-) -> Result<Change<P>, ProdromeError> {
+pub fn mk_change<E>(genesis: Hash, deps: Vec<Hash>, event: E) -> Result<Change<E>, ProdromeError> {
     Ok(Change {
         genesis,
         deps: sorted_distinct("Change.deps", "dep", deps)?,
@@ -25,7 +20,7 @@ pub fn mk_change<P>(
     })
 }
 
-impl<P: Payload> Change<P> {
+impl<E: Schema> Change<E> {
     pub fn to_value(&self) -> Value {
         Value::call(
             "Change",
@@ -37,11 +32,11 @@ impl<P: Payload> Change<P> {
         )
     }
 
-    pub fn from_call(call: &Call) -> Result<Change<P>, ProdromeError> {
+    pub fn from_call(call: &Call) -> Result<Change<E>, ProdromeError> {
         mk_change(
             Hash::new(string_field(call, "genesis")?)?,
             hashes(call, "deps")?,
-            event_from_value(required(call, "event")?)?,
+            E::from_value(required(call, "event")?)?,
         )
     }
 }

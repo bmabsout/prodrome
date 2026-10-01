@@ -9,7 +9,7 @@ use crate::common;
 use common::env_at;
 use common::vectors::{each, field, moment, strings, text, text_at, vectors};
 use prodrome::chain::compile;
-use prodrome::event::{canonical, parse_event, Actor};
+use prodrome::event::{canonical, parse_event, Actor, TodoEvent};
 use prodrome::fpl::{fulfillment, instant_of, parse_term, print_term, Closed};
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
@@ -25,7 +25,7 @@ fn every_recurrence_reads_its_samples_against_the_tendings() {
     let events: Vec<_> = each(&data, "events")
         .iter()
         .map(|print| {
-            let event = parse_event::<Todo>(text(print)).expect("a stored event");
+            let event = parse_event::<TodoEvent<Todo>>(text(print)).expect("a stored event");
             assert_eq!(canonical(&event), text(print), "print ∘ parse");
             event
         })

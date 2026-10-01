@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use prodrome::dag::Dag;
 use prodrome::event::{
     canonical_envelope, mk_created, mk_sealed, mk_woven, parents_of, seal_hash, Envelope, Hash,
+    TodoEvent,
 };
 use prodrome::literal::Datetime;
 use prodrome::policy::Untrusted;
@@ -35,9 +36,9 @@ use prodrome::reference::Todo;
 use prodrome::store::EventStore;
 use proptest::prelude::*;
 
-type Object = Envelope<Todo>;
+type Object = Envelope<TodoEvent<Todo>>;
 type Objects = BTreeMap<Hash, Object>;
-type Store = EventStore<Todo, Untrusted>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 
 /// A DAG as drawn: for each object in turn, raw picks among the objects before
 /// it, which [`realise`] reduces to its parents. Genesis names none; any later
@@ -77,7 +78,7 @@ fn tips_of<'a>(objects: impl IntoIterator<Item = (&'a Hash, &'a Object)>) -> BTr
     objects
         .into_iter()
         .map(|(name, object)| (name.clone(), object.clone()))
-        .collect::<Dag<Todo>>()
+        .collect::<Dag<TodoEvent<Todo>>>()
         .tips()
 }
 

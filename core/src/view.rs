@@ -18,7 +18,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::event::{Hash, TodoId};
+use crate::event::{Hash, TodoEvent, TodoId};
 use crate::fold::{self, Kind, Registers};
 use crate::fpl::{self, Candidates, Env, LinkError, Outcome};
 use crate::literal::{Datetime, ProdromeError};
@@ -215,9 +215,9 @@ fn lowered(candidates: &Candidates) -> String {
 /// `confidence` whether a claim was refused or a candidate record is one the
 /// policy does not confirm.
 pub fn entries<P: Payload>(
-    nodes: &[Node<P>],
+    nodes: &[Node<TodoEvent<P>>],
     t: Datetime,
-    policy: &impl Policy<P>,
+    policy: &impl Policy<TodoEvent<P>>,
 ) -> Result<Vec<Entry>, ProdromeError> {
     let state = registers::fold(nodes);
     let now = fpl::instant_of(t);
@@ -290,7 +290,7 @@ fn kinds(candidates: &Candidates) -> BTreeSet<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_sealed, seal_hash, Actor, TodoEvent};
+    use crate::event::{mk_completed, mk_sealed, seal_hash, Actor};
     use crate::fpl::mk_flat;
     use crate::policy::Untrusted;
     use crate::reference::{mk_authored, Todo};
@@ -301,7 +301,7 @@ mod tests {
         Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
     }
 
-    fn chain(events: Vec<Event>) -> Vec<Node<Todo>> {
+    fn chain(events: Vec<Event>) -> Vec<Node<Event>> {
         let mut prev = None;
         let mut nodes = Vec::new();
         for event in events {

@@ -10,14 +10,14 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::vectors::{boolean, each, field, integer, moment_at, strings, text_at, vectors};
-use prodrome::event::{parse_event, Actor, Hash};
+use prodrome::event::{parse_event, Actor, Hash, TodoEvent};
 use prodrome::literal::Value;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::store::EventStore;
 use prodrome::view;
 
-type Store = EventStore<Todo, Untrusted>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 
 fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])

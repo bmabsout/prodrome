@@ -384,7 +384,9 @@ fn weave_settles_a_legacy_store_s_two_heads_and_is_a_no_op_on_changes() {
     let root = a_store();
     let store = Store::new(&root, Untrusted::none());
     let at = |hour| Datetime::new(2026, 9, 10, hour, 0, 0, 0).expect("an instant");
-    let root_object: prodrome::event::Envelope<prodrome::reference::Todo> = mk_sealed(
+    let root_object: prodrome::event::Envelope<
+        prodrome::event::TodoEvent<prodrome::reference::Todo>,
+    > = mk_sealed(
         None,
         mk_created("publish", at(9), "bassel", "publish the crate", "").expect("an event"),
     );

@@ -29,8 +29,8 @@ use prodrome::registers::{deps_for, extend, fold, since, Folded, Node};
 use prodrome::store::EventStore;
 use prodrome::view;
 
-type Chain = Node<Todo>;
-type Store = EventStore<Todo, Untrusted>;
+type Chain = Node<TodoEvent<Todo>>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
 
 /// An environment as the vectors hold it: `(todo, kind, instant)` per
 /// candidate, `("open", "")` for an open one.
@@ -128,7 +128,7 @@ fn chain_of(log: &Value) -> Vec<Chain> {
     let mut nodes = Vec::new();
     for item in each(log, "events") {
         let object = format!("Sealed(prev='{prev}', event={})", text(item));
-        let envelope: Envelope<Todo> =
+        let envelope: Envelope<TodoEvent<Todo>> =
             parse_envelope(&object).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         let name = seal_hash(&envelope);
         prev = name.as_str().to_owned();
@@ -151,7 +151,7 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
 
         let mut found: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
         let mut env = Env::new();
-        for (todo, stream) in state.todos() {
+        for (todo, stream) in state.entities() {
             let registers = Registers::read(stream, None, &roster());
             registers.bind(todo, &mut env);
             for (kind, names) in registers.conflicts() {
@@ -175,7 +175,7 @@ fn on_a_chain_nothing_conflicts() {
     for log in &logs() {
         let seed = integer(field(log, "seed"));
         let state = fold(&chain_of(log));
-        for (_, stream) in state.todos() {
+        for (_, stream) in state.entities() {
             let registers = Registers::read(stream, None, &Everything);
             assert!(registers.conflicts().is_empty(), "seed {seed}");
             written += registers.state.writes().len() + registers.spec.writes().len();
@@ -219,7 +219,7 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
         let seed = integer(field(dag, "seed"));
         let store = materialise(dag);
         let state = fold(&nodes(&store));
-        for (_, stream) in state.todos() {
+        for (_, stream) in state.entities() {
             let registers = Registers::read(stream, None, &Everything);
             for kind in [Kind::State, Kind::Spec, Kind::Content] {
                 let names = registers.frontier(kind).names();
@@ -241,10 +241,10 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
 
 #[test]
 fn the_empty_state_is_the_unit() {
-    let empty = Folded::<Todo>::empty();
-    assert_eq!(empty.todos().count(), 0);
+    let empty = Folded::<TodoEvent<Todo>>::empty();
+    assert_eq!(empty.entities().count(), 0);
     assert_eq!(extend(&empty, &[]), empty);
-    assert_eq!(fold::<Todo>(&[]), empty);
+    assert_eq!(fold::<TodoEvent<Todo>>(&[]), empty);
     let unknown = Hash::new("a".repeat(64)).expect("hex");
     assert!(!empty.descends(&unknown, &unknown));
     assert!(!empty.holds(&unknown));
@@ -262,8 +262,9 @@ struct Prodrome {
 
 impl Prodrome {
     fn new() -> Prodrome {
-        let genesis =
-            Envelope::<Todo>::Genesis(mk_genesis("test", &"0".repeat(32)).expect("a genesis"));
+        let genesis = Envelope::<TodoEvent<Todo>>::Genesis(
+            mk_genesis("test", &"0".repeat(32)).expect("a genesis"),
+        );
         let name = seal_hash(&genesis);
         Prodrome {
             nodes: vec![Node::of(name.clone(), &genesis)],
@@ -300,7 +301,7 @@ fn agreeing_twins_are_one_candidate() {
     assert_ne!(one, two, "twins are two objects");
 
     let state = fold(&p.nodes);
-    let (_, stream) = state.todos().next().expect("alpha");
+    let (_, stream) = state.entities().next().expect("alpha");
     let registers = Registers::read(stream, None, &roster());
     let mut twins = vec![one.clone(), two.clone()];
     twins.sort();

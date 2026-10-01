@@ -9,22 +9,21 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 pub use finding::{Finding, Unread};
 
 use crate::change::Change;
-use crate::event::{parents_of, parse_envelope, Envelope, Hash, TodoEvent, TodoId};
-use crate::fold::{Kind, Write};
+use crate::event::{parents_of, parse_envelope, Envelope, Hash};
 use crate::literal::{Datetime, ProdromeError};
-use crate::payload::Payload;
 use crate::policy::Policy;
 use crate::registers::{Genesis, Node};
+use crate::schema::Schema;
 
-/// Named objects, and the named prints that are not objects.
+/// Named objects of the schema `E`, and the named prints that are not objects.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Dag<P> {
-    objects: BTreeMap<Hash, Envelope<P>>,
+pub struct Dag<E> {
+    objects: BTreeMap<Hash, Envelope<E>>,
     unread: BTreeMap<Hash, Unread>,
 }
 
-impl<P> FromIterator<(Hash, Envelope<P>)> for Dag<P> {
-    fn from_iter<I: IntoIterator<Item = (Hash, Envelope<P>)>>(objects: I) -> Self {
+impl<E> FromIterator<(Hash, Envelope<E>)> for Dag<E> {
+    fn from_iter<I: IntoIterator<Item = (Hash, Envelope<E>)>>(objects: I) -> Self {
         Dag {
             objects: objects.into_iter().collect(),
             unread: BTreeMap::new(),
@@ -32,8 +31,9 @@ impl<P> FromIterator<(Hash, Envelope<P>)> for Dag<P> {
     }
 }
 
-/// A stored print, rehashed against its name before it is parsed.
-pub fn decode<P: Payload>(name: &Hash, bytes: &[u8]) -> Result<Envelope<P>, Unread> {
+/// A stored print, rehashed against its name before it is parsed at the
+/// schema `E`.
+pub fn decode<E: Schema>(name: &Hash, bytes: &[u8]) -> Result<Envelope<E>, Unread> {
     let computed = Hash::of_bytes(bytes);
     if computed != *name {
         return Err(Unread::Tampered(computed));
@@ -42,8 +42,8 @@ pub fn decode<P: Payload>(name: &Hash, bytes: &[u8]) -> Result<Envelope<P>, Unre
     parse_envelope(text).map_err(Unread::Unparsed)
 }
 
-impl<P> Dag<P> {
-    pub fn objects(&self) -> &BTreeMap<Hash, Envelope<P>> {
+impl<E> Dag<E> {
+    pub fn objects(&self) -> &BTreeMap<Hash, Envelope<E>> {
         &self.objects
     }
 
@@ -51,12 +51,12 @@ impl<P> Dag<P> {
         &self.unread
     }
 
-    pub fn get(&self, name: &Hash) -> Option<&Envelope<P>> {
+    pub fn get(&self, name: &Hash) -> Option<&Envelope<E>> {
         self.objects.get(name)
     }
 
     /// The DAG, or the refusal of its first print that is not an object.
-    pub fn whole(self) -> Result<Dag<P>, ProdromeError> {
+    pub fn whole(self) -> Result<Dag<E>, ProdromeError> {
         match self.unread.iter().next() {
             Some((name, why)) => Err(why.refusal(name)),
             None => Ok(self),
@@ -175,7 +175,7 @@ impl<P> Dag<P> {
         (!self.is_root(genesis)).then(|| genesis.clone())
     }
 
-    fn prodrome(&self, name: &Hash, object: &Envelope<P>) -> Genesis {
+    fn prodrome(&self, name: &Hash, object: &Envelope<E>) -> Genesis {
         match object {
             Envelope::Sealed { .. } | Envelope::Woven { .. } => None,
             Envelope::Genesis(_) => self.key(name),
@@ -192,12 +192,12 @@ impl<P> Dag<P> {
     }
 }
 
-impl<P: Payload> Dag<P> {
+impl<E: Schema> Dag<E> {
     /// Each print decoded under its name, a print that is not an object kept
     /// with why.
     pub fn from_prints(
         prints: impl IntoIterator<Item = (Hash, Result<Vec<u8>, ProdromeError>)>,
-    ) -> Dag<P> {
+    ) -> Dag<E> {
         let mut dag = Dag::from_iter([]);
         for (name, bytes) in prints {
             match bytes
@@ -216,17 +216,17 @@ impl<P: Payload> Dag<P> {
     }
 
     /// The objects as the registers read them, in the linearisation's order.
-    pub fn nodes(&self) -> Result<Vec<Node<P>>, ProdromeError> {
+    pub fn nodes(&self) -> Result<Vec<Node<E>>, ProdromeError> {
         self.nodes_in(self.linearise()?)
     }
 
     /// [`Dag::nodes`] over what is held when a parent is not: a writer's
     /// read of a store with an object set aside.
-    pub fn nodes_across_gaps(&self) -> Result<Vec<Node<P>>, ProdromeError> {
+    pub fn nodes_across_gaps(&self) -> Result<Vec<Node<E>>, ProdromeError> {
         self.nodes_in(self.order(true)?)
     }
 
-    fn nodes_in(&self, order: Vec<Hash>) -> Result<Vec<Node<P>>, ProdromeError> {
+    fn nodes_in(&self, order: Vec<Hash>) -> Result<Vec<Node<E>>, ProdromeError> {
         Ok(order
             .into_iter()
             .map(|name| {
@@ -243,7 +243,7 @@ impl<P: Payload> Dag<P> {
     /// §3's findings: every print that is not an object, by name, then every
     /// parent no object is, or else a cycle, or else the dating rule; then
     /// §3's genesis, deps and snapshot rules, object by object.
-    pub fn verify(&self, policy: &impl Policy<P>) -> Vec<Finding> {
+    pub fn verify(&self, policy: &impl Policy<E>) -> Vec<Finding> {
         let mut findings: Vec<Finding> = self
             .unread
             .iter()
@@ -289,7 +289,7 @@ impl<P: Payload> Dag<P> {
 
     /// §3: an object names a genesis the store holds, and rests on
     /// nothing of another.
-    fn genesis_findings(&self, name: &Hash, object: &Envelope<P>) -> Vec<Finding> {
+    fn genesis_findings(&self, name: &Hash, object: &Envelope<E>) -> Vec<Finding> {
         let stranger = object.genesis().filter(|genesis| {
             !self.is_root(genesis)
                 && !matches!(self.objects.get(*genesis), Some(Envelope::Genesis(_)))
@@ -315,7 +315,7 @@ impl<P: Payload> Dag<P> {
 
     /// §3: each dep writes a register the change's event writes, and no
     /// dep rests on another.
-    fn deps_findings(&self, name: &Hash, change: &Change<P>) -> Vec<Finding> {
+    fn deps_findings(&self, name: &Hash, change: &Change<E>) -> Vec<Finding> {
         let written = registers(Some(&change.event));
         let beneath: Vec<(&Hash, BTreeSet<Hash>)> = change
             .deps
@@ -349,7 +349,7 @@ impl<P: Payload> Dag<P> {
 
     /// An event the policy does not confirm, dated before the latest stamp
     /// anywhere beneath it: a forced clock that ran backwards.
-    fn dated(&self, order: &[Hash], policy: &impl Policy<P>) -> Vec<Finding> {
+    fn dated(&self, order: &[Hash], policy: &impl Policy<E>) -> Vec<Finding> {
         let mut high: BTreeMap<&Hash, Datetime> = BTreeMap::new();
         let mut findings = Vec::new();
         for name in order {
@@ -371,7 +371,7 @@ impl<P: Payload> Dag<P> {
                     });
                 }
             }
-            if let Some(stamp) = behind.into_iter().chain(event.map(TodoEvent::at)).max() {
+            if let Some(stamp) = behind.into_iter().chain(event.map(Schema::at)).max() {
                 high.insert(name, stamp);
             }
         }
@@ -379,11 +379,11 @@ impl<P: Payload> Dag<P> {
     }
 }
 
-/// The registers an event writes.
-fn registers<P: Payload>(event: Option<&TodoEvent<P>>) -> BTreeSet<(&TodoId, Kind)> {
+/// The registers an event writes, each of its entity.
+fn registers<E: Schema>(event: Option<&E>) -> BTreeSet<(&E::Key, E::Register)> {
     event
         .into_iter()
-        .flat_map(|event| Write::of(event).filter_map(|write| Some((event.todo(), write.kind()?))))
+        .flat_map(|event| event.writes().map(move |register| (event.key(), register)))
         .collect()
 }
 
@@ -407,7 +407,7 @@ pub(crate) fn tips_among<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_created, mk_sealed, seal_hash};
+    use crate::event::{mk_created, mk_sealed, seal_hash, TodoEvent};
     use crate::reference::Todo;
 
     #[test]
@@ -415,9 +415,9 @@ mod tests {
         let at = Datetime::new(2026, 9, 1, 12, 0, 0, 0).expect("a real instant");
         let event = mk_created("alpha", at, "bassel", "", "").expect("valid");
         let absent = Hash::new("a".repeat(64)).expect("hex");
-        let orphaned: Envelope<Todo> = mk_sealed(Some(absent.clone()), event);
+        let orphaned: Envelope<TodoEvent<Todo>> = mk_sealed(Some(absent.clone()), event);
         let name = seal_hash(&orphaned);
-        let dag: Dag<Todo> = [(name.clone(), orphaned)].into_iter().collect();
+        let dag: Dag<TodoEvent<Todo>> = [(name.clone(), orphaned)].into_iter().collect();
         assert_eq!(
             dag.linearise().unwrap_err().to_string(),
             format!(

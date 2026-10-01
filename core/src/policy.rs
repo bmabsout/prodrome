@@ -22,8 +22,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::event::{Actor, TodoEvent};
-use crate::payload::Payload;
+use crate::event::Actor;
+use crate::schema::Schema;
 
 /// What a [`Policy`] says about one event: the two readings, as a sum.
 ///
@@ -62,13 +62,13 @@ impl Standing {
 /// core through. [`Untrusted`] is the reference implementation and
 /// [`Everything`] the trivial one.
 ///
-/// Generic over the payload because an event carries one, so a host whose
-/// records say something about their own standing can read it. A policy that
-/// does not care — the two here do not — implements it for every `P` in one
-/// blanket impl.
-pub trait Policy<P: Payload> {
-    /// Does this event write, or does it only claim?
-    fn standing(&self, event: &TodoEvent<P>) -> Standing;
+/// Generic over the schema, so a host whose events say something about their
+/// own standing can read it. A policy that does not care — the two here do
+/// not — implements it for every schema in one blanket impl.
+pub trait Policy<E: Schema> {
+    /// Does this event write, or does it only claim? Asked only of an event
+    /// the schema [`Schema::asks`] about: any other binds.
+    fn standing(&self, event: &E) -> Standing;
 
     /// Is this event the host's OWN word?
     ///
@@ -87,7 +87,7 @@ pub trait Policy<P: Payload> {
     ///
     /// `standing(e) == Claims` implies `!confirms(e)`; every implementation
     /// here keeps that, and §9's laws are stated over policies that do.
-    fn confirms(&self, event: &TodoEvent<P>) -> bool {
+    fn confirms(&self, event: &E) -> bool {
         self.standing(event).binds()
     }
 }
@@ -101,8 +101,8 @@ pub trait Policy<P: Payload> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Everything;
 
-impl<P: Payload> Policy<P> for Everything {
-    fn standing(&self, _event: &TodoEvent<P>) -> Standing {
+impl<E: Schema> Policy<E> for Everything {
+    fn standing(&self, _event: &E) -> Standing {
         Standing::Binds
     }
 }
@@ -110,7 +110,9 @@ impl<P: Payload> Policy<P> for Everything {
 /// THE REFERENCE POLICY: a set of actor names, and the rule the conformance
 /// vectors were taken under.
 ///
-/// A named actor's LIFECYCLE, `Tended` and `SpecRevised` events CLAIM —
+/// Over any schema, the same rule: a named actor's events the schema
+/// [`Schema::asks`] about CLAIM, and its others bind. Under the todo schema,
+/// a named actor's LIFECYCLE, `Tended` and `SpecRevised` events CLAIM —
 /// stored, shown, never folded — because such a writer reads
 /// attacker-controlled input and an injected completion, tending or repricing
 /// is the threat the roster exists for. Its
@@ -120,7 +122,7 @@ impl<P: Payload> Policy<P> for Everything {
 /// [`Policy::confirms`] refuses them and the reader marks the row.
 ///
 /// It lives in the core, not behind the `reference` feature that gates the
-/// reference PAYLOAD: it is a policy over the core's own event kinds, it needs
+/// reference PAYLOAD: it is a policy over any schema's events, it needs
 /// nothing from any payload, and the core's conformance suites — which read
 /// `conformance/`'s `untrusted` fields through it — would have to be
 /// feature-gated with it for no gain. The `reference` feature answers "which
@@ -146,9 +148,9 @@ impl Untrusted {
     }
 }
 
-impl<P: Payload> Policy<P> for Untrusted {
-    fn standing(&self, event: &TodoEvent<P>) -> Standing {
-        if matches!(event, TodoEvent::Authored(_)) || !self.0.contains(event.actor()) {
+impl<E: Schema> Policy<E> for Untrusted {
+    fn standing(&self, event: &E) -> Standing {
+        if !event.asks() || !self.0.contains(event.actor()) {
             Standing::Binds
         } else {
             Standing::Claims
@@ -158,7 +160,7 @@ impl<P: Payload> Policy<P> for Untrusted {
     /// The roster, whatever the kind — the override the doc on
     /// [`Policy::confirms`] describes. An untrusted actor's content record
     /// binds and is still that actor's.
-    fn confirms(&self, event: &TodoEvent<P>) -> bool {
+    fn confirms(&self, event: &E) -> bool {
         !self.0.contains(event.actor())
     }
 }
@@ -166,7 +168,7 @@ impl<P: Payload> Policy<P> for Untrusted {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_completed, mk_created};
+    use crate::event::{mk_completed, mk_created, TodoEvent};
     use crate::literal::Datetime;
     use crate::reference::{mk_authored, Todo};
 

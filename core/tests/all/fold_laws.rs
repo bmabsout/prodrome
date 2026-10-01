@@ -50,9 +50,9 @@ use common::{
 /// These laws are about the FOLDS, not about a record's fields, so the payload
 /// they run under is the reference one — the shape the vector generator drew.
 type Event = TodoEvent<Todo>;
-type Chain = Node<Todo>;
-type Store = EventStore<Todo, Untrusted>;
-type State = Folded<Todo>;
+type Chain = Node<TodoEvent<Todo>>;
+type Store = EventStore<TodoEvent<Todo>, Untrusted>;
+type State = Folded<TodoEvent<Todo>>;
 
 /// The random log generator (`TODOS`, `ACTORS`, `WINDOW`, `origin`, `moment`,
 /// `far`, `Draft`, `a_random_spec`, `a_draft`, `a_schedule`, `realise`,
@@ -94,7 +94,7 @@ struct Folds {
     flatten: BTreeMap<String, String>,
 }
 
-fn folds(log: &[Event], t: Datetime, policy: &impl Policy<Todo>) -> Folds {
+fn folds(log: &[Event], t: Datetime, policy: &impl Policy<TodoEvent<Todo>>) -> Folds {
     Folds {
         env: env_at(log, t, policy),
         specs: specs_at(log, t, policy)
@@ -359,7 +359,7 @@ proptest! {
         for log in [&log, &shuffled] {
             let kept: Vec<Event> = log
                 .iter()
-                .filter(|event| policy.standing(event).binds())
+                .filter(|event| policy.standing(*event).binds())
                 .cloned()
                 .collect();
             // `authored_at` takes no policy and reads EVERY record, so the
@@ -407,7 +407,7 @@ proptest! {
 
             let (unwritten, written) = (fold(&before), fold(&after));
             let frontiers = |state: &State| -> Vec<(TodoId, Vec<Vec<Hash>>)> {
-                state.todos().map(|(todo, stream)| {
+                state.entities().map(|(todo, stream)| {
                     let registers = Registers::read(stream, Some(fpl::instant_of(t)), &policy);
                     let names = [Kind::State, Kind::Spec, Kind::Content]
                         .map(|kind| registers.frontier(kind).names());
@@ -629,7 +629,7 @@ fn nodes_from(store: &Store) -> Vec<Chain> {
 fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     events
         .iter()
-        .filter(|event| policy.standing(event).binds())
+        .filter(|event| policy.standing(*event).binds())
         .flat_map(|event| {
             Write::of(event)
                 .filter_map(|write| write.kind())
@@ -642,7 +642,7 @@ fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
 /// The registers of `nodes` with more than one live write.
 fn conflicted(nodes: &[Chain], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     fold(nodes)
-        .todos()
+        .entities()
         .flat_map(|(todo, stream)| {
             Registers::read(stream, None, policy)
                 .conflicts()
@@ -654,10 +654,10 @@ fn conflicted(nodes: &[Chain], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
 }
 
 /// The environment `nodes` fold to at `t`.
-fn env_of(nodes: &[Chain], t: Datetime, policy: &impl Policy<Todo>) -> Env {
+fn env_of(nodes: &[Chain], t: Datetime, policy: &impl Policy<TodoEvent<Todo>>) -> Env {
     let state = fold(nodes);
     let mut env = Env::new();
-    for (todo, stream) in state.todos() {
+    for (todo, stream) in state.entities() {
         Registers::read(stream, Some(fpl::instant_of(t)), policy).bind(todo, &mut env);
     }
     env
@@ -794,7 +794,7 @@ proptest! {
             prop_assert_eq!(&row.content, &names, "content");
             prop_assert_eq!(&row.conflicts, &registers.conflicts(), "conflicts");
             let provisional = disputed
-                || registers.content.candidates().iter().any(|s| !policy.confirms(&s.event));
+                || registers.content.candidates().iter().any(|s| !policy.confirms(&*s.event));
             prop_assert_eq!(row.confidence.is_provisional(), provisional, "confidence");
             let names: Vec<&Hash> = stream.iter().map(|s| &s.name).collect();
             prop_assert_eq!(row.stream.iter().collect::<Vec<_>>(), names, "stream");
@@ -816,7 +816,7 @@ proptest! {
             diverged(&realise(&shared, 0), &branch(&mine, "mine"), &branch(&theirs, "theirs"));
         let nodes = nodes_from(&store);
         let state = fold(&nodes);
-        let chained = state.todos().all(|(_, stream)| {
+        let chained = state.entities().all(|(_, stream)| {
             stream.iter().all(|a| stream.iter().all(|b| {
                 a.name == b.name
                     || state.descends(&a.name, &b.name)
@@ -940,7 +940,7 @@ proptest! {
             diverged(&realise(&shared, 0), &branch(&mine, "mine"), &branch(&theirs, "theirs"));
         let t = moment(when);
         let frontiers = |nodes: &[Chain]| -> BTreeMap<TodoId, [Vec<Hash>; 3]> {
-            fold(nodes).todos().map(|(todo, stream)| {
+            fold(nodes).entities().map(|(todo, stream)| {
                 let registers = Registers::read(stream, Some(fpl::instant_of(t)), &policy);
                 (todo.clone(), [Kind::State, Kind::Spec, Kind::Content].map(|k| registers.frontier(k).names()))
             })
