@@ -38,11 +38,11 @@ use std::time::SystemTime;
 
 use crate::change::mk_change;
 use crate::dag::{decode, Dag, Finding, Unread};
-use crate::event::{canonical, mk_woven, parents_of, seal_hash, Envelope, Hash};
+use crate::event::{mk_woven, parents_of, Envelope, Hash};
 use crate::genesis::mk_genesis;
 use crate::literal::ProdromeError;
 use crate::policy::{Policy, Untrusted};
-use crate::registers::{deps_for, fold, Folded};
+use crate::registers::{deps_for, Folded};
 use crate::schema::Schema;
 use crate::snapshot::mk_snapshot;
 
@@ -239,7 +239,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     pub fn folded(&self) -> Result<Arc<Folded<E>>, ProdromeError> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
-        memory.folded()
+        memory.folded().map(Arc::clone)
     }
 
     fn read(&self, names: &[Hash]) -> Dag<E> {
@@ -330,14 +330,16 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// has none, and answer its name.
     pub fn init(&self, label: &str) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
-        if let Some(genesis) = self.dag()?.geneses().first() {
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        if let Some(genesis) = memory.dag().geneses().first() {
             return Err(ProdromeError::Store(format!(
                 "the store already has a genesis, {}",
                 genesis.as_str()
             )));
         }
         let nonce = format!("{:016x}{:016x}", random(), random());
-        self.write(&Envelope::Genesis(mk_genesis(label, &nonce)?))
+        self.write(&mut memory, Envelope::Genesis(mk_genesis(label, &nonce)?))
     }
 
     /// Write `event` as a `Change` over the frontiers of the registers it
@@ -345,21 +347,26 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// event prints the same, write nothing and answer the first such. A
     /// write that would take an inflationary register below the reading it
     /// supersedes is refused, and nothing is written.
+    ///
+    /// DECIDED ON THE MEMORY, UNDER THE LOCK. The look that brings the memory
+    /// level with `objects/` is taken after the lock is, and every writer
+    /// places its object before it lets the lock go, so the memory holds
+    /// every object any writer finished: the twin check and the deps read
+    /// what a fresh handle would read, and cost what is new.
     pub fn append(&self, event: E) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
-        let dag = self.dag()?;
-        let genesis = self.genesis(&dag)?;
-        let prodrome = dag.key(&genesis);
-        let nodes = dag.nodes_across_gaps()?;
-        let print = canonical(&event);
-        let held = nodes.iter().find(|node| {
-            node.genesis == prodrome && node.event.as_ref().is_some_and(|e| canonical(e) == print)
-        });
-        if let Some(node) = held {
-            return Ok(node.name.clone());
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        let genesis = self.genesis(memory.dag())?;
+        let prodrome = memory.dag().key(&genesis);
+        if let Some(twin) = memory.twin(&prodrome, &event)? {
+            return Ok(twin);
         }
-        let deps = deps_for(&fold(&nodes), &prodrome, &event)?;
-        self.write(&Envelope::Change(mk_change(genesis, deps, event)?))
+        let deps = deps_for(memory.folded()?, &prodrome, &event)?;
+        self.write(
+            &mut memory,
+            Envelope::Change(mk_change(genesis, deps, event)?),
+        )
     }
 
     /// Attest the writer's prodrome: a `Snapshot` of its tips, chained to the
@@ -367,20 +374,25 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// answer and nothing is written.
     pub fn snapshot(&self) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
-        let dag = self.dag()?;
-        let genesis = self.genesis(&dag)?;
-        let tips = dag.tips_in(&dag.key(&genesis));
-        let previous = dag.linearise()?.into_iter().rev().find(|name| {
-            tips.contains(name) && matches!(dag.get(name), Some(Envelope::Snapshot(_)))
-        });
-        let tips: Vec<Hash> = tips
-            .into_iter()
-            .filter(|tip| Some(tip) != previous.as_ref())
-            .collect();
-        match previous {
-            Some(previous) if tips.is_empty() => Ok(previous),
-            previous => self.write(&Envelope::Snapshot(mk_snapshot(genesis, tips, previous)?)),
-        }
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        let snapshot = {
+            let dag = memory.dag();
+            let genesis = self.genesis(dag)?;
+            let tips = dag.tips_in(&dag.key(&genesis));
+            let previous = dag.linearise()?.into_iter().rev().find(|name| {
+                tips.contains(name) && matches!(dag.get(name), Some(Envelope::Snapshot(_)))
+            });
+            let tips: Vec<Hash> = tips
+                .into_iter()
+                .filter(|tip| Some(tip) != previous.as_ref())
+                .collect();
+            match previous {
+                Some(previous) if tips.is_empty() => return Ok(previous),
+                previous => mk_snapshot(genesis, tips, previous)?,
+            }
+        };
+        self.write(&mut memory, Envelope::Snapshot(snapshot))
     }
 
     /// Join two or more tips into one `Woven`, which becomes a tip in their
@@ -392,12 +404,14 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// the object is a write and a join at once.
     pub fn merge(&self, parents: Option<&[Hash]>, event: Option<E>) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
-            None => self.dag()?.tips_in(&None).into_iter().collect(),
+            None => memory.dag().tips_in(&None).into_iter().collect(),
         };
         self.require_present(&on)?;
-        self.write(&mk_woven(on, event)?)
+        self.write(&mut memory, mk_woven(on, event)?)
     }
 
     /// Take in everything another replica's `digest` rests on, verified.
@@ -563,12 +577,18 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         }
     }
 
-    /// One object onto disk, content-addressed and idempotent: identical bytes
-    /// at the target path are a no-op; DIFFERENT bytes at the same name are a
-    /// sha256 collision or a corrupt store, and we stop rather than clobber.
-    fn write(&self, object: &Envelope<E>) -> Result<Hash, ProdromeError> {
-        let text = crate::event::canonical_envelope(object);
-        let digest = seal_hash(object);
+    /// One object onto disk, content-addressed and idempotent, and into
+    /// `memory`, which has just looked: an object it holds is a no-op, since
+    /// the look found its file holding its bytes; DIFFERENT bytes already at
+    /// the name are a sha256 collision or a corrupt store, and we stop rather
+    /// than clobber. The object is verified because it was sealed here, so
+    /// nothing written is read back.
+    fn write(&self, memory: &mut Memory<E>, object: Envelope<E>) -> Result<Hash, ProdromeError> {
+        let (verified, text) = Verified::sealed(object);
+        let digest = verified.name().clone();
+        if memory.holds(&digest) {
+            return Ok(digest);
+        }
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
         let path = self.object_path(&digest);
@@ -580,9 +600,11 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                     digest.as_str()
                 )));
             }
-            return Ok(digest);
+        } else {
+            self.place([(&digest, text.as_bytes())])?;
         }
-        self.place([(&digest, text.as_bytes())])?;
+        let seen = Seen::of(fs::metadata(&path).ok(), SystemTime::now());
+        memory.admit(&[], vec![(verified, seen)])?;
         Ok(digest)
     }
 
@@ -776,7 +798,9 @@ fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
 mod tests {
     use super::*;
     use crate::change::Change;
-    use crate::event::{mk_completed, mk_created, mk_reopened, mk_sealed, Actor, TodoEvent};
+    use crate::event::{
+        mk_completed, mk_created, mk_reopened, mk_sealed, seal_hash, Actor, TodoEvent,
+    };
     use crate::literal::Datetime;
     use crate::reference::Todo;
     use proptest::prelude::*;
@@ -827,7 +851,15 @@ mod tests {
         } else {
             mk_sealed(on.into_iter().next(), event)
         };
-        store.write(&object).expect("writes")
+        put(store, object).expect("writes")
+    }
+
+    /// One object written as the writers above write theirs: into a memory
+    /// that has just looked.
+    fn put(store: &Store, object: Envelope<TodoEvent<Todo>>) -> Result<Hash, ProdromeError> {
+        let mut memory = store.memory();
+        store.look(&mut memory)?;
+        store.write(&mut memory, object)
     }
 
     fn change(store: &Store, name: &Hash) -> Change<TodoEvent<Todo>> {
@@ -979,12 +1011,14 @@ mod tests {
             &store,
             mk_completed("alpha", at(2), "bassel", "").expect("valid"),
         );
-        let aside = store
-            .write(&mk_sealed(
+        let aside = put(
+            &store,
+            mk_sealed(
                 Some(first),
                 mk_created("beta", at(2), "bassel", "", "").expect("valid"),
-            ))
-            .expect("writes");
+            ),
+        )
+        .expect("writes");
         fs::write(store.root().join("HEAD"), second.as_str()).expect("writes HEAD");
         let refs = store.root().join("refs");
         fs::create_dir_all(&refs).expect("creates refs/");
@@ -1265,12 +1299,14 @@ mod tests {
             &store,
             mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
         );
-        let other = store
-            .write(&mk_sealed(
+        let other = put(
+            &store,
+            mk_sealed(
                 None,
                 mk_created("beta", at(1), "bassel", "", "").expect("valid"),
-            ))
-            .expect("writes");
+            ),
+        )
+        .expect("writes");
         assert_eq!(tips(&store), [first, other].into_iter().collect());
         assert_eq!(findings(&store), Vec::<String>::new());
         assert_eq!(store.events().expect("reads").len(), 2);

@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::dag::{decode, Dag, Unread};
-use crate::event::{parents_of, Envelope, Hash};
+use crate::event::{canonical_envelope, event_id, parents_of, Envelope, Hash};
 use crate::literal::ProdromeError;
-use crate::registers::{fold, Folded};
+use crate::registers::{fold, Folded, Genesis};
 use crate::schema::Schema;
 
 /// A store's objects as it last read them, and their fold.
@@ -35,6 +35,10 @@ pub struct Memory<E: Schema> {
     /// Each held object's file as it was seen, `None` while a look could
     /// not tell a change from none.
     files: BTreeMap<Hash, Option<Seen>>,
+    /// Each held event's [`event_id`], with the objects that carry it: the
+    /// twin check reads the objects whose events print the same and no
+    /// other.
+    twins: BTreeMap<Hash, BTreeSet<Hash>>,
 }
 
 /// An object whose name is the hash of its bytes, which is the only way into
@@ -45,6 +49,18 @@ pub struct Verified<E> {
 }
 
 impl<E: Schema> Verified<E> {
+    /// An object sealed here, and the print it is named by, which is what
+    /// its file holds.
+    pub fn sealed(object: Envelope<E>) -> (Verified<E>, String) {
+        let print = canonical_envelope(&object);
+        let name = Hash::of_bytes(print.as_bytes());
+        (Verified { name, object }, print)
+    }
+
+    pub fn name(&self) -> &Hash {
+        &self.name
+    }
+
     /// `bytes` under `name`, rehashed and parsed.
     pub fn read(name: &Hash, bytes: &[u8]) -> Result<Verified<E>, Unread> {
         decode(name, bytes).map(|object| Verified {
@@ -113,6 +129,7 @@ impl<E: Schema> Memory<E> {
             tips: BTreeSet::new(),
             wanted: BTreeSet::new(),
             files: BTreeMap::new(),
+            twins: BTreeMap::new(),
         }
     }
 
@@ -126,13 +143,35 @@ impl<E: Schema> Memory<E> {
     /// # Errors
     ///
     /// A cycle among what is held, which only a hash collision could make.
-    pub fn folded(&mut self) -> Result<Arc<Folded<E>>, ProdromeError> {
-        if let Some(folded) = &self.folded {
-            return Ok(Arc::clone(folded));
+    pub fn folded(&mut self) -> Result<&Arc<Folded<E>>, ProdromeError> {
+        if self.folded.is_none() {
+            self.folded = Some(Arc::new(fold(&self.dag.nodes_across_gaps()?)));
         }
-        let folded = Arc::new(fold(&self.dag.nodes_across_gaps()?));
-        self.folded = Some(Arc::clone(&folded));
-        Ok(folded)
+        Ok(self.folded.as_ref().expect("folded above"))
+    }
+
+    /// The first object, in the linearisation's order, of the prodrome
+    /// `prodrome` whose event prints as `event` does: what an append of
+    /// `event` answers instead of writing.
+    ///
+    /// # Errors
+    ///
+    /// [`Memory::folded`]'s.
+    pub fn twin(&mut self, prodrome: &Genesis, event: &E) -> Result<Option<Hash>, ProdromeError> {
+        let Some(twins) = self.twins.get(&event_id(event)).cloned() else {
+            return Ok(None);
+        };
+        Ok(self
+            .folded()?
+            .prodromes()
+            .get(prodrome)
+            .and_then(|entities| entities.get(event.key()))
+            .and_then(|stream| stream.iter().find(|stamp| twins.contains(&stamp.name)))
+            .map(|stamp| stamp.name.clone()))
+    }
+
+    pub fn holds(&self, name: &Hash) -> bool {
+        self.files.contains_key(name)
     }
 
     pub fn tips(&self) -> &BTreeSet<Hash> {
@@ -174,11 +213,22 @@ impl<E: Schema> Memory<E> {
                 .all(|(verified, _)| !self.wanted.contains(&verified.name));
         let dag = Arc::make_mut(&mut self.dag);
         for name in gone {
+            if let Some(event) = dag.get(name).and_then(Envelope::event) {
+                if let Some(twins) = self.twins.get_mut(&event_id(event)) {
+                    twins.remove(name);
+                }
+            }
             dag.remove(name);
             self.files.remove(name);
         }
         let mut names = BTreeSet::new();
         for (Verified { name, object }, seen) in fresh {
+            if let Some(event) = object.event() {
+                self.twins
+                    .entry(event_id(event))
+                    .or_default()
+                    .insert(name.clone());
+            }
             self.files.insert(name.clone(), seen);
             dag.insert(name.clone(), object);
             names.insert(name);
