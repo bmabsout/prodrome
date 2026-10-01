@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc b6e21a192670220dd6648476e2fc201b050dc288dd420b99ec2510d04c3f6a2b # shrinks to log = [Created(Created { todo: TodoId("gamma"), at: Datetime { year: 2026, month: 9, day: 1, hour: 0, minute: 0, second: 0, microsecond: 0 }, actor: Actor("bassel"), text: "t0", note: "" }), Created(Created { todo: TodoId("gamma"), at: Datetime { year: 2026, month: 10, day: 28, hour: 4, minute: 58, second: 32, microsecond: 0 }, actor: Actor("bassel"), text: "t733", note: "" })]
-cc 285ff5e0163e37c163c8c2242c1a4c4e5cd1c7828d7cae8616957ac840016ee8 # shrinks to (shared, mine, theirs) = ([], [], [Created(Created { todo: TodoId("alpha"), at: Datetime { year: 2026, month: 11, day: 3, hour: 15, minute: 37, second: 36, microsecond: 0 }, actor: Actor("bassel"), text: "t977", note: "theirs" })]), event = Reopened(Lifecycle { todo: TodoId("alpha"), at: Datetime { year: 2026, month: 10, day: 11, hour: 14, minute: 44, second: 38, microsecond: 0 }, actor: Actor("triage"), note: "written" })

@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc bba603bbbbb2c983d2f45abf8891a6bd3900812411fb4eb6566024b9ece79868 # shrinks to shared = [(Draft { todo: "gamma", actor: "bassel", roll: 4, spec: None, items: 0, text: 0 }, 2010199)], mine = [(Draft { todo: "gamma", actor: "triage", roll: 5, spec: None, items: 0, text: 0 }, 0)], theirs = [(Draft { todo: "gamma", actor: "bassel", roll: 1, spec: Some(Term(Piecewise { head: Term(Decay { start: 0.3, end: 0.0, end_date: 2026-10-06T18:40:40, lead_up: TimeDelta { secs: 360000, nanos: 0 }, start_date: None }), pieces: [(2026-10-03T19:37:13, Term(Recur { todo: "beta", anchor: 2026-10-25T16:47:24, term: Term(Decay { start: 0.4277981541205409, end: 0.19431807594421563, end_date: 2026-10-12T04:46:27, lead_up: TimeDelta { secs: 385200, nanos: 0 }, start_date: None }), pending: Term(Decay { start: 0.5568591184505887, end: 0.031014424919174062, end_date: 2026-10-27T19:59:31, lead_up: TimeDelta { secs: 622800, nanos: 0 }, start_date: None }) })), (2026-10-04T18:38:53, Term(Flat { value: 0.8355548007641058 }))] })), items: 0, text: 152 }, 3475373)], when = 3568476
