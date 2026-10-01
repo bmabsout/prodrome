@@ -173,3 +173,68 @@ fn a_review_store_reads_its_phases() {
         row("pr-1", vec![write(2, "review")])
     );
 }
+
+/// A PAGE SEALS INTO ITS REPLICA. Events appended through the exports are
+/// the objects a store holding the same objects writes, byte for byte, each
+/// over the replica's own fold (the second move's dep is the first, which
+/// only the page holds), and each object handed back hashes to its name;
+/// every reading after them reads them, and appending one again writes
+/// nothing and sends nothing. A move below the phase's reading is refused,
+/// as the store refuses it.
+#[test]
+fn a_page_seals_into_its_replica() {
+    use prodrome::event::canonical;
+    use prodrome::store::{MemoryStore, Replica as _};
+
+    let (mut replica, names) = replica();
+    let (objects, _) = store();
+    let store = MemoryStore::default();
+    let prints: std::collections::BTreeMap<Hash, Vec<u8>> = objects
+        .iter()
+        .map(|object| (seal_hash(object), canonical_envelope(object).into_bytes()))
+        .collect();
+    store
+        .receive(prints.keys().cloned().collect(), &|name| {
+            prints.get(name).cloned()
+        })
+        .expect("receives");
+
+    let mut sealed = Vec::new();
+    for phase in [Phase::Review, Phase::Merged] {
+        let event = schema::moved("pr-2", day(5), "bo", phase);
+        let answer = answer(replica.append(&canonical(&event), None));
+        let name = store.append(event).expect("appends");
+        assert_eq!(answer["hash"], name.as_str());
+        assert_eq!(answer["objects"][0]["hash"], name.as_str());
+        let text = answer["objects"][0]["text"].as_str().expect("a print");
+        assert_eq!(crate::name_of(text), name.as_str());
+        assert_eq!(Some(text.as_bytes().to_vec()), store.print(&name));
+        sealed.push((name, text.to_owned()));
+    }
+    let Ok(Envelope::Change(merged)) = prodrome::event::parse_envelope::<Review>(&sealed[1].1)
+    else {
+        panic!("a change: {}", sealed[1].1);
+    };
+    assert_eq!(merged.deps, [sealed[0].0.clone()]);
+
+    let read = answer(replica.readings(None, "[]"));
+    assert_eq!(
+        read["readings"][1]["registers"]["phase"],
+        json!([{ "hash": sealed[1].0.as_str(), "value": "merged" }])
+    );
+    assert_eq!(answer(replica.verify())["ok"], json!(true));
+
+    let again = schema::moved("pr-2", day(5), "bo", Phase::Merged);
+    let genesis = Some(names[0].as_str().to_owned());
+    assert_eq!(
+        answer(replica.append(&canonical(&again), genesis)),
+        json!({ "hash": sealed[1].0.as_str(), "objects": [] })
+    );
+    let back = schema::moved("pr-2", day(6), "bo", Phase::Draft);
+    assert!(crate::append(&mut replica.0, &canonical(&back), None).is_err());
+    assert!(store.append(back).is_err());
+    assert!(
+        crate::append(&mut replica.0, "Opened()", None).is_err(),
+        "not an event"
+    );
+}
