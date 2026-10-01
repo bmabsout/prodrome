@@ -1,5 +1,7 @@
 //! §3 — the files around a [`Dag`]: objects on disk, the lock, durable
-//! placement, quarantine, `adopt`/`merge`.
+//! placement, quarantine, `adopt`/`merge`; and every other [`Replica`] of
+//! the same objects (a [`MemoryStore`], an [`Overlay`]), [`sync`] between
+//! any two, and the [`Decision`] only a store on disk can make.
 //!
 //! Objects live at `root/objects/<name>.py`, one canonical constructor
 //! expression per file, the filename being the sha256 of its own bytes. THAT IS
@@ -25,7 +27,11 @@
 //!   name IS the append: there is no second file to move after it, and no
 //!   crash leaves a store half-written or an object empty.
 
+mod decision;
 mod memory;
+mod memory_store;
+mod overlay;
+mod replica;
 
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,17 +42,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use crate::change::mk_change;
 use crate::dag::{decode, Dag, Finding, Unread};
 use crate::event::{mk_woven, parents_of, Envelope, Hash};
 use crate::genesis::mk_genesis;
 use crate::literal::ProdromeError;
 use crate::policy::{Policy, Untrusted};
-use crate::registers::{deps_for, Folded};
+use crate::registers::Folded;
 use crate::schema::Schema;
 use crate::snapshot::mk_snapshot;
 
-use memory::{Memory, Seen, Verified};
+pub use decision::Decision;
+use memory::{Memory, Printed, Seen, Verified};
+pub use memory_store::MemoryStore;
+pub use overlay::Overlay;
+pub use replica::{sync, Held, Replica};
 
 /// A chain rooted at `root`, of the schema `E`, read under one host
 /// [`Policy`] (§5).
@@ -105,6 +114,30 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             *memory = Memory::empty();
             self.memory.clear_poison();
             memory
+        })
+    }
+
+    /// THE STORE OF RECORD'S DECISION: its lock taken, then its memory,
+    /// brought level with `objects/`. See [`Decision`]. On unix only: there
+    /// is no store, and no lock, off it.
+    ///
+    /// # Errors
+    ///
+    /// The lock not taken; a file that is not an object, as every read.
+    #[cfg(unix)]
+    pub fn decide(&self) -> Result<Decision<'_, E, Pol>, ProdromeError> {
+        self.decision()
+    }
+
+    /// [`EventStore::decide`], on every target: what each write begins with.
+    fn decision(&self) -> Result<Decision<'_, E, Pol>, ProdromeError> {
+        let locked = self.lock()?;
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        Ok(Decision {
+            store: self,
+            memory,
+            _locked: locked,
         })
     }
 
@@ -307,39 +340,19 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         }
     }
 
-    fn genesis(&self, geneses: &BTreeSet<Hash>) -> Result<Hash, ProdromeError> {
-        let mut sole = geneses.iter();
-        match (&self.genesis, sole.next(), sole.next()) {
-            (Some(mine), ..) if geneses.contains(mine) => Ok(mine.clone()),
-            (Some(mine), ..) => Err(ProdromeError::Store(format!(
-                "the store holds no genesis {}",
-                mine.as_str()
-            ))),
-            (None, Some(one), None) => Ok(one.clone()),
-            (None, None, _) => Err(ProdromeError::Store(
-                "the store has no genesis: `init` it first".to_owned(),
-            )),
-            (None, Some(_), Some(_)) => Err(ProdromeError::Store(format!(
-                "the store holds {} geneses: name the writer's with `in_genesis`",
-                geneses.len()
-            ))),
-        }
-    }
-
     /// Begin a prodrome: write a `Genesis(label, nonce)` into a store that
     /// has none, and answer its name.
     pub fn init(&self, label: &str) -> Result<Hash, ProdromeError> {
-        let _locked = self.lock()?;
-        let mut memory = self.memory();
-        self.look(&mut memory)?;
-        if let Some(genesis) = memory.geneses().first() {
+        let mut decision = self.decision()?;
+        if let Some(genesis) = decision.memory.geneses().first() {
             return Err(ProdromeError::Store(format!(
                 "the store already has a genesis, {}",
                 genesis.as_str()
             )));
         }
         let nonce = format!("{:016x}{:016x}", random(), random());
-        self.write(&mut memory, Envelope::Genesis(mk_genesis(label, &nonce)?))
+        let genesis = Envelope::Genesis(mk_genesis(label, &nonce)?);
+        self.write(&mut decision.memory, Verified::sealed(genesis))
     }
 
     /// Write `event` as a `Change` over the frontiers of the registers it
@@ -354,31 +367,17 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// every object any writer finished: the twin check and the deps read
     /// what a fresh handle would read, and cost what is new.
     pub fn append(&self, event: E) -> Result<Hash, ProdromeError> {
-        let _locked = self.lock()?;
-        let mut memory = self.memory();
-        self.look(&mut memory)?;
-        let genesis = self.genesis(memory.geneses())?;
-        let prodrome = memory.dag().key(&genesis);
-        if let Some(twin) = memory.twin(&prodrome, &event)? {
-            return Ok(twin);
-        }
-        let deps = deps_for(memory.folded()?, &prodrome, &event)?;
-        self.write(
-            &mut memory,
-            Envelope::Change(mk_change(genesis, deps, event)?),
-        )
+        self.decision()?.append(event)
     }
 
     /// Attest the writer's prodrome: a `Snapshot` of its tips, chained to the
     /// last snapshot among them. With nothing new since that one, it is the
     /// answer and nothing is written.
     pub fn snapshot(&self) -> Result<Hash, ProdromeError> {
-        let _locked = self.lock()?;
-        let mut memory = self.memory();
-        self.look(&mut memory)?;
+        let mut decision = self.decision()?;
         let snapshot = {
-            let genesis = self.genesis(memory.geneses())?;
-            let dag = memory.dag();
+            let genesis = decision.memory.writer(self.genesis.as_ref())?;
+            let dag = decision.memory.dag();
             let tips = dag.tips_in(&dag.key(&genesis));
             let previous = dag.linearise()?.into_iter().rev().find(|name| {
                 tips.contains(name) && matches!(dag.get(name), Some(Envelope::Snapshot(_)))
@@ -392,7 +391,10 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 previous => mk_snapshot(genesis, tips, previous)?,
             }
         };
-        self.write(&mut memory, Envelope::Snapshot(snapshot))
+        self.write(
+            &mut decision.memory,
+            Verified::sealed(Envelope::Snapshot(snapshot)),
+        )
     }
 
     /// Join two or more tips into one `Woven`, which becomes a tip in their
@@ -403,15 +405,13 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// caller that wants the act attributed passes an ordinary `event`, and
     /// the object is a write and a join at once.
     pub fn merge(&self, parents: Option<&[Hash]>, event: Option<E>) -> Result<Hash, ProdromeError> {
-        let _locked = self.lock()?;
-        let mut memory = self.memory();
-        self.look(&mut memory)?;
+        let mut decision = self.decision()?;
         let on: Vec<Hash> = match parents {
             Some(named) => named.to_vec(),
-            None => memory.dag().tips_in(&None).into_iter().collect(),
+            None => decision.memory.dag().tips_in(&None).into_iter().collect(),
         };
         self.require_present(&on)?;
-        self.write(&mut memory, mk_woven(on, event)?)
+        self.write(&mut decision.memory, Verified::sealed(mk_woven(on, event)?))
     }
 
     /// Take in everything another replica's `digest` rests on, verified.
@@ -422,7 +422,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// names them all beneath it, so they stop being tips (a FAST-FORWARD);
     /// anything else is a second tip. Answers `digest`.
     pub fn adopt(&self, source: &EventStore<E, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
-        self.copy_in_from(digest, |name| fs::read(source.object_path(name)).ok())?;
+        self.copy_in_from([digest.clone()], |name| source.print(name))?;
         Ok(digest.clone())
     }
 
@@ -445,7 +445,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         objects: &BTreeMap<Hash, String>,
         digest: &Hash,
     ) -> Result<Hash, ProdromeError> {
-        self.copy_in_from(digest, |name| {
+        self.copy_in_from([digest.clone()], |name| {
             objects.get(name).map(|text| text.as_bytes().to_vec())
         })?;
         Ok(digest.clone())
@@ -466,74 +466,45 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         Ok(())
     }
 
-    /// The walk both adoptions share, under the lock: from `digest` down
-    /// through parents, taking in what this store lacks and VERIFYING each
-    /// object on the way — a replica is not trusted for being a replica.
-    /// `bytes_of` is where the replica's objects are read from — a directory,
-    /// or a map that arrived over a wire.
+    /// The adoption every door shares, under the lock: what `seeds` rest
+    /// on that this store lacks, [`memory::receive`]d (each object read by
+    /// `print_of` and VERIFIED on the way in, a replica not trusted for
+    /// being a replica), then placed. Answers what it placed, parents first.
     ///
-    /// An object the memory holds ends that branch of the walk, unread: this
-    /// store is closed under parents, so everything above one of ours is
-    /// already here. A store holding a file that does not verify refuses, as
-    /// every read of it does, naming the file and the quarantine that sets it
-    /// aside; adopting the object back is the repair after that.
+    /// The walk ends at what the memory holds: this store is closed under
+    /// parents, so everything above one of ours is already here. A store
+    /// holding a file that does not verify refuses, as every read of it
+    /// does, naming the file and the quarantine that sets it aside;
+    /// adopting the object back is the repair after that.
     ///
     /// NOTHING IS WRITTEN UNTIL EVERYTHING HAS VERIFIED, and then PARENTS
     /// FIRST. With derived tips an object is part of the store the moment its
     /// file appears, so a child written before its parent — by a crash between
     /// the two, or read by another process in between — would be a store
     /// naming an object it does not hold. Written in this order, every prefix
-    /// of the adoption is a store closed under parents. What is written was
-    /// verified on the way in, so it enters the memory without a second read.
+    /// of the adoption is a store closed under parents, and an adoption cut
+    /// short is completed by the next. What is written was verified on the
+    /// way in, so it enters the memory without a second read.
     fn copy_in_from(
         &self,
-        digest: &Hash,
-        bytes_of: impl Fn(&Hash) -> Option<Vec<u8>>,
-    ) -> Result<(), ProdromeError> {
-        /// A depth-first walk, emitting an object once its parents are.
-        enum Visit<E> {
-            Enter(Hash),
-            Leave(Verified<E>, Vec<u8>),
-        }
-        let _locked = self.lock()?;
-        let mut memory = self.memory();
-        self.look(&mut memory)?;
-        let mut entered: BTreeSet<Hash> = BTreeSet::new();
-        let mut taken: Vec<(Verified<E>, Vec<u8>)> = Vec::new();
-        let mut pending = vec![Visit::Enter(digest.clone())];
-        while let Some(visit) = pending.pop() {
-            let name = match visit {
-                Visit::Leave(verified, raw) => {
-                    taken.push((verified, raw));
-                    continue;
-                }
-                Visit::Enter(name) => name,
-            };
-            if !entered.insert(name.clone()) || memory.holds(&name) {
-                continue;
-            }
-            let Some(raw) = bytes_of(&name) else {
-                return Err(ProdromeError::Store(format!(
-                    "missing object {}, named as a parent",
-                    name.as_str()
-                )));
-            };
-            let verified = Verified::read(&name, &raw).map_err(|why| why.refusal(&name))?;
-            let named: Vec<Hash> = parents_of(verified.object())
-                .into_iter()
-                .chain(verified.object().genesis().cloned())
-                .collect();
-            pending.push(Visit::Leave(verified, raw));
-            pending.extend(named.into_iter().map(Visit::Enter));
-        }
+        seeds: impl IntoIterator<Item = Hash>,
+        print_of: impl Fn(&Hash) -> Option<Vec<u8>>,
+    ) -> Result<Vec<Hash>, ProdromeError> {
+        let mut decision = self.decision()?;
+        let memory = &mut decision.memory;
+        let taken = memory::receive(|name| memory.holds(name), seeds, print_of)?;
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
         self.place(
             taken
                 .iter()
-                .map(|(verified, raw)| (verified.name(), raw.as_slice())),
+                .map(|(verified, print)| (verified.name(), print.as_slice())),
         )?;
         let now = SystemTime::now();
+        let names = taken
+            .iter()
+            .map(|(verified, _)| verified.name().clone())
+            .collect();
         let seen = taken
             .into_iter()
             .map(|(verified, _)| {
@@ -542,7 +513,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             })
             .collect();
         memory.admit(&[], seen);
-        Ok(())
+        Ok(names)
     }
 
     /// Objects onto disk under their names, in the order given, DURABLY: each
@@ -596,8 +567,11 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// the name are a sha256 collision or a corrupt store, and we stop rather
     /// than clobber. The object is verified because it was sealed here, so
     /// nothing written is read back.
-    fn write(&self, memory: &mut Memory<E>, object: Envelope<E>) -> Result<Hash, ProdromeError> {
-        let (verified, text) = Verified::sealed(object);
+    fn write(
+        &self,
+        memory: &mut Memory<E>,
+        (verified, text): Printed<E>,
+    ) -> Result<Hash, ProdromeError> {
         let digest = verified.name().clone();
         let path = self.object_path(&digest);
         if memory.holds(&digest) && path.exists() {
@@ -607,14 +581,14 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
         if path.exists() {
             let existing = fs::read(&path).map_err(|e| Self::io(&path, e))?;
-            if existing != text.as_bytes() {
+            if existing != text {
                 return Err(ProdromeError::Store(format!(
                     "object {} exists with different bytes — sha256 collision or corruption",
                     digest.as_str()
                 )));
             }
         } else {
-            self.place([(&digest, text.as_bytes())])?;
+            self.place([(&digest, text.as_slice())])?;
         }
         let seen = Seen::of(fs::metadata(&path).ok(), SystemTime::now());
         memory.admit(&[], vec![(verified, seen)]);
@@ -627,6 +601,12 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// false-alarm the whole store as tampered.
     pub fn load(&self, digest: &Hash) -> Result<Envelope<E>, ProdromeError> {
         decode(digest, &self.raw(digest)?).map_err(|why| why.refusal(digest))
+    }
+
+    /// The print held under `name`, unchecked: what an adoption from this
+    /// store reads, and verifies.
+    fn print(&self, name: &Hash) -> Option<Vec<u8>> {
+        fs::read(self.object_path(name)).ok()
     }
 
     /// One object file's bytes, unchecked.
@@ -781,6 +761,41 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     }
 }
 
+/// The store on disk as a replica: what it holds is `objects/`, and what it
+/// receives is placed there, durably, under its lock.
+impl<E: Schema, Pol: Policy<E>> Replica<E> for EventStore<E, Pol> {
+    fn held(&self) -> Result<Held<E>, ProdromeError> {
+        let mut memory = self.memory();
+        self.look(&mut memory)?;
+        let folded = memory.folded()?.clone();
+        Ok(Held {
+            dag: memory.dag().clone(),
+            folded,
+            tips: memory.tips().clone(),
+        })
+    }
+
+    fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
+        EventStore::tips(self)
+    }
+
+    fn print(&self, name: &Hash) -> Option<Vec<u8>> {
+        EventStore::print(self, name)
+    }
+
+    fn append(&self, event: E) -> Result<Hash, ProdromeError> {
+        EventStore::append(self, event)
+    }
+
+    fn receive(
+        &self,
+        seeds: BTreeSet<Hash>,
+        print_of: &dyn Fn(&Hash) -> Option<Vec<u8>>,
+    ) -> Result<Vec<Hash>, ProdromeError> {
+        self.copy_in_from(seeds, print_of)
+    }
+}
+
 /// A listed file's metadata, through a symlink to what it names, since
 /// that is what a read of it reads.
 fn stat(entry: &fs::DirEntry) -> Option<fs::Metadata> {
@@ -878,7 +893,7 @@ mod tests {
     fn put(store: &Store, object: Envelope<TodoEvent<Todo>>) -> Result<Hash, ProdromeError> {
         let mut memory = store.memory();
         store.look(&mut memory)?;
-        store.write(&mut memory, object)
+        store.write(&mut memory, Verified::sealed(object))
     }
 
     fn change(store: &Store, name: &Hash) -> Change<TodoEvent<Todo>> {

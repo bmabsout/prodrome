@@ -41,10 +41,10 @@ type Store = EventStore<Event, Untrusted>;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// A directory of stores, removed when the case ends.
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 
 impl Scratch {
-    fn new(what: &str) -> Scratch {
+    pub(crate) fn new(what: &str) -> Scratch {
         let root = std::env::temp_dir().join(format!(
             "prodrome-memory-{what}-{}-{}",
             std::process::id(),
@@ -54,7 +54,7 @@ impl Scratch {
         Scratch(root)
     }
 
-    fn store(&self, name: &str) -> Store {
+    pub(crate) fn store(&self, name: &str) -> Store {
         Store::new(self.0.join(name), roster())
     }
 }
@@ -65,13 +65,13 @@ impl Drop for Scratch {
     }
 }
 
-fn roster() -> Untrusted {
+pub(crate) fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("valid")])
 }
 
 /// Two writers' changes over one genesis, each on its own replica: a shared
 /// log appended, then each side's own.
-fn replicas(
+pub(crate) fn replicas(
     scratch: &Scratch,
     (shared, mine, theirs): &(Vec<Event>, Vec<Event>, Vec<Event>),
 ) -> (Store, Store) {
@@ -252,7 +252,7 @@ fn read(store: &Store) -> Result<Read, String> {
 }
 
 /// `root`'s object files, copied into `to`.
-fn copy_store(root: &Path, to: &Path) {
+pub(crate) fn copy_store(root: &Path, to: &Path) {
     let objects = to.join("objects");
     fs::create_dir_all(&objects).expect("creates objects/");
     if let Ok(entries) = fs::read_dir(root.join("objects")) {

@@ -98,7 +98,8 @@
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `genesis`, `change`, `snapshot` — §3: a prodrome, a change, an attestation
 //! - `dag`      — §3: the DAG as a value: tips, closure, linearisation, verify
-//! - `store`    — §3: the files around a `Dag`: the lock, placement, quarantine
+//! - `store`    — §3: the files around a `Dag` (the lock, placement, quarantine),
+//!   and replicas: one in memory, an overlay, `sync` and a `Decision`
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
