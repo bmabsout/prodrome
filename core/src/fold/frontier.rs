@@ -1,4 +1,5 @@
-use crate::event::Hash;
+use crate::event::{Hash, TodoEvent};
+use crate::fold::order::{maximal, Discrete, Order};
 use crate::fold::Register;
 use crate::registers::Stamp;
 
@@ -44,15 +45,17 @@ impl<'a, P: PartialEq> Frontier<'a, P> {
         self.0.len() > 1
     }
 
-    /// The distinct events: agreeing twins are one candidate, named by the
-    /// least of them.
+    /// The register's reading: the writes whose values are maximal under
+    /// the values' order, each value named by the least write carrying it.
+    pub fn read<V: Order>(&self, value: impl Fn(&'a Stamp<P>) -> V) -> Vec<&'a Stamp<P>> {
+        maximal(&self.0, value)
+    }
+
+    /// The reading under the discrete order on events, the todo registers'
+    /// own: agreeing twins are one candidate. The value is the whole event,
+    /// not the field the register reads, so two events that agree on a spec
+    /// stay two candidates as they always were.
     pub fn candidates(&self) -> Vec<&'a Stamp<P>> {
-        let mut out: Vec<&'a Stamp<P>> = Vec::with_capacity(self.0.len());
-        for stamp in &self.0 {
-            if !out.iter().any(|held| held.event == stamp.event) {
-                out.push(stamp);
-            }
-        }
-        out
+        self.read(|stamp| Discrete::<&TodoEvent<P>>(&stamp.event))
     }
 }
