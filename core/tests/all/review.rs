@@ -171,18 +171,20 @@ impl<'a> Phases<'a> {
     }
 }
 
-impl<'a> Product<'a, Review> for Phases<'a> {
+impl<'a> Product<'a> for Phases<'a> {
+    type Schema = Review;
+
     fn join(&mut self, stamp: &'a Stamp<Review>) {
         if PhaseRegister::value(&stamp.event).is_some() {
             self.0.join(stamp);
         }
     }
 
-    fn frontier(&self, Field::Phase: Field) -> &Frontier<'a, Review> {
+    fn frontier(&self, _phase: Field) -> &Frontier<'a, Review> {
         &self.0
     }
 
-    fn frontier_mut(&mut self, Field::Phase: Field) -> &mut Frontier<'a, Review> {
+    fn frontier_mut(&mut self, _phase: Field) -> &mut Frontier<'a, Review> {
         &mut self.0
     }
 
