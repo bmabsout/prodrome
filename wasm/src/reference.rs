@@ -16,8 +16,8 @@ use crate::exports::{self, name_of, Read, Replica};
 use crate::json;
 use crate::wire::{
     json_candidates, json_entry, json_env, json_marker, json_reading, json_record, json_tended,
-    json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_specs,
-    parse_term, parse_untrusted, strings, History, Refusal,
+    json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_names,
+    parse_specs, parse_term, parse_untrusted, strings, History, Refusal,
 };
 
 /// THE RECORD SHAPE THIS MODULE WAS BUILT WITH.
@@ -431,16 +431,6 @@ pub fn merge_object(parents: &str, event: Option<String>) -> Result<String, JsEr
     let event = event_of(event)?;
     let envelope = prodrome::event::mk_woven(parents, event).map_err(|e| refused(e.to_string()))?;
     object_of(&envelope)
-}
-
-/// A JSON array of object names, each checked as one.
-fn parse_names(field: &str, json_text: &str) -> Result<Vec<Hash>, Refusal> {
-    let names: Vec<String> = serde_json::from_str(json_text)
-        .map_err(|e| format!("{field}: expected a list of object names ({e})"))?;
-    names
-        .into_iter()
-        .map(|name| Hash::new(name).map_err(|e| format!("{field}: {e}")))
-        .collect()
 }
 
 // --- §7: the evaluator -------------------------------------------------------

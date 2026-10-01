@@ -76,6 +76,16 @@ pub fn parse_untrusted(json_text: &str) -> Result<Untrusted, Refusal> {
     Ok(Untrusted::of(actors))
 }
 
+/// A JSON array of object names, each checked as one.
+pub fn parse_names(field: &str, json_text: &str) -> Result<Vec<Hash>, Refusal> {
+    let names: Vec<String> = serde_json::from_str(json_text)
+        .map_err(|e| format!("{field}: expected a list of object names ({e})"))?;
+    names
+        .into_iter()
+        .map(|name| Hash::new(name).map_err(|e| format!("{field}: {e}")))
+        .collect()
+}
+
 pub fn parse_instant(field: &str, text: &str) -> Result<Instant, Refusal> {
     fpl::parse_iso(text).map_err(|e| format!("{field}: {e}"))
 }

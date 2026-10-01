@@ -109,6 +109,18 @@ macro_rules! schema {
             pub fn verify(&self) -> Result<String, wasm_bindgen::JsError> {
                 $crate::exports::thrown($crate::exports::verify(&self.0))
             }
+
+            /// §3: the objects' tips, and each prodrome's heads by its
+            /// genesis.
+            pub fn tips(&self) -> Result<String, wasm_bindgen::JsError> {
+                $crate::exports::thrown($crate::exports::tips(&self.0))
+            }
+
+            /// §3: what a replica holding `tips` (a JSON array of names)
+            /// lacks, in causal order: the names to send it.
+            pub fn since(&self, tips: &str) -> Result<String, wasm_bindgen::JsError> {
+                $crate::exports::thrown($crate::exports::since(&self.0, tips))
+            }
         }
     };
 }
