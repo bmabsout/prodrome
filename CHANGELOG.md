@@ -51,6 +51,14 @@ library crate. A
 MINOR change under this file's rule: no stored byte moves, and every export
 the reference module had answers byte for byte as it did.
 
+And a schema's price is what the design says a valuation is: `Price`, the
+term each candidate of a reading prices as, the reading priced as `Least`
+over them. What the todo alone has, a price that changes with its history,
+what a `Ref` reads of an entity, and what a list row shows, are `History`,
+`Bind` and `Row`, each implemented only by a schema that has it. Unreleased
+API only: `schema::Valuation` and the wasm's `PricedJson` never shipped in a
+release, and every vector and export reads byte for byte as it did.
+
 ### Added
 
 - **`prodrome-wasm-exports`, the exports generic over a schema** (a new
@@ -58,12 +66,13 @@ the reference module had answers byte for byte as it did.
   a schema, and `verify`, `tips` (each prodrome's heads by its genesis),
   `since` (what a replica holding some tips lacks), `readings` (each
   register's maximal writes, for any schema), and, for a schema with a
-  `Valuation`, `entries` and `prices` answer over it. `Json` is what a
-  schema says to cross the boundary (the field its events name an entity by,
-  its registers' names, its values' JSON) and `PricedJson` its reading's
-  JSON; the todo schema has both, at any payload.
+  `Row`, a `History` and a `Bind`, `entries` and `prices` answer over it.
+  `Json` is what a schema says to cross the boundary (the field its events
+  name an entity by, its registers' names, its values' JSON) and `RowJson`
+  its row's reading's JSON; the todo schema has both, at any payload.
   `prodrome_wasm_exports::schema!(Name = Schema)`, with `, priced` for a
-  valuation, instantiates them as a JS class per schema in one module. The
+  schema with those three, instantiates them as a JS class per schema in one
+  module. The
   term codec (`json`) and the wire shapes (`wire`) moved into it.
   prodrome-wasm, the reference module, instantiates `Todos` with it, beside
   its exports, which answer as they did.
@@ -88,15 +97,27 @@ the reference module had answers byte for byte as it did.
   write gives it. `Frontier::reading` reads a frontier under one, and
   `Frontier::grows` refuses a write below an inflationary one's reading.
   `fold::read` is the one fold, over any schema.
-- **`schema::Valuation`:** the optional price of a schema's entities, a
-  reading's worlds each priced as a term, the reading `Least` over them
-  (`fold::price`), and what a priced row shows. An entity whose schema has
-  none has no row and no price.
+- **`schema::Price`:** the optional price of a schema's entities, the term
+  each candidate of a reading prices as (`terms`), the reading priced as
+  `Least` over them, their meet in the fulfillment order (`fold::price`). An
+  entity whose schema has none has no price, which is not `Absent`.
+- **`schema::History`, `schema::Bind` and `schema::Row`**, each what only a
+  schema that has it implements, the todo's at any payload: `History: Price`
+  is a price that changes with the entity's history, the terms of each
+  `moment` that `fold::flatten` makes a piece of §6.4's function; `Bind` is
+  what FPL's `Ref`s read of an entity in this store (`fold::env`), its key a
+  string; `Row` is what a §6.7 row shows (`Reading`, `reading`) and when it
+  is provisional (`disputes`, `unconfirmed`). `view::entries` asks for all
+  three; a `Ref` to an entity in another store is a host's environment,
+  passed in, never a schema's method.
 - `event::ENVELOPE_SIGNATURES` and `todo::TODO_SIGNATURES`, the two halves of
   what `EVENT_SIGNATURES` was.
 - SPEC law 33, a reading is a function of the object set, over the todo
   schema and a review schema in the tests (`core/tests/all/review.rs`,
   `schema_laws.rs`), which also drive law 32 through the store's append.
+- SPEC law 34, a conflict prices as `Least` over its candidates' terms,
+  stated over `Price` and run over the todo schema and the review schema,
+  which is priced by a flat term per phase.
 
 - **`fold::Order` (SPEC §6):** a partial order on a register's values, with
   `Discrete` (the default), `Total` and inclusion on a set as instances;
@@ -240,9 +261,9 @@ the reference module had answers byte for byte as it did.
   `Result`, refusing a write an inflationary register would refuse.
 - `fold::Registers::read(stream, at, policy)` is `fold::read(stream, at,
   policy)`; `frontier` and `conflicts` are `fold::Product` methods, so a
-  caller imports the trait. `fold::env` and `fold::flatten` take any
-  `Valuation`, and `fold::link_specs` any key that reads as a string.
-- **`view::Entry` is `Entry<E: Valuation>`:** `todo` is `key`; `outcome` and
+  caller imports the trait. `fold::env` takes any `Bind`, `fold::flatten`
+  any `History`, and `fold::link_specs` any key that reads as a string.
+- **`view::Entry` is `Entry<E: Row>`:** `todo` is `key`; `outcome` and
   `content` are the todo `reading`'s fields, `entry.reading.outcome` and
   `entry.reading.content`, read by `Entry::outcome()` and
   `Entry::content()`; `claim` is the claimed `todo::Reading`;

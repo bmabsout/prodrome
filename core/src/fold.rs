@@ -274,9 +274,9 @@ pub fn content<P: Payload>(
 
 /// §6.4 — each entity's history as of `at`, as ONE fulfillment function: a
 /// piece at every instant one of its registers was written, the term in each
-/// the price of the reading there. The head, extending to −∞, is the price of
-/// each register's earliest writes; an entity they price nothing has no
-/// function.
+/// `Least` over that [`History::moment`]'s terms. The head, extending to −∞,
+/// is the price of each register's earliest writes; an entity they price
+/// nothing has no function.
 ///
 /// # Errors
 ///
