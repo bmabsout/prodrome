@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::dag::{decode, Dag, Unread};
-use crate::event::{canonical_envelope, event_id, parents_of, Envelope, Hash};
-use crate::literal::ProdromeError;
+use crate::event::{canonical, canonical_envelope, parents_of, Envelope, Hash};
+use crate::literal::{Datetime, ProdromeError};
 use crate::registers::{fold, Folded, Genesis};
 use crate::schema::Schema;
 
@@ -40,10 +40,10 @@ pub struct Memory<E: Schema> {
     /// Each held object's file as it was seen, `None` while a look could
     /// not tell a change from none.
     files: BTreeMap<Hash, Option<Seen>>,
-    /// Each held event's [`event_id`], with the objects that carry it: the
-    /// twin check reads the objects whose events print the same and no
-    /// other.
-    twins: BTreeMap<Hash, BTreeSet<Hash>>,
+    /// The objects whose events name each entity at each instant, which
+    /// two events that print the same do: the twin check prints these and
+    /// no other.
+    twins: BTreeMap<(E::Key, Datetime), BTreeSet<Hash>>,
     /// Each held `Genesis`, and the least legacy root: [`Dag::geneses`].
     geneses: BTreeSet<Hash>,
 }
@@ -170,9 +170,23 @@ impl<E: Schema> Memory<E> {
     ///
     /// [`Memory::folded`]'s.
     pub fn twin(&mut self, prodrome: &Genesis, event: &E) -> Result<Option<Hash>, ProdromeError> {
-        let Some(twins) = self.twins.get(&event_id(event)).cloned() else {
+        let print = canonical(event);
+        let twins: BTreeSet<Hash> = self
+            .twins
+            .get(&(event.key().clone(), event.at()))
+            .into_iter()
+            .flatten()
+            .filter(|name| {
+                self.dag
+                    .get(name)
+                    .and_then(Envelope::event)
+                    .is_some_and(|held| canonical(held) == print)
+            })
+            .cloned()
+            .collect();
+        if twins.is_empty() {
             return Ok(None);
-        };
+        }
         Ok(self
             .folded()?
             .prodromes()
@@ -225,7 +239,7 @@ impl<E: Schema> Memory<E> {
         let dag = Arc::make_mut(&mut self.dag);
         for name in gone {
             if let Some(event) = dag.get(name).and_then(Envelope::event) {
-                if let Some(twins) = self.twins.get_mut(&event_id(event)) {
+                if let Some(twins) = self.twins.get_mut(&(event.key().clone(), event.at())) {
                     twins.remove(name);
                 }
             }
@@ -236,7 +250,7 @@ impl<E: Schema> Memory<E> {
         for (Verified { name, object }, seen) in fresh {
             if let Some(event) = object.event() {
                 self.twins
-                    .entry(event_id(event))
+                    .entry((event.key().clone(), event.at()))
                     .or_default()
                     .insert(name.clone());
             }
