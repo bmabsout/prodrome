@@ -55,7 +55,8 @@
 //! let spec = mk_decay(0.55, 0.05, deadline, delta_from_hours(72.0), None)?;
 //! store.append(mk_spec_revised("todo-1", at, "bassel", spec, "")?)?;
 //!
-//! // Read the DAG back: every object rehashed on the way in.
+//! // Read the DAG back: every object rehashed on the way in, once; the store
+//! // holds what it has read, and the next read reads only what is new.
 //! let dag = store.dag()?;
 //! assert_eq!(dag.objects().len(), 3);
 //! assert!(store.verify().is_empty(), "no finding against this store");
