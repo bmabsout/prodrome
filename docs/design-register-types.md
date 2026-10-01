@@ -222,6 +222,43 @@ What stays out of the store: events too frequent or too local to deserve an
 object (a keystroke, a streaming answer's text). They are in-memory registers
 of the same types, never content-addressed.
 
+### 6.1 Replicas: memory and disk
+
+A store in memory and a store on disk are not two kinds of thing. Each is a
+set of objects closed under their parents (§1), so each is a REPLICA of the
+same free semilattice, and moving state between them is the join:
+
+    sync(from, to) = to ∪ from
+
+SYNC adopts into `to` every object of `from` that `to` does not hold, each
+verified on adoption as any received object is (it hashes to its name, its
+parents are held). It is idempotent (an object adopted twice is one object),
+order-free (union commutes), and safe to interrupt and repeat, since a
+partial sync is a smaller union and the next one completes it. Nothing about
+it is a type's business: it never reads a register.
+
+An OVERLAY is a store that writes to one replica (memory) and reads the union
+of that replica and another (disk): its readings are the readings of
+`memory ∪ disk`, by §1, without copying either. Flushing an overlay is
+`sync(memory, disk)`. The replicas that already exist are instances of it: a
+browser's replica of a host's store (writes sealed locally, adopted by the
+host), and an agent's staging area (a batch is an overlay over its target,
+and accepting it is a sync of exactly the objects picked).
+
+**Durability follows the CALM line (§6).** A MONOTONE write (a proposal
+asked, a transcript's line, an edit, a page's intent) may stay in memory and
+sync lazily: a crash before the sync loses that write and never a reading's
+consistency, since the replica that survived is still a down-set. A
+NON-MONOTONE decision may not: "is it still standing, so I may perform?" and
+the record of the effect must be answered and written by the replica of
+record, under its lock, before the effect, or a crash between them lets the
+effect run twice. So an overlay is never the store a coordinated decision is
+asked of: the type of a store that may answer one is the type of a store
+that writes through, and an overlay does not have it.
+
+A third tier never syncs: in-memory registers of the same types over events
+too local or too frequent to be objects (a keystroke, a streaming answer).
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -238,6 +275,10 @@ Each is a property test over generated histories, in the core's `tests/`:
 5. **Valuation.** A conflict's price is `Least` over its candidates' prices.
 6. **Reference.** Under the todo schema every existing vector reads
    unchanged (the successor of law 22).
+7. **Sync.** `sync` is idempotent and order-free, an interrupted sync
+   completes on the next, and a reading after `sync(a, b)` equals the
+   reading of `a ∪ b`; an overlay reads as its union, and its flush leaves
+   the replica of record reading that union.
 
 ## 8. Stages
 
@@ -292,6 +333,18 @@ In a host (the first one), after stage 2:
 5. **Conversations as a conversation schema** (a transcript as a grow-only
    set in causal order; owed as a reading).
 6. **A page as a fold over history ∪ intents**, the proposal card first.
+
+In this repository, after stage 3:
+
+7. **Replicas.** `sync(from, to)` between any two stores at one schema, an
+   in-memory store, and an OVERLAY that writes to memory and reads
+   `memory ∪ disk`, with its flush. A store that answers a coordinated
+   decision (a lock, a write-through append) is a type an overlay is not.
+   Laws: sync is idempotent and order-free, an interrupted sync completes on
+   the next, a reading after sync equals the reading of the union, and an
+   overlay reads as its union. An agent's staging area is its first host
+   use (a batch as an overlay over its target, accepted by a sync of the
+   objects picked), replacing a copy of the target and a deletion.
 
 ## 9. Non-goals
 
