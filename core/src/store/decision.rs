@@ -31,6 +31,57 @@ use crate::schema::Schema;
 /// cannot be written against either: the CALM line (§6), as a type. Monotone
 /// writes need none of this, and every replica appends them.
 ///
+/// ```
+/// # use prodrome::event::{mk_completed, TodoEvent, TodoId};
+/// # use prodrome::literal::Datetime;
+/// # use prodrome::policy::Untrusted;
+/// # use prodrome::reference::Todo;
+/// # use prodrome::store::EventStore;
+/// # fn main() -> Result<(), prodrome::literal::ProdromeError> {
+/// # let dir = std::env::temp_dir().join("prodrome-decision-doc");
+/// # let _ = std::fs::remove_dir_all(&dir);
+/// let store = EventStore::<TodoEvent<Todo>>::new(&dir, Untrusted::none());
+/// store.init("decisions")?;
+/// let at = Datetime::new(2026, 10, 1, 9, 0, 0, 0)?;
+/// let todo = TodoId::new("send-it")?;
+/// let mut decision = store.decide()?;
+/// let unsent = !decision
+///     .folded()?
+///     .entities()
+///     .any(|(key, _)| *key == todo);
+/// if unsent {
+///     decision.append(mk_completed("send-it", at, "host", "sent")?)?;
+/// }
+/// drop(decision);
+/// // Only now is the effect performed: its record is on disk.
+/// # let _ = std::fs::remove_dir_all(&dir);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// use prodrome::event::TodoEvent;
+/// use prodrome::reference::Todo;
+/// use prodrome::store::{EventStore, Overlay};
+///
+/// type Store = EventStore<TodoEvent<Todo>>;
+/// fn send(overlay: &Overlay<TodoEvent<Todo>, Store>) {
+///     // An overlay writes to memory: it has no lock to decide under.
+///     let decision = overlay.decide();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use prodrome::event::TodoEvent;
+/// use prodrome::reference::Todo;
+/// use prodrome::store::MemoryStore;
+///
+/// fn send(replica: &MemoryStore<TodoEvent<Todo>>) {
+///     // A store in memory has no lock any other writer takes.
+///     let decision = replica.decide();
+/// }
+/// ```
+///
 /// While it lives, read through it and not through the store: the store's
 /// own reads wait for it, on this thread too.
 pub struct Decision<'s, E: Schema, Pol> {

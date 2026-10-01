@@ -7,7 +7,10 @@
 //! short, and leaves the receiver reading exactly what a fresh store reads
 //! of the union of both replicas' files. A store in memory, appended to as a
 //! store on disk is and receiving what it receives, writes the same objects
-//! byte for byte.
+//! byte for byte. An overlay over a store reads as the union of its own
+//! objects and the store's, appends as a store holding that union appends,
+//! writes nothing to the store until it is flushed, and its flush leaves the
+//! store reading that union.
 
 use crate::common;
 
@@ -19,7 +22,7 @@ use prodrome::literal::ProdromeError;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::registers::Folded;
-use prodrome::store::{sync, EventStore, Held, MemoryStore, Replica};
+use prodrome::store::{sync, EventStore, Held, MemoryStore, Overlay, Replica};
 use proptest::prelude::*;
 
 use crate::memory::{copy_store, replicas, Scratch};
@@ -217,5 +220,87 @@ proptest! {
             }
             prop_assert_eq!(reading(&memory), reading(&disk), "after {:?}", step);
         }
+    }
+}
+
+/// One thing that happens to an overlay, or under it.
+#[derive(Debug, Clone)]
+enum Layered {
+    /// An event of the pool appended to the overlay.
+    Append(prop::sample::Index),
+    /// What one of the other writer's objects rests on, received by the
+    /// overlay.
+    Arrive(prop::sample::Index),
+    /// The same, received by the store under it, as another writer would.
+    Beneath(prop::sample::Index),
+}
+
+fn a_layered_step() -> impl Strategy<Value = Layered> {
+    prop_oneof![
+        3 => any::<prop::sample::Index>().prop_map(Layered::Append),
+        1 => any::<prop::sample::Index>().prop_map(Layered::Arrive),
+        1 => any::<prop::sample::Index>().prop_map(Layered::Beneath),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// AN OVERLAY READS AS ITS UNION, AND ITS FLUSH LEAVES THE STORE READING
+    /// IT. Beside the overlay a store on disk is given everything the overlay
+    /// and the store under it are given: after every step the overlay reads
+    /// as it does and appends byte for byte as it does, while the store under
+    /// the overlay reads as one given only what reached it beneath. The flush
+    /// leaves that store reading the union, and a second flush takes nothing.
+    #[test]
+    fn an_overlay_reads_as_its_union_until_it_is_flushed(
+        logs in two_writers(),
+        steps in prop::collection::vec(a_layered_step(), 1..30),
+    ) {
+        let (shared, mine, _) = &logs;
+        let pool: Vec<Event> = shared.iter().chain(mine).cloned().collect();
+        prop_assume!(!pool.is_empty());
+        let scratch = Scratch::new("overlay");
+        let (disk, there) = replicas(&scratch, &logs);
+        let union = scratch.store("union");
+        let beneath = scratch.store("beneath");
+        for copy in [&union, &beneath] {
+            copy_store(disk.root(), copy.root());
+        }
+        let overlay = Overlay::new(&disk);
+        prop_assert_eq!(reading(&overlay), reading(&disk));
+        let theirs: Vec<Hash> = reading(&there).objects.into_iter().collect();
+        let print = |name: &Hash| there.print(name);
+        for step in &steps {
+            match step {
+                Layered::Append(pick) => {
+                    let event = pick.get(&pool).clone();
+                    let written = overlay.append(event.clone()).map_err(|e| e.to_string());
+                    let expected = union.append(event).map_err(|e| e.to_string());
+                    prop_assert_eq!(&written, &expected);
+                    if let Ok(name) = written {
+                        prop_assert_eq!(overlay.print(&name), Replica::print(&union, &name));
+                    }
+                }
+                Layered::Arrive(pick) => {
+                    let seed: BTreeSet<Hash> = [pick.get(&theirs).clone()].into();
+                    overlay.receive(seed.clone(), &print).expect("receives");
+                    union.receive(seed, &print).expect("receives");
+                }
+                Layered::Beneath(pick) => {
+                    let seed: BTreeSet<Hash> = [pick.get(&theirs).clone()].into();
+                    for store in [&disk, &union, &beneath] {
+                        store.receive(seed.clone(), &print).expect("receives");
+                    }
+                }
+            }
+            prop_assert_eq!(reading(&overlay), reading(&union), "after {:?}", step);
+            prop_assert_eq!(reading(&disk), reading(&beneath), "after {:?}", step);
+        }
+        overlay.flush().expect("flushes");
+        prop_assert_eq!(reading(&disk), reading(&union));
+        prop_assert_eq!(reading(&overlay), reading(&union));
+        prop_assert_eq!(overlay.flush().expect("flushes"), Vec::<Hash>::new());
+        prop_assert_eq!(reading(&scratch.store("here")), reading(&union), "and cold");
     }
 }

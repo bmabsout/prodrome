@@ -71,6 +71,34 @@ pub trait Replica<E: Schema> {
     ) -> Result<Vec<Hash>, ProdromeError>;
 }
 
+/// A replica borrowed is that replica: an overlay over `&store` reads and
+/// flushes into a store its caller keeps.
+impl<E: Schema, R: Replica<E> + ?Sized> Replica<E> for &R {
+    fn held(&self) -> Result<Held<E>, ProdromeError> {
+        (**self).held()
+    }
+
+    fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
+        (**self).tips()
+    }
+
+    fn print(&self, name: &Hash) -> Option<Vec<u8>> {
+        (**self).print(name)
+    }
+
+    fn append(&self, event: E) -> Result<Hash, ProdromeError> {
+        (**self).append(event)
+    }
+
+    fn receive(
+        &self,
+        seeds: BTreeSet<Hash>,
+        print_of: &dyn Fn(&Hash) -> Option<Vec<u8>>,
+    ) -> Result<Vec<Hash>, ProdromeError> {
+        (**self).receive(seeds, print_of)
+    }
+}
+
 /// `to ∪ from`: adopt into `to` every object of `from` that `to` lacks,
 /// each verified on adoption, and answer them, parents first.
 ///
