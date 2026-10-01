@@ -14,8 +14,45 @@
 //! that needs a decision belongs in the core, where the conformance vectors
 //! can see it.
 //!
-//! Strings and JSON at the boundary (see `wire.rs` for why), so the whole
-//! surface is:
+//! Strings and JSON at the boundary (see `wire.rs` for why).
+//!
+//! ONE MODULE, ANY SCHEMAS. A store is read at a schema, the type of its
+//! events (`prodrome::schema::Schema`), and the exports are generic over one
+//! ([`exports`]). `#[wasm_bindgen]` exports no generic item, so a module
+//! instantiates them with [`schema!`], once per schema, each as a JS class of
+//! its own name: `new Reviews(objects)` reads the objects once, and every
+//! method asks its question of what was read.
+//!
+//! | method     | asks                                                         |
+//! | ---------- | ------------------------------------------------------------ |
+//! | `verify`   | §3: do these bytes hash to these names, form one DAG, and end at which tips |
+//! | `tips`     | §3: the objects' tips, and each prodrome's heads by its genesis |
+//! | `since`    | §3: what a replica holding these tips lacks, in causal order |
+//! | `readings` | §6: each entity's registers, each its maximal writes          |
+//! | `entries`  | §6.7, `priced` only: every entity as the folds see it        |
+//! | `prices`   | §6.1, §6.4, `priced` only: the environment and every function |
+//!
+//! A schema crosses the boundary by [`exports::Json`]: the field its events
+//! name an entity by, each register's name, and each value's JSON, a function
+//! of the value so that a reading's JSON is a function of the reading. A
+//! schema with a valuation adds [`exports::PricedJson`], its reading's JSON.
+//! The todo schema has both, at any payload.
+//!
+//! A HOST'S MODULE is a `cdylib` crate of its own that depends on this one
+//! with `default-features = false`, on `prodrome-core`, and on
+//! `wasm-bindgen` at the version this crate pins (the version of the CLI it
+//! runs anyway); implements `Json` for each of its schemas (and
+//! `PricedJson` for each with a `Valuation`); and says, once per schema,
+//! `prodrome_wasm::schema!(Reviews = Review);` or
+//! `prodrome_wasm::schema!(Todos = TodoEvent<Record>, priced);`. It builds
+//! for `wasm32-unknown-unknown` and runs `wasm-bindgen` over the result, as
+//! `nix build .#prodrome-wasm` does here. Its module exports its classes and
+//! nothing of this crate's own.
+//!
+//! THE REFERENCE MODULE is this crate's default feature, `reference`: the
+//! todo schema at the reference payload, as `Todos`, and beside it the free
+//! functions every page has called, each answering byte for byte as before
+//! (`snapshots/dag-1.txt`):
 //!
 //! | function         | asks                                                    |
 //! | ---------------- | ------------------------------------------------------- |
@@ -31,15 +68,16 @@
 //! | `series_knots`   | §7 knots: what is that term's curve over a window        |
 //! | `link`           | §7.2: every ref in a term bound to the todo it names     |
 //! | `term_json`      | §2 → §7: a stored term's print, as the JSON shape above  |
+//! | `version`        | which core answered                                     |
 //!
 //! `store` is file-backed and a browser has no `events/` directory, so the
 //! objects arrive over `/api/chain` instead and are read as a
-//! [`prodrome::dag::Dag`]: [`verify_objects`] is its findings, asked of a set
-//! in memory.
+//! [`prodrome::dag::Dag`]: [`exports::verify`] is its findings, asked of a
+//! set in memory.
 //!
 //! NO CLOCK, anywhere below. §1 forbids one in the core, and a browser's clock
 //! is the least trustworthy in the system; every moment is an argument — the
-//! `at` a replica seals included, which is why [`lifecycle`] takes one rather
+//! `at` a replica seals included, which is why `lifecycle` takes one rather
 //! than reading one.
 //!
 //! ⚠️ SINCE STAGE 3 THIS CRATE ALSO WRITES, and it is worth saying why that is

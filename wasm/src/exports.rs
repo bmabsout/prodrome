@@ -4,7 +4,7 @@
 //! A schema says what its events are ([`prodrome::schema::Schema`]); this
 //! module reads a set of objects at one, and [`Json`] is the one thing more a
 //! schema says to cross this boundary. Every function here answers JSON
-//! text, or a [`Refusal`] the exports throw.
+//! text, or a refusal, a string, that the exports throw.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,7 +71,7 @@ impl<P: Payload> Json for TodoEvent<P> {
 
     /// A todo register's value is the whole event that wrote it
     /// (`todo::State`, `Spec`, `Content`), so its JSON is the event's §2
-    /// literal, by [`json_literal`]'s one mapping.
+    /// literal, by `wire::json_literal`'s one mapping.
     fn value(&self, _kind: Kind) -> Value {
         json_literal(&Schema::to_value(self))
     }
@@ -601,7 +601,7 @@ pub fn entries<E: PricedJson>(
 
 /// §6.1 and §6.4, per prodrome: the environment FPL's terms read at `at`
 /// under `untrusted`, and every entity's fulfillment function (`absent`
-/// where it has none), in [`crate::json`]'s term shape: what `link`,
+/// where it has none), in `json.rs`'s term shape: what `link`,
 /// `fulfillment`, `explain` and `series_knots` take, so a page draws a price
 /// without a second reading of it.
 pub fn prices<E: PricedJson>(

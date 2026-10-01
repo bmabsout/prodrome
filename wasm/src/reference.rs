@@ -20,14 +20,10 @@ use crate::wire::{
     parse_specs, parse_term, parse_untrusted, strings, History, Refusal,
 };
 
-/// THE RECORD SHAPE THIS MODULE WAS BUILT WITH.
-///
-/// §4's record kind is the host's (`prodrome::payload::Payload`), and a store
-/// is parsed against one closed vocabulary — so a `.wasm` is built for one
-/// payload, and this is the choice. `prodrome::reference::Todo` is the shape
-/// `conformance/*.py` was taken with; a host with its own payload compiles
-/// its own wasm from this crate with the type swapped, and every export below
-/// is written so that is the ONLY line that changes.
+/// THE RECORD SHAPE THIS MODULE WAS BUILT WITH: `prodrome::reference::Todo`,
+/// the shape `conformance/*.py` was taken with. A host with its own payload,
+/// or its own schemas, builds its own module with [`crate::schema!`] (see the
+/// crate's header) and leaves this one off.
 type Record = prodrome::reference::Todo;
 
 type Event = TodoEvent<Record>;
