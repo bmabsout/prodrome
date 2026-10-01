@@ -151,13 +151,15 @@ since this grammar has tuples and no mapping.
     name records what its writer held and never a reader's policy or moment.
     `Created` and `Tended` write no register, so their `deps` are `()`.
   - A write to an INFLATIONARY register (§6) whose value is not `≥` the
-    reading it supersedes is refused before any object carries it. Of the
-    todo's registers only the tendings are inflationary, and a `Tended`
-    supersedes nothing, so no event of §4 is refused.
+    reading it supersedes is refused before any object carries it, by the
+    same structural reading. Of the todo's registers only the tendings are
+    inflationary, and a `Tended` supersedes nothing, so no event of §4 is
+    refused; a schema whose register supersedes and is inflationary is held
+    to it (law 32).
 
-  A register is one todo's, so `deps` never leave a todo: a store of changes
-  is a disjoint union of per-todo DAGs, and changes to different todos are
-  concurrent. A change's name is a function of its genesis, its event and
+  A register is one entity's (one todo's, under the todo schema), so `deps`
+  never leave it: a store of changes is a disjoint union of per-entity DAGs,
+  and changes to different entities are concurrent. A change's name is a function of its genesis, its event and
   the part of the past it supersedes, and of nothing else: two replicas that
   agree about a register write byte-identical changes over it, whatever
   else each holds. Two that disagree may each write one event over their own
@@ -219,7 +221,17 @@ since this grammar has tuples and no mapping.
 
 ## 4. Events
 
-Kinds and fields, in order; all shipped; `""` means absent.
+A store is opened at a **schema**: its event vocabulary, the entity each
+event is about, the registers each event writes (§6), and which events a
+policy is asked about (§5). A schema is the STORE'S type and no object
+carries it, so `Genesis(label, nonce)` is frozen as it was; a stored print
+is parsed against the envelopes' vocabulary (§3) and then the schema's, and
+an event the schema does not name is refused at that boundary. Every event
+says about what, when its writer thought it was (data, §1) and who.
+
+The REFERENCE schema is the **todo schema**, below: every conformance vector
+was taken at it, and every legacy envelope (`Sealed`, `Woven`) belongs to
+it. Kinds and fields, in order; all shipped; `""` means absent.
 
 - `Created(todo, at, actor, text, note)`
 - `Completed(todo, at, actor, note)`, `Cancelled(…)`, `Reopened(…)`
@@ -229,9 +241,10 @@ Kinds and fields, in order; all shipped; `""` means absent.
 - `SpecRevised(todo, at, actor, spec, note)`
 - **The record kind**: `KIND(todo, at, actor, <the host's fields>)`.
 
-The six kinds above are the DATABASE's: their fields are its semantics, and
-they are frozen here. A record is a todo's CONTENT, and content is a
-deployment's — so a host **payload** supplies
+The six kinds above are the TODO SCHEMA's: their fields are its semantics,
+and they are frozen here. Each is about the todo it names. A record is a
+todo's CONTENT, and content is a deployment's — so a host **payload**
+supplies
 
 - `KIND`, the constructor name, and the record's fields and their declared
   order, which together are the stored bytes and are frozen the same way;
@@ -267,7 +280,9 @@ event at a time, and the answer is a `Standing`:
 A **policy** is that function: `standing(event) : Standing`, of the EVENT and
 nothing else — not of the log, not of the position, not of the moment. Every
 fold in §6 takes one, §6.7 takes one, and §3's `verify` takes one; nothing in
-the database reads an actor name to decide anything.
+the database reads an actor name to decide anything. The SCHEMA says which of
+its events a policy is asked about (§4); any other binds whoever wrote it.
+The todo schema asks about every kind but the record.
 
 A policy answers one further question, whose default is the reading above:
 `confirms(event)`, "is this the host's own word", which is `standing(event) ==
@@ -278,8 +293,9 @@ separately. `Claims` implies not `confirms`.
 
 **The reference policy** — the one `conformance/*.py`'s `untrusted` fields
 name, and the one this repository's vectors were taken under — is a set of
-actor names. An event `Claims` when its actor is on the set and it is a
-lifecycle, `Tended` or `SpecRevised` event; everything else `Binds`, a
+actor names, over any schema. An event `Claims` when its actor is on the set
+and the schema asks about it — under the todo schema, a lifecycle, `Tended`
+or `SpecRevised` event; everything else `Binds`, a
 content record included, because writing content is what such a writer is for
 and a fold that hid its writes would be an outage that reports success. It
 `confirms` an event exactly when the actor is not on the set — so a content
@@ -307,21 +323,39 @@ showing one is the whole point of storing it.
 
 ## 6. Folds
 
-Every fold is a projection of one todo's REGISTERS (6) at a moment `t` under
-a §5 POLICY. A write joins its register when it is dated at or before `t`
-and the policy binds it — a content record joins whoever wrote it — and what
-it supersedes is ancestry alone: no clock and no linearisation picks a
-winner. A register's type orders its values by a partial order, which
-decides no succession, and its reading is the MAXIMAL values of its
-frontier's values under that order, the free completion: one is a value,
-and more is a conflict. The orders of §4's registers are discrete, a value
-being the event that wrote it, so a reading is its CANDIDATES, the distinct
-events of its frontier, exactly as before, and twins (§3) are one
-candidate; the tendings are a grow-only set, ordered by inclusion. A type
-may declare its register INFLATIONARY, every write `≥` the reading it
-supersedes, which §3's append enforces. Every fold factors per genesis
-(§3), a todo keyed by `(genesis, todo)`; in a store of one genesis that key
-reads as the todo.
+**A schema's registers.** An entity's REGISTERS are a product, one
+component per register the schema names, each a join-semilattice, so the
+product is one and folding a stream into it is a monoid action (6). The
+schema routes each event to the registers it writes. A register a write
+SUPERSEDES in holds its FRONTIER, the writes to it no later write to it
+descends from; one that only accumulates is a grow-only set, joined by
+union. Each register has a TYPE: its values, a partial order on them, and
+the value a write gives it. The order decides no succession; the register's
+reading is the MAXIMAL values of its frontier's values, the free completion
+of the order: one is a value, and more is a conflict. A type may declare its
+register INFLATIONARY, every write `≥` the reading it supersedes; §3's
+append refuses a write that is not, before any object exists, and the
+reading of such a register is then a homomorphism (law 32). A schema MAY
+also carry a VALUATION: the price of an entity's reading as a §7 term, a
+reading in conflict priced as `Least` over its worlds (4). An entity whose
+schema has no valuation has no price at all, which is not `Absent`.
+
+Every fold is a projection of one entity's registers at a moment `t` under a
+§5 POLICY. A write joins its register when it is dated at or before `t` and
+the policy binds it — an event the schema does not ask about joins whoever
+wrote it — and what it supersedes is ancestry alone: no clock and no
+linearisation picks a winner. Every fold factors per genesis (§3), an entity
+keyed by `(genesis, key)`; in a store of one genesis that key reads as the
+entity's.
+
+**The todo schema's registers** are its state, spec and content, which a
+write supersedes in, and its tendings. The orders of the first three are
+discrete, a value being the event that wrote it, so a reading is its
+CANDIDATES, the distinct events of its frontier, exactly as before, and
+twins (§3) are one candidate; the tendings are a grow-only set, ordered by
+inclusion. None is inflationary: a `Reopened` after a `Completed` goes
+back, which is why a todo's conflicts are shown and priced. Its valuation is
+FPL, below. A content record joins whoever wrote it.
 
 1. `env(t, policy)`, the environment, in two halves. `outcomes : TodoId →
    set of candidate bindings`: the candidates of the todo's state register,
@@ -371,7 +405,8 @@ reads as the todo.
    is the registers folded at `t`, which change only at the instants writes
    are dated; the tendings, a grow-only set, are their own history. No
    causal order enters it.
-6. **Registers** over nodes `(name, parents, event, genesis)`: one register
+6. **Registers** over nodes `(name, parents, event, genesis)`, under any
+   schema; for the todo's, one register
    per `(genesis, kind ∈ {state, spec, content}, todo)` holds its frontier,
    the writes to it that no later write to it descends from. A `Tended`
    writes no register: it joins the tendings, a grow-only set kept beside the
@@ -382,7 +417,8 @@ reads as the todo.
    never leave a todo, and over every legacy object for legacy objects, so
    only a mixed store pays for both. `conflicts_of` names each register whose
    frontier holds more than one write.
-7. **The entry.** `entries(nodes, t, policy) : [Entry]`, one row per todo
+7. **The entry**, under a schema with a valuation; here the todo's.
+   `entries(nodes, t, policy) : [Entry]`, one row per todo
    any event mentions, per genesis and by id. It is the composition of the
    folds and §7, stated once so every consumer performs it once. With
    `confirmed` the registers under the policy: `outcome` is the todo's
@@ -693,15 +729,21 @@ No stored byte moves: `Tended`, `Recur` and `Periodic` are new constructors
 
 ## 8. Types an implementation must have
 
-`Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Payload`, §4's record kind as a
-parameter — a constructor name, a field order, a vocabulary, a parse, a print,
-`spec` and a checklist length — carried by value and never as an existential,
-since one store holds one record shape; `Standing = Binds | Claims` and
+`Hash` (64 hex), `TodoId`, `Actor`, `Name`; `Schema`, §4's store type as a
+parameter — an event vocabulary with its parse and print, the key, instant
+and actor of each event, the registers it writes, which events a policy is
+asked about, and an entity's registers as a product — carried by value and
+never as an existential, since one store holds one schema, and a
+`Valuation` beside it where the schema prices (§6); a register TYPE, its
+values, their `Order` and the value a write gives it; `Payload`, the todo
+schema's record kind as a parameter — a constructor name, a field order, a
+vocabulary, a parse, a print, `spec` and a checklist length;
+`Standing = Binds | Claims` and
 `Policy`, §5's standing as a parameter — one function of an event, carried by
-value like the payload and for the same reason, since one store reads under one
-policy; `Envelope = Genesis | Change | Snapshot | Sealed | Woven`, each
-object's genesis beside it (§3);
-`TodoEvent`; `Term` as `Fix TermF`, `Absent` among its leaves; a value as
+value like the schema and for the same reason, since one store reads under one
+policy; `Envelope = Genesis | Change | Snapshot | Sealed | Woven` over a
+schema's events, each object's genesis beside it (§3);
+`TodoEvent`, the todo schema's events; `Term` as `Fix TermF`, `Absent` among its leaves; a value as
 `[0, 1] ∪ {∅}`, `∅` never a number (`Option`); `Closed` (§7.2), a term with
 no `Ref`, which is what every evaluator takes, and `LinkError = Unknown |
 Cycle`;
@@ -716,7 +758,8 @@ an unwritten register, and its candidates; `Order`, a partial order on a
 register's values (`Discrete` by default, `Total`, inclusion on a set), and
 `Inflationary`, a register type's declaration that a write only grows its
 reading; `Folded`; `Breaks`; `Entry`
-(§6.7), keyed by genesis and todo, whose outcome is a candidate set, whose
+(§6.7) over a schema with a valuation, keyed by genesis and key, whose
+reading is the schema's (a todo's outcome is a candidate set), whose
 function is always
 there (`Absent` where the todo has none), whose value is a number, `∅` or a
 `LinkError`, and whose `Confidence` is a sum with no "provisional for no
@@ -963,8 +1006,24 @@ byte as before is law 22 and every vector suite, unchanged.
 32. **An inflationary reading is a homomorphism.** An append to an
     inflationary register whose value is not `≥` the reading it supersedes
     is refused, and over the histories so written `read(h₁ ∪ h₂) =
-    max(read(h₁) ∪ read(h₂))`.
-    `order_laws.rs::an_inflationary_reading_is_a_homomorphism`.
+    max(read(h₁) ∪ read(h₂))`. Through the store's own append, at a schema
+    with an inflationary register, the refusal writes nothing.
+    `order_laws.rs::an_inflationary_reading_is_a_homomorphism`,
+    `review.rs::the_append_refuses_a_move_back`,
+    `review.rs::the_reading_of_a_union_is_the_join_of_the_readings`.
+
+Law 33 is the design's law 1, over two schemas: the todo schema and a
+second one in the tests (`review.rs`), a machine with no valuation, so the
+law is seen to ask nothing of a schema. The design's law 5, that a conflict
+prices as `Least` over its worlds, is law 24, and holds of any valuation by
+construction (§6); its law 6 is law 22.
+
+33. **A reading is a function of the object set.** Every parents-first
+    permutation of a history, every duplication of its objects, and every
+    partition into two replicas folded apart and then merged read the same,
+    register by register, under any schema.
+    `schema_laws.rs::a_todo_reading_is_a_function_of_the_object_set`,
+    `schema_laws.rs::a_review_reading_is_a_function_of_the_object_set`.
 
 ## 10. Non-goals
 
