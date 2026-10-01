@@ -33,10 +33,9 @@ type Record = prodrome::reference::Todo;
 type Event = TodoEvent<Record>;
 type Object = Envelope<Event>;
 
-/// The todo schema crosses as it always has: each row names its todo.
-impl exports::Json for Event {
-    const KEY: &'static str = "todo";
-}
+// The todo schema's exports through the generic path, beside the free
+// functions below that have always answered for it: `new Todos(objects)`.
+crate::schema!(Todos = Event);
 
 /// A refusal, as the exception a JS caller catches. Every entry point returns
 /// one rather than panicking: a browser that aborts inside the Wasm leaves the

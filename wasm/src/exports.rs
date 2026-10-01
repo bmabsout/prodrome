@@ -9,9 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::dag::{Dag, Finding, Unread};
-use prodrome::event::{parents_of, Envelope, Hash};
+use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
 use prodrome::fpl::{datetime_of, instant_of, iso, Instant};
 use prodrome::literal::{Datetime, Value as Literal};
+use prodrome::payload::Payload;
 use prodrome::policy::Everything;
 use prodrome::registers::Node;
 use prodrome::schema::Schema;
@@ -32,6 +33,13 @@ pub trait Json: Schema<Key: AsRef<str>> {
     const KEY: &'static str;
 }
 
+/// The todo schema, at any payload, crosses as it always has: each row names
+/// its todo. Here and not in a host, which could not implement this crate's
+/// trait for the core's type.
+impl<P: Payload> Json for TodoEvent<P> {
+    const KEY: &'static str = "todo";
+}
+
 /// The name these bytes have: sha256 of the canonical print, exactly what
 /// `seal_hash` takes and what `events/objects/<name>.py` holds — UTF-8, no
 /// trailing newline.
@@ -40,6 +48,13 @@ pub fn name_of(text: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// An answer as an export returns it: a refusal is the exception a JS caller
+/// catches, never a panic, which would leave the module poisoned for the rest
+/// of the session.
+pub fn thrown(answer: Result<String, Refusal>) -> Result<String, wasm_bindgen::JsError> {
+    answer.map_err(|refusal| wasm_bindgen::JsError::new(&refusal))
 }
 
 pub fn printed(value: &Value) -> Result<String, Refusal> {

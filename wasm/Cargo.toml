@@ -18,13 +18,19 @@ publish = false
 [lib]
 name = "prodrome_wasm"
 path = "src/lib.rs"
-# A cdylib and nothing else: this crate is a BOUNDARY, not a library anything
-# links against. `rlib` beside it would let the workspace's own tests reach in
-# and pin the wire shapes from Rust, which is the wrong place for them — the
-# shapes exist for a JavaScript reader, and a test that drives the built
-# module under node is where a
-# drift must fail.
-crate-type = ["cdylib"]
+# A cdylib, and an rlib so that a host's own crate can build ITS module from
+# this one: it depends on this crate with `default-features = false` and
+# instantiates `prodrome_wasm::schema!` for each of its schemas (see the
+# crate's header). The wire shapes are still pinned where a JavaScript reader
+# meets them: the snapshot drives every export, and the viewer the built
+# module.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The REFERENCE module: the todo schema at the reference payload, every export
+# it has always had. A host's module turns it off and has only its own.
+default = ["reference"]
+reference = []
 
 [dependencies]
 prodrome-core = { path = "../core" }
