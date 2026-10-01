@@ -13,7 +13,7 @@
 //!
 //! [`crate::event::TodoEvent`] is the reference schema ([`crate::todo`]):
 //! §4's six kinds and the record kind, and every legacy envelope is read at it.
-//! A schema MAY price its entities ([`Valuation`]); one that does not has no
+//! A schema MAY price its entities ([`Price`]); one that does not has no
 //! price at all, which is not FPL's `Absent`.
 
 use std::fmt::Debug;
@@ -90,19 +90,53 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     }
 }
 
-/// A schema's PRICE (design §4): a map from an entity's reading to a §7 term,
-/// and what a priced row shows (§6.7). Optional: [`crate::view::entries`]
-/// asks for it, and nothing else does.
+/// A schema's PRICE (design §4): the §7 term each candidate of an entity's
+/// reading prices as. Optional: a schema without it has no price at all,
+/// which is not FPL's `Absent`.
 ///
-/// A reading in conflict holds more than one WORLD, one candidate from each
-/// register. [`Valuation::worlds`] prices each, and the core prices the
-/// reading as `Least` over them ([`crate::fold::price`]): the meet in the
-/// fulfillment order, "price a conflict as its most urgent world". It is not
-/// a register's join, and FPL's `Conj`, which aggregates different entities,
-/// is neither.
+/// A reading in conflict holds more than one candidate. The core prices the
+/// reading as `Least` over their terms ([`crate::fold::price`]): the meet in
+/// the fulfillment order, "price a conflict as its most urgent candidate". It
+/// is not a register's join, and FPL's `Conj`, which aggregates different
+/// entities, is neither.
+pub trait Price: Schema {
+    /// The term each candidate of the reading prices as, none for one that
+    /// prices nothing. Empty: the entity has no price here.
+    ///
+    /// # Errors
+    ///
+    /// A term a smart constructor refuses.
+    fn terms(registers: &Self::Registers<'_>) -> Result<Vec<Term>, FplError>;
+}
+
+/// A price that CHANGES WITH THE ENTITY'S HISTORY: §6.4's fulfillment
+/// function, a piece at every instant one of its registers was written
+/// ([`crate::fold::flatten`]). A schema whose price is only its reading's
+/// has none.
+pub trait History: Price {
+    /// The term each candidate prices as at one MOMENT of the history: `now`,
+    /// the reading there, with a register unwritten yet read as it was first
+    /// written (`first`), and `head`, the history's price before its first
+    /// moment, for a candidate that prices nothing there.
+    ///
+    /// With nothing first written and no head, a moment is its reading:
+    /// `moment(r, &Default::default(), None)` is `Price::terms(r)`.
+    ///
+    /// # Errors
+    ///
+    /// A term a smart constructor refuses.
+    fn moment(
+        now: &Self::Registers<'_>,
+        first: &Self::Registers<'_>,
+        head: Option<&Term>,
+    ) -> Result<Vec<Term>, FplError>;
+}
+
+/// What a priced row shows (§6.7), and what FPL's terms read of an entity.
+/// [`crate::view::entries`] asks for it, and nothing else does.
 ///
 /// An entity's key is the name a `Ref` gives it, so it reads as a string.
-pub trait Valuation: Schema<Key: AsRef<str>> {
+pub trait Valuation: History<Key: AsRef<str>> {
     /// What a priced row shows of an entity's registers.
     type Reading: Clone + PartialEq + std::fmt::Debug;
 
@@ -117,17 +151,4 @@ pub trait Valuation: Schema<Key: AsRef<str>> {
 
     /// What FPL's terms read of an entity (§6.1), recorded in `env`.
     fn bind(key: &Self::Key, registers: &Self::Registers<'_>, env: &mut Env);
-
-    /// The price of each world `now` holds, a register unwritten yet read as
-    /// it was first written (`first`), and `head` where a world prices
-    /// nothing else. Empty where the entity has no price there.
-    ///
-    /// # Errors
-    ///
-    /// A term a smart constructor refuses.
-    fn worlds(
-        now: &Self::Registers<'_>,
-        first: &Self::Registers<'_>,
-        head: Option<&Term>,
-    ) -> Result<Vec<Term>, FplError>;
 }

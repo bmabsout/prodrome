@@ -15,7 +15,7 @@ use crate::fpl::{Candidates, Env, FplError, Outcome};
 use crate::literal::{Datetime, ProdromeError, Signature, Table, Value, Vocabulary};
 use crate::payload::{record_signature, Payload};
 use crate::policy::Policy;
-use crate::schema::{Schema, Valuation};
+use crate::schema::{History, Price, Schema, Valuation};
 use crate::term::schema::signatures;
 use crate::term::Term;
 
@@ -118,7 +118,27 @@ pub struct Reading {
 }
 
 /// FPL prices a todo (§6.4, §7): a flat 1.0 while resolved, else its spec on
-/// its checklist.
+/// its checklist, one term per WORLD, one candidate from each register.
+impl<P: Payload> Price for TodoEvent<P> {
+    fn terms(registers: &Registers<'_, P>) -> Result<Vec<Term>, FplError> {
+        registers.worlds(&Registers::default(), None)
+    }
+}
+
+/// A todo's price is a function of time: a register unwritten yet reads as
+/// first written, and a world that prices nothing there prices as the head.
+impl<P: Payload> History for TodoEvent<P> {
+    fn moment(
+        now: &Registers<'_, P>,
+        first: &Registers<'_, P>,
+        head: Option<&Term>,
+    ) -> Result<Vec<Term>, FplError> {
+        now.worlds(first, head)
+    }
+}
+
+/// A todo's row shows its candidate outcomes and records, and a `Ref` to it
+/// reads its bindings and tendings.
 impl<P: Payload> Valuation for TodoEvent<P> {
     type Reading = Reading;
 
@@ -152,14 +172,6 @@ impl<P: Payload> Valuation for TodoEvent<P> {
 
     fn bind(todo: &TodoId, registers: &Registers<'_, P>, env: &mut Env) {
         registers.bind(todo, env);
-    }
-
-    fn worlds(
-        now: &Registers<'_, P>,
-        first: &Registers<'_, P>,
-        head: Option<&Term>,
-    ) -> Result<Vec<Term>, FplError> {
-        now.worlds(first, head)
     }
 }
 
