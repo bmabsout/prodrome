@@ -150,6 +150,40 @@ impl<E: Schema> Memory<E> {
         }
     }
 
+    /// A memory holding `dag`, whose fold is `folded`: another replica's,
+    /// shared, and copied only when this one is extended.
+    pub fn over(dag: Arc<Dag<E>>, folded: Arc<Folded<E>>) -> Memory<E> {
+        let mut twins: BTreeMap<(E::Key, Datetime), BTreeSet<Hash>> = BTreeMap::new();
+        for (name, event) in dag
+            .objects()
+            .iter()
+            .filter_map(|(name, object)| Some((name, object.event()?)))
+        {
+            twins
+                .entry((event.key().clone(), event.at()))
+                .or_default()
+                .insert(name.clone());
+        }
+        Memory {
+            tips: dag.tips(),
+            geneses: dag.geneses(),
+            wanted: dag
+                .objects()
+                .values()
+                .flat_map(named)
+                .filter(|named| dag.get(named).is_none())
+                .collect(),
+            files: dag
+                .objects()
+                .keys()
+                .map(|name| (name.clone(), None))
+                .collect(),
+            twins,
+            folded: Some(folded),
+            dag,
+        }
+    }
+
     pub fn dag(&self) -> &Arc<Dag<E>> {
         &self.dag
     }

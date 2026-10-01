@@ -28,6 +28,7 @@
 mod decision;
 mod memory;
 mod memory_store;
+mod overlay;
 mod replica;
 
 use std::collections::hash_map::RandomState;
@@ -51,6 +52,7 @@ use crate::snapshot::mk_snapshot;
 pub use decision::Decision;
 use memory::{Memory, Printed, Seen, Verified};
 pub use memory_store::MemoryStore;
+pub use overlay::Overlay;
 pub use replica::{sync, Held, Replica};
 
 /// A chain rooted at `root`, of the schema `E`, read under one host
