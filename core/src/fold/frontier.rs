@@ -1,6 +1,7 @@
 use crate::event::Hash;
-use crate::fold::order::{maximal, Discrete, Order};
-use crate::fold::Register;
+use crate::fold::order::{grows, maximal, Discrete, Inflationary, Order};
+use crate::fold::{Register, RegisterType};
+use crate::literal::ProdromeError;
 use crate::registers::Stamp;
 use crate::schema::Schema;
 
@@ -52,6 +53,34 @@ impl<'a, E: Schema> Frontier<'a, E> {
         maximal(&self.0, value)
     }
 
+    /// The reading under the register's type `R`: the maximal values.
+    #[must_use]
+    pub fn reading<R: RegisterType<E>>(&self) -> Vec<&'a Stamp<E>> {
+        self.read(|stamp| value::<E, R>(stamp))
+    }
+
+    /// The append's refusal where `R` is inflationary: `event`'s value in
+    /// this register must stand at or above every value of its reading.
+    ///
+    /// # Errors
+    ///
+    /// A value below, or beside, one the reading holds.
+    pub fn grows<'s, R>(&'s self, event: &'s E) -> Result<(), ProdromeError>
+    where
+        R: RegisterType<E>,
+        R::Value<'s>: Inflationary,
+    {
+        let Some(written) = R::value(event) else {
+            return Ok(());
+        };
+        let held: Vec<R::Value<'s>> = self
+            .reading::<R>()
+            .into_iter()
+            .map(|stamp: &'s Stamp<E>| value::<E, R>(stamp))
+            .collect();
+        grows(&held, &written)
+    }
+
     /// The reading under the discrete order on events, the todo registers'
     /// own: agreeing twins are one candidate. The value is the whole event,
     /// not the field the register reads, so two events that agree on a spec
@@ -59,4 +88,9 @@ impl<'a, E: Schema> Frontier<'a, E> {
     pub fn candidates(&self) -> Vec<&'a Stamp<E>> {
         self.read(|stamp| Discrete::<&E>(&stamp.event))
     }
+}
+
+/// The value a write in a frontier of `R` holds.
+fn value<E: Schema, R: RegisterType<E>>(stamp: &Stamp<E>) -> R::Value<'_> {
+    R::value(&stamp.event).expect("a write joins only the registers it writes")
 }

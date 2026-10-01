@@ -19,7 +19,7 @@ use prodrome::event::{
     mk_cancelled, mk_completed, mk_reopened, parse_envelope, seal_hash, Actor, Envelope, Hash,
     TodoEvent,
 };
-use prodrome::fold::{Kind, Registers};
+use prodrome::fold::{Kind, Product};
 use prodrome::fpl::{instant_of, iso, Env};
 use prodrome::genesis::mk_genesis;
 use prodrome::literal::{Datetime, Value};
@@ -152,7 +152,7 @@ fn every_dag_vector_has_the_references_conflicts_and_environment() {
         let mut found: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
         let mut env = Env::new();
         for (todo, stream) in state.entities() {
-            let registers = Registers::read(stream, None, &roster());
+            let registers = prodrome::fold::read(stream, None, &roster());
             registers.bind(todo, &mut env);
             for (kind, names) in registers.conflicts() {
                 found.entry(todo.as_str().to_owned()).or_default().insert(
@@ -176,7 +176,7 @@ fn on_a_chain_nothing_conflicts() {
         let seed = integer(field(log, "seed"));
         let state = fold(&chain_of(log));
         for (_, stream) in state.entities() {
-            let registers = Registers::read(stream, None, &Everything);
+            let registers = prodrome::fold::read(stream, None, &Everything);
             assert!(registers.conflicts().is_empty(), "seed {seed}");
             written += registers.state.writes().len() + registers.spec.writes().len();
         }
@@ -220,7 +220,7 @@ fn a_frontier_holds_exactly_the_writes_nothing_later_descends_from() {
         let store = materialise(dag);
         let state = fold(&nodes(&store));
         for (_, stream) in state.entities() {
-            let registers = Registers::read(stream, None, &Everything);
+            let registers = prodrome::fold::read(stream, None, &Everything);
             for kind in [Kind::State, Kind::Spec, Kind::Content] {
                 let names = registers.frontier(kind).names();
                 let mut sorted = names.clone();
@@ -302,7 +302,7 @@ fn agreeing_twins_are_one_candidate() {
 
     let state = fold(&p.nodes);
     let (_, stream) = state.entities().next().expect("alpha");
-    let registers = Registers::read(stream, None, &roster());
+    let registers = prodrome::fold::read(stream, None, &roster());
     let mut twins = vec![one.clone(), two.clone()];
     twins.sort();
     assert_eq!(registers.state.names(), twins, "both are in the frontier");
@@ -310,7 +310,10 @@ fn agreeing_twins_are_one_candidate() {
     assert_eq!(registers.outcomes(), [None].into(), "and it reads open");
 
     let genesis = Some(p.genesis.clone());
-    assert_eq!(deps_for(&state, &genesis, &reopened), twins);
+    assert_eq!(
+        deps_for(&state, &genesis, &reopened).expect("no register here is inflationary"),
+        twins
+    );
     let rows = view::entries(&p.nodes, at(9), &roster()).expect("folds");
     let [row] = &rows[..] else { panic!("one todo") };
     assert_eq!(row.genesis, genesis);
@@ -330,16 +333,25 @@ fn deps_name_one_todo() {
     let state = fold(&p.nodes);
     let genesis = Some(p.genesis.clone());
     let beta = mk_completed("beta", at(2), "bassel", "").expect("valid");
-    assert!(deps_for(&state, &genesis, &beta).is_empty());
+    assert!(deps_for(&state, &genesis, &beta)
+        .expect("no register here is inflationary")
+        .is_empty());
     let again = mk_reopened("alpha", at(2), "bassel", "").expect("valid");
-    assert_eq!(deps_for(&state, &genesis, &again), [alpha]);
+    assert_eq!(
+        deps_for(&state, &genesis, &again).expect("no register here is inflationary"),
+        [alpha]
+    );
     let tended = prodrome::event::mk_tended("alpha", at(2), "bassel", "").expect("valid");
     assert!(
-        deps_for(&state, &genesis, &tended).is_empty(),
+        deps_for(&state, &genesis, &tended)
+            .expect("no register here is inflationary")
+            .is_empty(),
         "a tending writes no frontier"
     );
     assert!(
-        deps_for(&state, &None, &again).is_empty(),
+        deps_for(&state, &None, &again)
+            .expect("no register here is inflationary")
+            .is_empty(),
         "another prodrome's frontier is not mine"
     );
 }

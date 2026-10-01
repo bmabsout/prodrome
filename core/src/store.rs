@@ -302,7 +302,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
 
     /// Write `event` as a `Change` over the frontiers of the registers it
     /// writes, or, when the writer's prodrome already holds an object whose
-    /// event prints the same, write nothing and answer the first such.
+    /// event prints the same, write nothing and answer the first such. A
+    /// write that would take an inflationary register below the reading it
+    /// supersedes is refused, and nothing is written.
     pub fn append(&self, event: E) -> Result<Hash, ProdromeError> {
         let _locked = self.lock()?;
         let dag = self.dag()?;
@@ -316,7 +318,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         if let Some(node) = held {
             return Ok(node.name.clone());
         }
-        let deps = deps_for(&fold(&nodes), &prodrome, &event);
+        let deps = deps_for(&fold(&nodes), &prodrome, &event)?;
         self.write(&Envelope::Change(mk_change(genesis, deps, event)?))
     }
 

@@ -15,7 +15,7 @@ use prodrome::dag::{Dag, Finding};
 use prodrome::event::{
     canonical, canonical_envelope, event_id, seal_hash, Actor, Envelope, Hash, TodoEvent, TodoId,
 };
-use prodrome::fold::{Kind, Registers, Write};
+use prodrome::fold::{Kind, Product, Write};
 use prodrome::genesis::mk_genesis;
 use prodrome::policy::{Everything, Untrusted};
 use prodrome::reference::Todo;
@@ -205,7 +205,7 @@ proptest! {
             .entities()
             .find(|(todo, _)| *todo == change.event.todo())
             .expect("the todo");
-        let claimed = Registers::read(stream, None, &Everything);
+        let claimed = prodrome::fold::read(stream, None, &Everything);
         prop_assert!(
             [Kind::State, Kind::Spec].iter().all(|kind| !claimed.frontier(*kind).names().contains(&p)),
             "the rejected proposal is not back in the claimed reading"

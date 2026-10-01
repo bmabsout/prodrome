@@ -673,7 +673,7 @@ fn proposed(
         return Ok(Vec::new());
     }
     let draft = mk_spec_revised(&todo, issue.updated_at, BOT, spec.clone(), &note)?;
-    let deps = registers::deps_for(&known.state, &known.genesis, &draft);
+    let deps = registers::deps_for(&known.state, &known.genesis, &draft)?;
     let at = known
         .dag
         .closure(deps)

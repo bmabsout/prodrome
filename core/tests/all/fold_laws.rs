@@ -31,7 +31,7 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::event::{mk_completed, mk_spec_revised, mk_tended, Actor, Hash, TodoEvent, TodoId};
-use prodrome::fold::{Kind, Registers, Write};
+use prodrome::fold::{Kind, Product, Write};
 use prodrome::fpl::{self, print_term, Env};
 use prodrome::literal::Datetime;
 use prodrome::policy::{Everything, Policy, Untrusted};
@@ -408,7 +408,7 @@ proptest! {
             let (unwritten, written) = (fold(&before), fold(&after));
             let frontiers = |state: &State| -> Vec<(TodoId, Vec<Vec<Hash>>)> {
                 state.entities().map(|(todo, stream)| {
-                    let registers = Registers::read(stream, Some(fpl::instant_of(t)), &policy);
+                    let registers = prodrome::fold::read(stream, Some(fpl::instant_of(t)), &policy);
                     let names = [Kind::State, Kind::Spec, Kind::Content]
                         .map(|kind| registers.frontier(kind).names());
                     (todo.clone(), names.to_vec())
@@ -644,7 +644,7 @@ fn conflicted(nodes: &[Chain], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     fold(nodes)
         .entities()
         .flat_map(|(todo, stream)| {
-            Registers::read(stream, None, policy)
+            prodrome::fold::read(stream, None, policy)
                 .conflicts()
                 .into_keys()
                 .map(|kind| (kind, todo.clone()))
@@ -658,7 +658,7 @@ fn env_of(nodes: &[Chain], t: Datetime, policy: &impl Policy<TodoEvent<Todo>>) -
     let state = fold(nodes);
     let mut env = Env::new();
     for (todo, stream) in state.entities() {
-        Registers::read(stream, Some(fpl::instant_of(t)), policy).bind(todo, &mut env);
+        prodrome::fold::read(stream, Some(fpl::instant_of(t)), policy).bind(todo, &mut env);
     }
     env
 }
@@ -778,9 +778,9 @@ proptest! {
         let env = prodrome::fold::env(prodrome, now, &policy);
         for row in &rows {
             let stream = &prodrome[&row.todo];
-            let registers = Registers::read(stream, Some(now), &policy);
+            let registers = prodrome::fold::read(stream, Some(now), &policy);
             prop_assert_eq!(&row.outcome, &registers.outcomes(), "outcome");
-            let claimed = Registers::read(stream, Some(now), &Everything).outcomes();
+            let claimed = prodrome::fold::read(stream, Some(now), &Everything).outcomes();
             let kinds = |c: &fpl::Candidates| -> BTreeSet<&str> {
                 c.iter().map(|b| b.map_or("open", |b| b.kind())).collect()
             };
@@ -855,7 +855,7 @@ proptest! {
         let now = fpl::instant_of(t);
         for row in view::entries(&nodes, t, &policy).expect("folds") {
             let stream = &state.prodromes()[&None][&row.todo];
-            let registers = Registers::read(stream, Some(now), &policy);
+            let registers = prodrome::fold::read(stream, Some(now), &policy);
             if registers.state.candidates().len() < 2 && registers.spec.candidates().len() < 2 {
                 continue;
             }
@@ -941,7 +941,7 @@ proptest! {
         let t = moment(when);
         let frontiers = |nodes: &[Chain]| -> BTreeMap<TodoId, [Vec<Hash>; 3]> {
             fold(nodes).entities().map(|(todo, stream)| {
-                let registers = Registers::read(stream, Some(fpl::instant_of(t)), &policy);
+                let registers = prodrome::fold::read(stream, Some(fpl::instant_of(t)), &policy);
                 (todo.clone(), [Kind::State, Kind::Spec, Kind::Content].map(|k| registers.frontier(k).names()))
             })
             .collect()
