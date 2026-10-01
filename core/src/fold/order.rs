@@ -4,7 +4,9 @@ use crate::literal::ProdromeError;
 
 /// A partial order on a register's values: reflexive, antisymmetric and
 /// transitive (§9). It decides which concurrent values are redundant, never
-/// which write supersedes which; ancestry alone does that.
+/// which write supersedes which; ancestry alone does that. Its own trait and
+/// not `PartialOrd`, so a type's derived or lexicographic order never becomes
+/// a register's by accident.
 pub trait Order {
     fn le(&self, other: &Self) -> bool;
 }

@@ -217,7 +217,8 @@ In this repository, each one PR:
    completion over `Frontier`, the inflationary refusal, laws 2 to 4. The
    todo registers are discrete; law 6 holds. BUILT: `fold::Order`,
    `fold::maximal` and `Frontier::read`, `fold::Inflationary` and
-   `fold::grows` on the store's append path; SPEC §6 and laws 30 to 32.
+   `fold::grows` (called by the store from stage 2, when a schema has an
+   inflationary register that supersedes); SPEC §6 and laws 30 to 32.
 2. **Schema.** The trait (vocabulary, key, registers as a product, route,
    valuation), the todo schema as its reference instance, stores and folds
    generic over it, `view` over a schema with a valuation. Law 1 and law 6.
