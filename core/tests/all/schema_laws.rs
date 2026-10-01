@@ -7,7 +7,12 @@
 //! review schema of `review.rs`: the law asks nothing of a schema, so neither
 //! may break it.
 //!
-//! Beside it, the one thing a schema says twice: the route's NAMES
+//! Law 5, VALUATION: a reading's price is `Least` over the terms its
+//! candidates price as, and `Least` is their meet in the fulfillment order.
+//! Stated over [`Price`] and run over both schemas; the todo's price is also
+//! a [`History`], whose moment with nothing first written is its reading.
+//!
+//! Beside them, the one thing a schema says twice: the route's NAMES
 //! (`Schema::writes`) and the route itself (`Product::join`, and each
 //! register type's `value`) agree, so a write joins exactly the frontiers its
 //! event names.
@@ -20,14 +25,15 @@ use prodrome::event::{
     mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, mk_tended, seal_hash,
     Envelope, Hash, TodoEvent,
 };
-use prodrome::fold::{read, Kind, Product, RegisterType};
-use prodrome::fpl::mk_flat;
+use prodrome::fold::{price, read, Kind, Product, RegisterType};
+use prodrome::fpl::{self, mk_flat, Closed, Env};
 use prodrome::genesis::mk_genesis;
 use prodrome::literal::Datetime;
 use prodrome::policy::Everything;
 use prodrome::reference::{mk_authored, Todo};
 use prodrome::registers::{extend, fold, Folded, Genesis, Node};
-use prodrome::schema::Schema;
+use prodrome::schema::{History, Price, Schema};
+use prodrome::term::Term;
 use proptest::prelude::*;
 
 use prodrome::todo::{Content, Spec, State};
@@ -166,6 +172,62 @@ fn free<E: Schema>(draw: &Draw<E>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// Every entity's registers in `draw`'s history, read whole.
+fn entities<E: Schema>(draw: &Draw<E>) -> Folded<E> {
+    let dag: Dag<E> = history(&draw.events).into_iter().collect();
+    fold(&dag.nodes().expect("a DAG"))
+}
+
+/// A term's value at `t`, `∅` (`None`) where it has none.
+fn value(term: &Term, t: Datetime) -> Option<f64> {
+    let closed = Closed::of(term.clone()).expect("no Ref");
+    fpl::fulfillment(&closed, fpl::instant_of(t), &Env::new())
+}
+
+/// Law 5 at one draw. A reading with no priced candidate has no price; one
+/// with one is priced as it, written as it; and a conflict's price is, at
+/// every instant, the least of its candidates' values, `∅` the top: below
+/// each, and attained.
+fn least<E: Price>(draw: &Draw<E>) -> Result<(), TestCaseError> {
+    let state = entities(draw);
+    for (key, stream) in state.entities() {
+        let registers = read(stream, None, &Everything);
+        let terms = E::terms(&registers).expect("valid terms");
+        let priced = price::<E>(&registers).expect("a price");
+        match (priced, terms.as_slice()) {
+            (None, []) => {}
+            (Some(priced), [one]) => prop_assert_eq!(&priced, one, "{:?}", key),
+            (Some(priced), many) if many.len() > 1 => {
+                for t in (0..6).map(|day| at(day * 86_400)) {
+                    let least = many
+                        .iter()
+                        .filter_map(|term| value(term, t))
+                        .reduce(f64::min);
+                    prop_assert_eq!(value(&priced, t), least, "{:?}", key);
+                }
+            }
+            (priced, terms) => prop_assert!(false, "{:?}: {:?} over {:?}", key, priced, terms),
+        }
+    }
+    Ok(())
+}
+
+/// A moment of a history with nothing first written and no head is the
+/// reading itself.
+fn historied<E: History>(draw: &Draw<E>) -> Result<(), TestCaseError> {
+    let state = entities(draw);
+    for (key, stream) in state.entities() {
+        let registers = read(stream, None, &Everything);
+        prop_assert_eq!(
+            E::moment(&registers, &E::Registers::default(), None).expect("valid terms"),
+            E::terms(&registers).expect("valid terms"),
+            "{:?}",
+            key
+        );
+    }
+    Ok(())
+}
+
 /// One write, folded alone, joins exactly the frontiers its event names.
 fn routed<E: Schema>(event: &E) -> Result<(), TestCaseError> {
     let dag: Dag<E> = history(&[(event.clone(), 0)]).into_iter().collect();
@@ -195,8 +257,9 @@ fn at(seconds: u32) -> Datetime {
 
 fn a_todo_event() -> impl Strategy<Value = TodoEvent<Todo>> {
     (0..2usize, 0..8u8, 0u32..5 * 86_400, 0..3u8).prop_map(|(todo, kind, seconds, note)| {
+        let flat = f64::from(note) / 4.0;
         let (todo, at, note) = (["alpha", "beta"][todo], at(seconds), format!("n{note}"));
-        let spec = || mk_flat(0.5).expect("valid");
+        let spec = || mk_flat(flat).expect("valid");
         let record = |spec| {
             mk_authored(
                 todo,
@@ -271,6 +334,17 @@ proptest! {
     #[test]
     fn a_review_reading_is_a_function_of_the_object_set(draw in a_draw(a_review_event())) {
         free(&draw)?;
+    }
+
+    #[test]
+    fn a_todo_conflict_prices_as_the_least_of_its_candidates(draw in a_draw(a_todo_event())) {
+        least(&draw)?;
+        historied(&draw)?;
+    }
+
+    #[test]
+    fn a_review_conflict_prices_as_the_least_of_its_candidates(draw in a_draw(a_review_event())) {
+        least(&draw)?;
     }
 
     #[test]
