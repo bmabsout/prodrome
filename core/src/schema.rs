@@ -141,10 +141,12 @@ pub trait Bind: Schema<Key: AsRef<str>> {
     fn bind(key: &Self::Key, registers: &Self::Registers<'_>, env: &mut Env);
 }
 
-/// What a priced row shows (§6.7). [`crate::view::entries`] asks for it, and
-/// nothing else does.
-pub trait Valuation: History + Bind {
-    /// What a priced row shows of an entity's registers.
+/// What a row of the list shows of an entity (§6.7), and when it tells a
+/// reader the policy refused or does not confirm a write.
+/// [`crate::view::entries`] asks for it, beside a [`History`] and a
+/// [`Bind`], and nothing else does.
+pub trait Row: Schema {
+    /// What a row shows of an entity's registers.
     type Reading: Clone + PartialEq + std::fmt::Debug;
 
     fn reading(registers: &Self::Registers<'_>) -> Self::Reading;

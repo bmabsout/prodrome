@@ -28,7 +28,7 @@
 //! A MODULE is a `cdylib` crate that depends on this one, on
 //! `prodrome-core`, and on `wasm-bindgen` at the version this crate pins
 //! (the version of the CLI it runs anyway); implements `Json` for each of
-//! its schemas (and `PricedJson` for each with a `Valuation`); and says, once
+//! its schemas (and `PricedJson` for each with a `Row`); and says, once
 //! per schema, `prodrome_wasm_exports::schema!(Reviews = Review);` or
 //! `prodrome_wasm_exports::schema!(Todos = TodoEvent<Record>, priced);`. It
 //! builds for `wasm32-unknown-unknown` and runs `wasm-bindgen` over the
@@ -51,7 +51,7 @@ use prodrome::literal::{Datetime, Value as Literal};
 use prodrome::payload::Payload;
 use prodrome::policy::Everything;
 use prodrome::registers::Node;
-use prodrome::schema::{Schema, Valuation};
+use prodrome::schema::{self, Bind, History, Schema};
 use prodrome::todo;
 use prodrome::view::{list_order, Entry};
 use serde_json::{json, Value};
@@ -87,9 +87,9 @@ pub trait Json: Schema<Key: AsRef<str>> {
     fn value(&self, register: Self::Register) -> Value;
 }
 
-/// What a schema with a [`Valuation`] says more to cross this boundary: its
+/// What a schema with a [`schema::Row`] says more to cross this boundary: its
 /// row's reading, as JSON.
-pub trait PricedJson: Json + Valuation {
+pub trait PricedJson: Json + schema::Row {
     /// A function of the reading alone, as [`Json::value`] is of a value.
     fn reading_json(reading: &Self::Reading) -> Value;
 }
@@ -126,8 +126,8 @@ impl<P: Payload> PricedJson for TodoEvent<P> {
 
 /// A schema's exports, in ONE module beside every other schema's: a JS class
 /// named `$name` for the schema `$schema`, which must implement
-/// [`Json`], and where `priced` is said, also
-/// [`prodrome::schema::Valuation`] and [`PricedJson`]. The invoking
+/// [`Json`], and where `priced` is said, also [`prodrome::schema::History`],
+/// [`prodrome::schema::Bind`] and [`PricedJson`]. The invoking
 /// crate depends on `wasm-bindgen` at this
 /// crate's pinned version, which is the version of the `wasm-bindgen` CLI it
 /// builds its module with anyway.
@@ -711,7 +711,7 @@ fn json_entry<E: PricedJson>(entry: &Entry<E>) -> Value {
 /// its price (`value` a number, `"absent"` for `∅`, `null` where it does not
 /// link and `unlinked` says why), its conflicts by register, its function as
 /// its §2 print, and its stream.
-pub fn entries<E: PricedJson>(
+pub fn entries<E: PricedJson + History + Bind>(
     replica: &Replica<E>,
     at: Option<String>,
     untrusted: &str,
@@ -736,7 +736,7 @@ pub fn entries<E: PricedJson>(
 /// where it has none), in `json.rs`'s term shape: what `link`,
 /// `fulfillment`, `explain` and `series_knots` take, so a page draws a price
 /// without a second reading of it.
-pub fn prices<E: PricedJson>(
+pub fn prices<E: History + Bind>(
     replica: &Replica<E>,
     at: Option<String>,
     untrusted: &str,
