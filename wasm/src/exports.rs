@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::dag::{Dag, Finding, Unread};
 use prodrome::event::{parents_of, Envelope, Hash, TodoEvent};
+use prodrome::fold::{Kind, Product};
 use prodrome::fpl::{datetime_of, instant_of, iso, Instant};
 use prodrome::literal::{Datetime, Value as Literal};
 use prodrome::payload::Payload;
@@ -19,7 +20,10 @@ use prodrome::schema::Schema;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::wire::{object, parse_names, parse_objects, strings, ObjectIn, Refusal};
+use crate::wire::{
+    json_literal, object, parse_moment, parse_names, parse_objects, parse_untrusted, strings,
+    ObjectIn, Refusal,
+};
 
 /// What a schema says to cross this boundary, beside what it says to be
 /// stored. Not a bound on [`Schema`]: JSON is this boundary's business, and a
@@ -31,6 +35,19 @@ pub trait Json: Schema<Key: AsRef<str>> {
     /// The field an event names its entity by, and so the field a row names
     /// it under: `"todo"` for the todo schema.
     const KEY: &'static str;
+
+    /// A register's name, the key its reading is under.
+    fn register(register: Self::Register) -> &'static str;
+
+    /// The VALUE this event writes to `register`, one [`Schema::writes`]
+    /// names, as JSON.
+    ///
+    /// A function of that value alone: two writes of one value answer the
+    /// same JSON, so a reading's JSON is a function of the reading, the
+    /// maximal values, and not of which writes carry them. Where a register's
+    /// value is the whole event, as under the todo schema's discrete order,
+    /// the event is the value.
+    fn value(&self, register: Self::Register) -> Value;
 }
 
 /// The todo schema, at any payload, crosses as it always has: each row names
@@ -38,6 +55,17 @@ pub trait Json: Schema<Key: AsRef<str>> {
 /// trait for the core's type.
 impl<P: Payload> Json for TodoEvent<P> {
     const KEY: &'static str = "todo";
+
+    fn register(kind: Kind) -> &'static str {
+        kind.as_str()
+    }
+
+    /// A todo register's value is the whole event that wrote it
+    /// (`todo::State`, `Spec`, `Content`), so its JSON is the event's §2
+    /// literal, by [`json_literal`]'s one mapping.
+    fn value(&self, _kind: Kind) -> Value {
+        json_literal(&Schema::to_value(self))
+    }
 }
 
 /// The name these bytes have: sha256 of the canonical print, exactly what
@@ -429,4 +457,54 @@ pub fn since<E: Schema>(replica: &Replica<E>, tips: &str) -> Result<String, Refu
         .map(|node| &node.name)
         .filter(|name| !held.contains(*name));
     printed(&object(vec![("since", names(since))]))
+}
+
+// --- §6: the registers, read ---------------------------------------------------
+
+/// Every entity's registers, read: each register [`Schema::REGISTERS`] names,
+/// as its READING (design §3), the writes whose values are maximal under its
+/// type's order, each `{hash, value}`. One is a value; more is a conflict;
+/// none is unwritten. A schema with no valuation is read whole by this.
+///
+/// At `at` (ISO, or `null` for every write the objects hold) and under
+/// `untrusted`, a list of actor names read as the reference policy (§5). Per
+/// entity in (genesis, key) order: `genesis` is the prodrome's, `null` for a
+/// legacy one, and the entity's key is under the schema's [`Json::KEY`].
+pub fn readings<E: Json>(
+    replica: &Replica<E>,
+    at: Option<String>,
+    untrusted: &str,
+) -> Result<String, Refusal> {
+    let nodes = replica.read()?.nodes;
+    let policy = parse_untrusted(untrusted)?;
+    let at = parse_moment("at", at)?;
+    let state = prodrome::registers::fold(nodes);
+    let mut rows = Vec::new();
+    for (genesis, prodrome) in state.prodromes() {
+        for (key, stream) in prodrome {
+            let registers = prodrome::fold::read(stream, at, &policy);
+            let readings = E::REGISTERS
+                .iter()
+                .map(|register| {
+                    let reading = registers
+                        .reading(*register)
+                        .into_iter()
+                        .map(|stamp| {
+                            json!({
+                                "hash": stamp.name.as_str(),
+                                "value": stamp.event.value(*register),
+                            })
+                        })
+                        .collect();
+                    (E::register(*register).to_owned(), Value::Array(reading))
+                })
+                .collect();
+            rows.push(object(vec![
+                ("genesis", json!(genesis.as_ref().map(Hash::as_str))),
+                (E::KEY, json!(key.as_ref())),
+                ("registers", Value::Object(readings)),
+            ]));
+        }
+    }
+    printed(&object(vec![("readings", Value::Array(rows))]))
 }

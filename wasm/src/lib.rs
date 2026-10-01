@@ -121,6 +121,16 @@ macro_rules! schema {
             pub fn since(&self, tips: &str) -> Result<String, wasm_bindgen::JsError> {
                 $crate::exports::thrown($crate::exports::since(&self.0, tips))
             }
+
+            /// §6: every entity's registers, each its maximal writes, at
+            /// `at` (ISO, or `null` for everything) under `untrusted`.
+            pub fn readings(
+                &self,
+                at: Option<String>,
+                untrusted: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::exports::thrown($crate::exports::readings(&self.0, at, untrusted))
+            }
         }
     };
 }
