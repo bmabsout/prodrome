@@ -69,8 +69,32 @@ under this file's rule: no stored byte moves, every vector reads as it did,
 and a store read through its memory reads exactly as one read cold. The API
 breaks where `dag()` answered a copy.
 
+And replicas (`docs/design-register-types.md` §6.1, stage 7): a store on
+disk, a store in memory and an overlay are one `Replica`, `sync` is the
+join of any two, and a coordinated decision is a type only the store on
+disk has. A MINOR change under this file's rule: no stored byte moves,
+every vector and export reads as it did, and the reference module's
+classes gain a method.
+
 ### Added
 
+- **Replicas (design §6.1, stage 7, SPEC §3 and law 35):** `store::Replica`,
+  what every store is: `held` (its objects, fold and tips of one look),
+  `tips`, `print`, `append` and `receive`, which takes in what some seeds
+  rest on, every object verified before any is taken, parents first.
+  `store::sync(from, to)`, one function over any two. `store::MemoryStore`,
+  a store in memory that appends by the decision an `EventStore` makes
+  (`Memory::change`), byte for byte. `store::Overlay`, which writes to
+  memory, reads `own ∪ base` from the base's memory with its own objects
+  admitted over it, and is flushed by `sync`. `store::Decision`, from
+  `EventStore::decide`: the lock held and the memory level with the
+  directory, reads as of the lock and an append written through; an
+  overlay and a store in memory have none (compile-fail doctests). A
+  borrowed replica is a replica.
+- **The wasm exports append:** each schema's class has `append(event,
+  genesis)`, sealing an event's print into the page's replica as a `Change`
+  over its own fold and answering `{hash, objects}`, the objects
+  (`[{hash, text}]`) to send the host, none for a twin.
 - **A store's memory (design §6.1, stage 7):** `EventStore` holds every
   object it has read, each verified once (rehashed from its file, or sealed
   by its own append), their tips and their fold. A read or an append lists
