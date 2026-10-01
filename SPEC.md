@@ -218,6 +218,28 @@ since this grammar has tuples and no mapping.
   changes no name (law 29).
 - **`merge(parents)`** writes a `Woven` over them, every legacy tip by
   default: a legacy store's join, which a store of changes never needs.
+- **A replica** is any set of objects closed under parents that reads (its
+  objects, their fold, its tips), appends and receives: a store on disk, a
+  store in memory, or an overlay. `receive(seeds)` takes in what `seeds`
+  rest on that it lacks, verifying every object as `adopt` does before it
+  takes any, parents first. An append decides on what the replica holds by
+  the rules above, so two replicas holding the same objects write the same
+  bytes, wherever each is held.
+- **`sync(from, to)`** is `to.receive(from.tips())`: `to ∪ from`, the join.
+  It reads no register. It is idempotent and order-free, and a sync cut
+  short leaves `to` closed under parents and is completed by the next
+  (law 35).
+- **An overlay** over a replica writes to memory and reads `own ∪ base`:
+  the base's objects and fold, with its own objects folded over them. It
+  writes nothing to the base until flushed, and its flush is `sync(overlay,
+  base)`.
+- **A decision is the store of record's.** A question no monotone reading
+  answers ("is it still standing, so I may perform?") is asked of a store on
+  disk under its lock, and the record of its answer appended and synced
+  before the lock is let go and the effect performed. A store in memory and
+  an overlay hold no lock another writer takes and do not write through, so
+  no decision is asked of one; monotone writes need no lock, and every
+  replica appends them.
 
 ## 4. Events
 
@@ -762,7 +784,10 @@ take no environment because a compiled term cannot consult one, and
 an unwritten register, and its candidates; `Order`, a partial order on a
 register's values (`Discrete` by default, `Total`, inclusion on a set), and
 `Inflationary`, a register type's declaration that a write only grows its
-reading; `Folded`; `Breaks`; `Entry`
+reading; `Folded`; `Replica`, what every store is (§3), and `sync`, generic over
+two of them; `Decision`, the store of record locked, the only value a
+coordinated decision is asked of and one only a store on disk makes;
+`Breaks`; `Entry`
 (§6.7) over a schema with a valuation, keyed by genesis and key, whose
 reading is the schema's (a todo's outcome is a candidate set), whose
 function is always
@@ -1041,6 +1066,21 @@ through the entry; its law 6 is law 22.
     first written and no head is its reading's terms.
     `schema_laws.rs::a_todo_conflict_prices_as_the_least_of_its_candidates`,
     `schema_laws.rs::a_review_conflict_prices_as_the_least_of_its_candidates`.
+
+The design's law 7 is law 35: replicas, wherever each is held.
+
+35. **Sync is the join.** Between any two replicas, on disk or in memory, a
+    sync whose wire is cut takes nothing; a sync of a down-set and then a
+    whole one leaves the receiver reading what a fresh store reads of the
+    union of both directories, a second sync takes nothing, and two
+    replicas synced into a third in either order read the same. A store in
+    memory answers every append of any history as a store on disk does,
+    byte for byte. An overlay reads and appends as a store given its own
+    objects and its base's, its base reads as one given only what reached
+    it, and its flush leaves the base reading the union.
+    `replica.rs::sync_is_the_join`,
+    `replica.rs::a_store_in_memory_appends_what_a_disk_store_appends`,
+    `replica.rs::an_overlay_reads_as_its_union_until_it_is_flushed`.
 
 ## 10. Non-goals
 

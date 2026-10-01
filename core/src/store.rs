@@ -1,5 +1,7 @@
 //! §3 — the files around a [`Dag`]: objects on disk, the lock, durable
-//! placement, quarantine, `adopt`/`merge`.
+//! placement, quarantine, `adopt`/`merge`; and every other [`Replica`] of
+//! the same objects (a [`MemoryStore`], an [`Overlay`]), [`sync`] between
+//! any two, and the [`Decision`] only a store on disk can make.
 //!
 //! Objects live at `root/objects/<name>.py`, one canonical constructor
 //! expression per file, the filename being the sha256 of its own bytes. THAT IS
