@@ -31,16 +31,23 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use typst::diag::{Severity, SourceDiagnostic};
 use typst::syntax::{highlight as tag_of, LinkedNode, Side, Source};
-use typst::WorldExt;
+use typst::{World, WorldExt};
 use typst_html::{HtmlDocument, HtmlOptions};
 use typst_ide::{Completion, CompletionKind, Tooltip};
 use wasm_bindgen::prelude::*;
 
-pub mod offsets;
-pub mod world;
+mod offsets;
+mod world;
 
 use offsets::Offsets;
 use world::Sandbox;
+
+/// The key `compile_html`'s source is compiled under, and its diagnostics
+/// name.
+const MAIN: &str = "/main.typ";
+
+/// The key a `Project`'s state is read at.
+const STATE: &str = "/state.json";
 
 /// The Typst version this module was built against — the version the page's
 /// documents are written for.
@@ -135,7 +142,7 @@ fn diagnostic(world: &Sandbox, diag: &SourceDiagnostic) -> Diagnostic {
         severity,
         message: diag.message.to_string(),
         hints: diag.hints.iter().map(|hint| hint.v.to_string()).collect(),
-        file: file.map(|id| world.key(id)),
+        file: file.map(world::key_of),
         from,
         to,
     }
@@ -155,49 +162,105 @@ fn refusal(message: String) -> Compiled {
     }
 }
 
-fn compile(source: &str, files_json: &str) -> Compiled {
-    let files: BTreeMap<String, String> = match serde_json::from_str(files_json) {
-        Ok(files) => files,
-        Err(e) => return refusal(format!("files must be a JSON object of path to text: {e}")),
-    };
-    let world = match Sandbox::new(source, files) {
-        Ok(world) => world,
-        Err(e) => return refusal(e),
-    };
-    let warned = typst::compile::<HtmlDocument>(&world);
+/// Compile the world's prepared main file to HTML, then drop memoised results
+/// older than a few compilations, so a page left open over an afternoon of
+/// keystrokes does not grow without bound.
+fn compile(world: &Sandbox) -> Compiled {
+    let warned = typst::compile::<HtmlDocument>(world);
     let mut diagnostics: Vec<Diagnostic> =
-        warned.warnings.iter().map(|d| diagnostic(&world, d)).collect();
+        warned.warnings.iter().map(|d| diagnostic(world, d)).collect();
     let html = match warned.output {
         Ok(document) => match typst_html::html(&document, &HtmlOptions { pretty: false }) {
             Ok(html) => Some(html),
             Err(errors) => {
-                diagnostics.extend(errors.iter().map(|d| diagnostic(&world, d)));
+                diagnostics.extend(errors.iter().map(|d| diagnostic(world, d)));
                 None
             }
         },
         Err(errors) => {
-            diagnostics.extend(errors.iter().map(|d| diagnostic(&world, d)));
+            diagnostics.extend(errors.iter().map(|d| diagnostic(world, d)));
             None
         }
     };
-    // Memoised results older than a few compilations are dropped, so a page
-    // left open over an afternoon of keystrokes does not grow without bound.
     typst::comemo::evict(10);
     Compiled { html, diagnostics }
 }
 
-/// Compile `source` to one HTML document.
+/// A world of one main source and the files in `files_json`, made for one
+/// compilation.
+fn compile_once(source: &str, files_json: &str) -> Compiled {
+    let files: BTreeMap<String, String> = match serde_json::from_str(files_json) {
+        Ok(files) => files,
+        Err(e) => return refusal(format!("files must be a JSON object of path to text: {e}")),
+    };
+    let mut world = Sandbox::new();
+    let set = files
+        .iter()
+        .try_for_each(|(key, text)| world.set(key, text).map(drop))
+        .and_then(|()| world.set(MAIN, source).map(drop))
+        .and_then(|()| world.prepare(MAIN));
+    match set {
+        Ok(()) => compile(&world),
+        Err(e) => refusal(e),
+    }
+}
+
+/// Compile `source` to one HTML document, in a world made for this call.
 ///
 /// `files_json` is a JSON object from a path to that file's text: `/data.json`
 /// in the project, or `@local/prodrome-typst:0.1.0/lib.typ` inside a package,
 /// which is how `#import "@local/prodrome-typst:0.1.0"` finds its files.
+/// `source` is `/main.typ`.
 ///
 /// Answers `{html, diagnostics}` as JSON: `html` is the document, or `null`
 /// when an error stopped it; `diagnostics` holds the errors and warnings, each
 /// `{severity, message, hints, file, from, to}`.
 #[wasm_bindgen]
 pub fn compile_html(source: &str, files_json: &str) -> String {
-    json(&compile(source, files_json))
+    json(&compile_once(source, files_json))
+}
+
+/// A world kept between compilations: what a host that recompiles its views
+/// as its state changes holds one of.
+///
+/// Each file is set on its own, and setting one again with an edit reparses
+/// only the edit; the state is the argument of each compilation, read by the
+/// views as `json("/state.json")`. Everything memoised about a file or the
+/// state that did not change is reused.
+#[wasm_bindgen]
+pub struct Project {
+    world: Sandbox,
+}
+
+#[wasm_bindgen]
+impl Project {
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    #[allow(clippy::new_without_default)] // a JS constructor, not a Rust API
+    pub fn new() -> Project {
+        Project { world: Sandbox::new() }
+    }
+
+    /// Set or replace the file at `key` (a key as `compile_html`'s files
+    /// have). Answers `undefined`, or why the key names no file.
+    pub fn set(&mut self, key: &str, text: &str) -> Option<String> {
+        self.world.set(key, text).err()
+    }
+
+    /// Forget the file at `key`; answers whether there was one.
+    pub fn remove(&mut self, key: &str) -> bool {
+        self.world.remove(key)
+    }
+
+    /// Compile the file at `main`, set before, with `state` as
+    /// `/state.json`. Answers what `compile_html` does.
+    pub fn compile(&mut self, main: &str, state: &str) -> String {
+        let prepared = self.world.set(STATE, state).and_then(|_| self.world.prepare(main));
+        json(&match prepared {
+            Ok(()) => compile(&self.world),
+            Err(e) => refusal(e),
+        })
+    }
 }
 
 // --- highlight ---------------------------------------------------------------
@@ -206,7 +269,12 @@ pub fn compile_html(source: &str, files_json: &str) -> String {
 /// nesting `typst_syntax::highlight_html` prints, flattened into spans that do
 /// not overlap, so a page can colour them without building a tree.
 fn spans(source: &Source) -> Vec<Highlight> {
-    fn walk(node: &LinkedNode, inherited: Option<&'static str>, offsets: &Offsets, out: &mut Vec<Highlight>) {
+    fn walk(
+        node: &LinkedNode,
+        inherited: Option<&'static str>,
+        offsets: &Offsets,
+        out: &mut Vec<Highlight>,
+    ) {
         let tag = tag_of(node).map(|tag| tag.css_class()).or(inherited);
         if node.children().len() == 0 {
             let range = node.range();
@@ -238,6 +306,15 @@ pub fn highlight(source: &str) -> String {
 
 // --- complete and hover ------------------------------------------------------
 
+/// A world of `source` alone, as `/main.typ`, and its parse.
+fn alone(source: &str) -> Option<(Sandbox, Source)> {
+    let mut world = Sandbox::new();
+    let id = world.set(MAIN, source).ok()?;
+    world.prepare(MAIN).ok()?;
+    let main = world.source(id).ok()?;
+    Some((world, main))
+}
+
 /// A completion's `apply` is snippet syntax — `${name}` for a placeholder,
 /// `${}` for an empty one. A textarea has no placeholders, so they are
 /// removed, and the cursor goes where the first one was.
@@ -246,7 +323,9 @@ fn unsnippet(apply: &str) -> (String, usize) {
     let mut cursor = None;
     let mut rest = apply;
     while let Some(start) = rest.find("${") {
-        let Some(len) = rest[start..].find('}') else { break };
+        let Some(len) = rest[start..].find('}') else {
+            break;
+        };
         text.push_str(&rest[..start]);
         cursor.get_or_insert(text.encode_utf16().count());
         rest = &rest[start + len + 1..];
@@ -286,19 +365,14 @@ fn narrowed(completions: Vec<Completion>, typed: &str) -> Vec<Completion> {
 /// (Ctrl+Space) rather than one typing implied, and widens what is offered.
 #[wasm_bindgen]
 pub fn complete(source: &str, cursor: usize, explicit: Option<bool>) -> String {
-    let Ok(world) = Sandbox::new(source, BTreeMap::new()) else {
+    let Some((world, main)) = alone(source) else {
         return "null".to_owned();
     };
-    let main = world.main_source();
+    let main = &main;
     let offsets = Offsets::of(main.text());
     let at = offsets.byte(cursor);
-    let found = typst_ide::autocomplete(
-        &world,
-        None::<&HtmlDocument>,
-        main,
-        at,
-        explicit.unwrap_or(false),
-    );
+    let found =
+        typst_ide::autocomplete(&world, None::<&HtmlDocument>, main, at, explicit.unwrap_or(false));
     match found {
         Some((from, completions)) => {
             let typed = main.text().get(from..at).unwrap_or("");
@@ -315,10 +389,10 @@ pub fn complete(source: &str, cursor: usize, explicit: Option<bool>) -> String {
 /// `"text"` or `"code"`, or `null`.
 #[wasm_bindgen]
 pub fn hover(source: &str, cursor: usize) -> String {
-    let Ok(world) = Sandbox::new(source, BTreeMap::new()) else {
+    let Some((world, main)) = alone(source) else {
         return "null".to_owned();
     };
-    let main = world.main_source();
+    let main = &main;
     let at = Offsets::of(main.text()).byte(cursor);
     match typst_ide::tooltip(&world, None::<&HtmlDocument>, main, at, Side::After) {
         Some(Tooltip::Text(text)) => json(&Hover { kind: "text", text: text.to_string() }),
@@ -333,7 +407,7 @@ mod tests {
 
     #[test]
     fn a_document_compiles_to_html() {
-        let answer = compile("= Hello\n\nA *strong* word.", "{}");
+        let answer = compile_once("= Hello\n\nA *strong* word.", "{}");
         let html = answer.html.expect("it compiles");
         assert!(html.contains("<h2>Hello</h2>") || html.contains("Hello"), "{html}");
         assert!(html.contains("<strong>strong</strong>"), "{html}");
@@ -343,13 +417,9 @@ mod tests {
     fn an_error_is_a_value_with_its_span() {
         // `é` is two bytes and one UTF-16 unit: the span must count units.
         let source = "é #nope";
-        let answer = compile(source, "{}");
+        let answer = compile_once(source, "{}");
         assert!(answer.html.is_none());
-        let error = answer
-            .diagnostics
-            .iter()
-            .find(|d| d.severity == "error")
-            .expect("an error");
+        let error = answer.diagnostics.iter().find(|d| d.severity == "error").expect("an error");
         assert_eq!(error.file.as_deref(), Some("/main.typ"));
         assert_eq!((error.from, error.to), (Some(3), Some(7)));
     }
@@ -362,7 +432,7 @@ mod tests {
                 "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\nentrypoint = \"lib.typ\"\n",
             "@local/pkg:0.1.0/lib.typ": "#let twice(n) = 2 * n",
         });
-        let answer = compile(
+        let answer = compile_once(
             "#import \"@local/pkg:0.1.0\": twice\n#twice(json(\"/data.json\").n)",
             &files.to_string(),
         );
@@ -372,16 +442,57 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_an_error_not_a_panic() {
-        let answer = compile("#read(\"/absent.txt\")", "{}");
+        let answer = compile_once("#read(\"/absent.txt\")", "{}");
         assert!(answer.html.is_none());
         assert!(!answer.diagnostics.is_empty());
     }
 
     #[test]
     fn bad_files_are_refused_as_a_value() {
-        let answer = compile("hi", "[1, 2]");
+        let answer = compile_once("hi", "[1, 2]");
         assert!(answer.html.is_none());
         assert_eq!(answer.diagnostics.len(), 1);
+    }
+
+    fn compiled(answer: &str) -> serde_json::Value {
+        serde_json::from_str(answer).expect("json")
+    }
+
+    #[test]
+    fn a_project_compiles_its_files_over_its_state() {
+        let mut project = Project::new();
+        assert_eq!(project.set("/lib.typ", "#let twice(n) = 2 * n"), None);
+        assert_eq!(
+            project
+                .set("/view.typ", "#import \"/lib.typ\": twice\n#twice(json(\"/state.json\").n)"),
+            None
+        );
+        let first = compiled(&project.compile("/view.typ", "{\"n\": 7}"));
+        assert!(first["html"].as_str().is_some_and(|html| html.contains("14")), "{first}");
+        let second = compiled(&project.compile("/view.typ", "{\"n\": 8}"));
+        assert!(second["html"].as_str().is_some_and(|html| html.contains("16")), "{second}");
+        project.set("/lib.typ", "#let twice(n) = 3 * n");
+        let edited = compiled(&project.compile("/view.typ", "{\"n\": 8}"));
+        assert!(edited["html"].as_str().is_some_and(|html| html.contains("24")), "{edited}");
+    }
+
+    #[test]
+    fn a_project_refuses_as_a_value() {
+        let mut project = Project::new();
+        assert!(project.set("@nope", "").is_some());
+        let unset = compiled(&project.compile("/view.typ", "{}"));
+        assert!(unset["html"].is_null());
+        project.set("/view.typ", "#nope");
+        let error = compiled(&project.compile("/view.typ", "{}"));
+        let files: Vec<_> = error["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .iter()
+            .map(|d| &d["file"])
+            .collect();
+        assert!(files.contains(&&serde_json::json!("/view.typ")), "{error}");
+        assert!(project.remove("/view.typ"));
+        assert!(!project.remove("/view.typ"));
     }
 
     #[test]
