@@ -100,6 +100,7 @@
 //! - `dag`      — §3: the DAG as a value: tips, closure, linearisation, verify
 //! - `store`    — §3: the files around a `Dag` (the lock, placement, quarantine),
 //!   and replicas: one in memory, an overlay, `sync` and a `Decision`
+//! - `memo`     — design §6.2: caches as tabulations of pure functions
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
@@ -121,6 +122,7 @@ pub mod fold;
 pub mod fpl;
 pub mod genesis;
 pub mod literal;
+pub mod memo;
 pub mod payload;
 pub mod policy;
 /// The reference payload — the record shape `conformance/*.py` was taken

@@ -20,6 +20,7 @@ mod fpl_vectors;
 mod fuzz;
 mod link_vectors;
 mod literals;
+mod memo;
 mod memory;
 mod order_laws;
 mod recur_vectors;
