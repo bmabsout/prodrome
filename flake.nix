@@ -415,6 +415,17 @@
             doInstallCargoArtifacts = false;
             installPhaseCommand = "touch $out";
           });
+          # What a host recompiling its views pays, old export against new,
+          # on the published modules (`typst-wasm/bench/views.mjs`): a
+          # verdict that every compilation it times answers the HTML it
+          # should, and the timings and memory as its output, `$out/BENCH`.
+          prodrome-typst-wasm-bench = pkgs.runCommand "prodrome-typst-wasm-bench"
+            { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            mkdir -p $out
+            node ${./typst-wasm/bench/views.mjs} ${prodrome-typst-wasm}/web ${prodrome-typst-wasm-views}/web \
+              > $out/BENCH
+            cat $out/BENCH
+          '';
           # The Typst package compiles its examples with the typst the
           # pinned nixpkgs ships — 0.15.1, the version typst-wasm pins — to
           # PDF and to HTML, so a layout that breaks either target fails here,
