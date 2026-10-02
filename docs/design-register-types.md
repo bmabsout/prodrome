@@ -271,6 +271,40 @@ What this removes: per-page loads (a page reads the replica), polling (sync
 drives the reading), the class of races between a load and a reload (there
 are no loads, only a set that grows), and every pending flag.
 
+**A view is a document over a typed value, so views are data.** Once the
+reading is one value of a declared schema (the module's `schema!` answers it),
+`view` need not be code in the client's language: it can be a Typst function
+of that value, compiled live by `typst-wasm` to HTML. Three things make that
+safe whoever wrote the view:
+
+- the compile's world holds only the view's modules and the state, as data
+  (text in the state is a string, never markup, and nothing evaluates it);
+- the output passes a tripwire that refuses a script, an inline handler or a
+  `javascript:` link, so a view cannot act by itself;
+- a control declares its intent as data (`data-intent`), and the client parses
+  it at the boundary against a CLOSED vocabulary of intents; the non-monotone
+  ones still go through a `Decision`.
+
+So a view can do nothing a person's tap could not, and adding a page or a
+popup is adding a module, not a build. Which party may write a module (the
+application, its user, an agent working for them) is the application's
+choice; the structure allows each and prescribes none. Keystroke-rate state
+(text being typed, scroll, a stream) stays in client-owned islands, so a
+keystroke never recompiles a view.
+
+**Open, for after views are pure: state that is data too.** Views as data
+give an agent new pages over the schemas that exist. The next step is an agent
+adding STATE of its own: a new register type (its order, whether it is
+inflationary) or a new store, appended live and run as a module (wasm, perhaps
+a WASI component) beside the schemas the application ships. Admission would
+then be a law check rather than a review: the order really is a partial
+order, an inflationary register really only climbs, the reading is a function
+of the object set, its intents fall in the closed vocabulary. Which laws can
+be checked mechanically (by construction, by property test at admission, by a
+proof the module carries), and what a module that fails one later costs the
+stores built on it, is not yet thought through. Recorded so the pure-view work
+does not close the door on it.
+
 ### 6.1 Replicas: memory and disk
 
 A store in memory and a store on disk are not two kinds of thing. Each is a
