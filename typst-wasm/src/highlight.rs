@@ -1,7 +1,7 @@
 //! `highlight`: the editor's syntax colouring.
 
 use serde::Serialize;
-use typst::syntax::{highlight as tag_of, LinkedNode, Source};
+use typst::syntax::{highlight as tag_of, LinkedNode, Source, Tag};
 use wasm_bindgen::prelude::*;
 
 use crate::json;
@@ -24,7 +24,7 @@ fn spans(source: &Source) -> Vec<Highlight> {
         offsets: &Offsets,
         out: &mut Vec<Highlight>,
     ) {
-        let tag = tag_of(node).map(|tag| tag.css_class()).or(inherited);
+        let tag = tag_of(node).map(Tag::css_class).or(inherited);
         if node.children().len() == 0 {
             let range = node.range();
             if let (Some(tag), false) = (tag, range.is_empty()) {

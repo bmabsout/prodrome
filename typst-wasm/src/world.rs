@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock, PoisonError, RwLock};
 
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime, Duration};
@@ -46,7 +46,7 @@ static FONTS: LazyLock<RwLock<Arc<Fonts>>> = LazyLock::new(|| {
 });
 
 fn fonts() -> Arc<Fonts> {
-    FONTS.read().map(|set| set.clone()).unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    FONTS.read().map_or_else(|poisoned| poisoned.into_inner().clone(), |set| set.clone())
 }
 
 /// Add every face in one TTF, OTF or collection file; answers how many faces
@@ -55,7 +55,7 @@ pub fn add_font(data: Vec<u8>) -> usize {
     let faces: Vec<Font> = Font::iter(Bytes::new(data)).collect();
     let added = faces.len();
     if added > 0 {
-        let mut set = FONTS.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut set = FONTS.write().unwrap_or_else(PoisonError::into_inner);
         let mut all = set.fonts.clone();
         all.extend(faces);
         let book = LazyHash::new(FontBook::from_fonts(&all));
@@ -231,7 +231,7 @@ mod tests {
         let id = world.set("/a.typ", "= A").expect("a key");
         let (bytes, source) = (world.file(id).expect("set"), world.source(id).expect("set"));
         world.set("/a.typ", "= A").expect("a key");
-        assert!(world.file(id).expect("set") == bytes);
+        assert_eq!(world.file(id).expect("set"), bytes);
         assert!(std::ptr::eq(world.source(id).expect("set").root(), source.root()));
     }
 
