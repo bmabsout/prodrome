@@ -195,7 +195,8 @@
         # dependencies built once, the same pinned wasm-bindgen, `wasm-opt
         # -Os` — with the `web/` glue only: its one consumer is the viewer.
         # `SIZES` records the module raw and brotli-compressed, since the size
-        # is what a first visit pays.
+        # is what a first visit pays, and `web/typst_bg.wasm.br` is that
+        # brotli file, quality 11.
         typstCommon = {
           version = "0.1.0";
           src = lib.fileset.toSource {
@@ -252,8 +253,12 @@
             wasm-bindgen --target web --out-dir "$out/web" --out-name typst "$wasm"
             # shellcheck disable=SC2086
             wasm-opt -Os $features -o "$out/web/typst_bg.wasm" "$out/web/typst_bg.wasm"
+            # PRECOMPRESSED, so a host serves `typst_bg.wasm.br` with
+            # `Content-Encoding: br` and never compresses 20 MB per request,
+            # nor settles for the quality an on-the-fly compressor can afford.
+            brotli -q 11 -o "$out/web/typst_bg.wasm.br" "$out/web/typst_bg.wasm"
             raw=$(stat -c %s "$out/web/typst_bg.wasm")
-            brotli=$(brotli -c -q 11 "$out/web/typst_bg.wasm" | wc -c)
+            brotli=$(stat -c %s "$out/web/typst_bg.wasm.br")
             printf 'typst_bg.wasm\t%s bytes raw\t%s bytes brotli\n' "$raw" "$brotli" | tee "$out/SIZES"
           '';
 
