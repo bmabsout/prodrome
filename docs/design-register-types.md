@@ -222,6 +222,55 @@ What stays out of the store: events too frequent or too local to deserve an
 object (a keystroke, a streaming answer's text). They are in-memory registers
 of the same types, never content-addressed.
 
+### 6.0 The whole application is a reading
+
+Not only a card: the whole client is one function,
+
+    screen(t) = view(reading(history ∪ intents), ui, t)
+
+over exactly four sources, each a semilattice or a time:
+
+- **history**: the objects synced from the host, a grow-only set (§1);
+- **intents**: what the page asked for and the history does not yet hold, a
+  grow-only set retracted by subsumption (§6);
+- **ui**: the client's own registers (below);
+- **t**: the clock. A price is already a behaviour, a function of time (§7):
+  the list is the reading sampled at `t`, so a ticking clock re-sorts it and
+  nothing refreshes.
+
+**Navigation is a register.** The route is a register of the ui tier;
+switching pages or opening an entity is an event that writes it, and the
+screen is a different projection of readings the replica already holds:
+nothing mounts or loads. History is a log of route events, so "back" moves a
+pointer and reads again; a deep link is a route value printed. Selection,
+focus, an open sheet, scroll and an unsent draft are registers of the same
+kind, folded the same way, and a key binding or a palette entry is an event
+mapped to an intent. A transition is a behaviour of time.
+
+**Sync is chosen per register.** Every register is the same type whatever
+tier it lives in, so whether it syncs is a property of the register, not of
+the mechanism: a route stays on its device, a draft may follow its writer
+from one device to another, and "what this device has open" may be a
+per-device register another device follows. One writer per device means no
+conflict within it; across devices, two opens are two candidates like any
+register's.
+
+**Effects are intents, all of them.** A monotone act (complete, edit, add) is
+sealed into the client's replica and synced (§6.1); a non-monotone one (send
+this message) is a request the host answers with a `Decision` under its lock
+(§6.1). Either way the page shows it pending until the history subsumes it,
+so no pending state is ever set by hand and none can be left behind.
+
+**The host is the same shape.** Its background work is rules over registers:
+"when a reading has property P, perform E under a `Decision`, and record the
+outcome" (an answer owed in a conversation, a proposal standing and tapped, a
+queue of new work). The rules that need a lock are exactly the non-monotone
+ones, as CALM says.
+
+What this removes: per-page loads (a page reads the replica), polling (sync
+drives the reading), the class of races between a load and a reload (there
+are no loads, only a set that grows), and every pending flag.
+
 ### 6.1 Replicas: memory and disk
 
 A store in memory and a store on disk are not two kinds of thing. Each is a
@@ -332,7 +381,10 @@ In a host (the first one), after stage 2:
    once, on a copy first, with every proposal's reading pinned.
 5. **Conversations as a conversation schema** (a transcript as a grow-only
    set in causal order; owed as a reading).
-6. **A page as a fold over history ∪ intents**, the proposal card first.
+6. **The whole client as a reading** (§6.0): every store a replica on the
+   client, intents as one set, the ui (the route first) as registers, the
+   clock as a source; pages as pure views with no loads; then the host's
+   background work as rules over registers.
 
 In this repository, after stage 3:
 
