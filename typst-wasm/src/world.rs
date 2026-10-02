@@ -20,7 +20,7 @@ use std::str::FromStr;
 use std::sync::{Arc, LazyLock, OnceLock, PoisonError, RwLock};
 
 use typst::diag::{FileError, FileResult};
-use typst::foundations::{Bytes, Datetime, Duration};
+use typst::foundations::{Binding, Bytes, Datetime, Duration, Module, Scope};
 use typst::syntax::package::PackageSpec;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
@@ -30,9 +30,33 @@ use typst::{Feature, Library, LibraryExt, World};
 /// The standard library, with HTML export switched on — the same thing
 /// `typst compile --features html` builds. Built once per module instance:
 /// it holds no state a compilation could leave behind.
-static LIBRARY: LazyLock<LazyHash<Library>> = LazyLock::new(|| {
-    LazyHash::new(Library::builder().with_features([Feature::Html].into_iter().collect()).build())
+static LIBRARY: LazyLock<LazyHash<Library>> = LazyLock::new(|| LazyHash::new(library()));
+
+/// The names a restricted world's library does not have: `html`, which spells
+/// any element and attribute, so markup could reach past what the output's
+/// tripwire is for; and `plugin`, which runs WebAssembly.
+const WITHHELD: [&str; 2] = ["html", "plugin"];
+
+/// The standard library without [`WITHHELD`], for markup whose author is not
+/// trusted. Removed from the global scope and from `std` alike, which is the
+/// same module, so no path names them: not `std.html`, not `eval`, which
+/// reads this library too.
+static RESTRICTED: LazyLock<LazyHash<Library>> = LazyLock::new(|| {
+    let mut library = library();
+    let mut scope = Scope::new();
+    for (name, binding) in library.global.scope().iter() {
+        if !WITHHELD.contains(&name.as_str()) {
+            scope.bind(name.clone(), binding.clone());
+        }
+    }
+    library.global = Module::new("global", scope);
+    library.std = Binding::detached(library.global.clone());
+    LazyHash::new(library)
 });
+
+fn library() -> Library {
+    Library::builder().with_features([Feature::Html].into_iter().collect()).build()
+}
 
 /// The fonts added so far, and the book indexing them. Replaced whole on each
 /// addition, so a world holding the old set keeps a consistent one.
@@ -107,16 +131,23 @@ impl Slot {
     }
 }
 
-/// A world: files by id, and which of them is the one compiled.
+/// A world: files by id, which of them is the one compiled, and the library
+/// they see.
 pub struct Sandbox {
     main: Option<FileId>,
     slots: HashMap<FileId, Slot>,
     fonts: Arc<Fonts>,
+    library: &'static LazyHash<Library>,
 }
 
 impl Sandbox {
     pub fn new() -> Sandbox {
-        Sandbox { main: None, slots: HashMap::new(), fonts: fonts() }
+        Sandbox { main: None, slots: HashMap::new(), fonts: fonts(), library: &LIBRARY }
+    }
+
+    /// A world whose library lacks [`WITHHELD`].
+    pub fn restricted() -> Sandbox {
+        Sandbox { library: &RESTRICTED, ..Sandbox::new() }
     }
 
     /// Set or replace the file at `key` (see [`id_of`]). The same text again
@@ -170,7 +201,7 @@ impl Sandbox {
 
 impl World for Sandbox {
     fn library(&self) -> &LazyHash<Library> {
-        &LIBRARY
+        self.library
     }
 
     fn book(&self) -> &LazyHash<FontBook> {
