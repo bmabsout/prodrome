@@ -37,6 +37,13 @@ pub enum Rounding {
 /// as step 0 and `1` as step `levels`, and reads `∅`, and only `∅`, as `∅`.
 /// So the set of values one step observes is an interval, which is what lets
 /// a behaviour's observed value be a step function of time.
+///
+/// MONOTONICITY IS THE LAW [`next_change`] RESTS ON, and the only one: a
+/// monotone map of an affine stretch is monotone, so bisection finds its
+/// step, and a monotone map of an interval is one step exactly when its two
+/// ends are. Any finer or coarser cut of `[0, 1]` is the same type with a
+/// different `levels`; the observation is an argument, never a constant of
+/// the term or the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Observation {
     levels: NonZeroU32,
