@@ -32,10 +32,11 @@ pub trait Tree {
 
 /// An `f`-algebra over a tree: what a node is, given what its children are.
 ///
-/// It must be PURE: a function of the node's named content and its
-/// children's results, and of nothing its name does not cover. Its own name
-/// covers its code and everything that code reads, so two algebras share a
-/// cache without sharing an entry.
+/// `apply` is `alg` applied to one layer of the functor: the node stands
+/// for its own content, and the children's results fill its recursive
+/// positions. It must be PURE: a function of that layer and of nothing the
+/// node's name does not cover. Its own name covers its code and everything
+/// that code reads, so two algebras share a cache without sharing an entry.
 pub trait Algebra<T: ?Sized> {
     /// What the fold answers at each node.
     type Out;
@@ -136,11 +137,14 @@ enum Frame<'t, T> {
 /// The algebra folded over `tree` bottom-up, memoised in `cache` at every
 /// node by (the algebra's name, the node's name), with what it looked at.
 ///
-/// Its value is the plain fold's, whatever the cache holds of a pure
-/// algebra: a held value is the one the algebra computes, an entry dropped
-/// is computed again, and a key holding two values is computed, never
-/// chosen, and reported. Iterative, so a tree's depth costs heap and not
-/// stack.
+/// Its value is the plain fold's (`memo f = f`) whatever entries were
+/// dropped, wherever the cache's entries were made by a pure algebra's
+/// folds, here or in a cache joined into this one: a held value is the one
+/// the algebra computes, an entry dropped is computed again, and a key
+/// holding two values is computed, never chosen, and reported. A single
+/// value an untrusted writer put at a key nothing else filled is a claim,
+/// which only recomputing it checks. Iterative, so a tree's depth costs
+/// heap and not stack.
 // Its one `expect` cannot fire: every node entered leaves exactly one value,
 // so the root's is the one left when the stack empties.
 #[allow(clippy::missing_panics_doc)]
