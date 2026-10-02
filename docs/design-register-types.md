@@ -418,6 +418,60 @@ observed value next changes (push-pull reactivity: a behaviour knows its next
 discontinuity), so a client redraws exactly at those instants instead of on a
 ticking clock.
 
+### 6.3 A prodrome of prodromes is a prodrome
+
+A register's value may itself be a prodrome: a conversation inside the store
+of conversations, a card's or a popup's local state inside the page's, an
+agent's batch beside the chain it targets, a plugin's store inside its user's.
+Histories nest, and a nest of histories FLATTENS into one history. That is a
+monad, and it is the shape local state takes.
+
+- **Unit.** An event is the history of one object.
+- **Join**, `P (P e) → P e`. An outer history holds an inner one by its heads
+  (a pointer, as a git tree holds a subtree by its name). Join replaces the
+  pointer with the objects it names, each keyed by the PATH of the register
+  that held it. Content names are global, so no inner object is renamed and
+  no dep is rewritten; only the key gains a prefix.
+- **Why the laws hold.** Keys are paths, and paths under concatenation are the
+  free monoid; the objects form the finite down-closed powerset (§1), whose
+  join is union of unions. Unit and associativity are those two structures'
+  laws: flattening three levels gives the same history in either order, as
+  paths `a/(b/c)` and `(a/b)/c` are one path.
+- **Reading commutes with join.** Reading the flattened history at a path is
+  reading the inner history it came from, so nothing nested reads
+  differently once flattened, and a reader never needs to know which form it
+  holds.
+- **Bind** gives every value of a history its own sub-history: `h >>= f` is
+  local state per entity (each todo's draft, each conversation's lines),
+  flattened into one history keyed by entity.
+
+**Local state is a nested prodrome.** A component of a client (a page, a card,
+a popup, a view an agent wrote) owns a sub-history in the in-memory tier
+(§6.1). It is read like any store, its registers sync or not as each declares
+(§6.0), and it is undone and travelled through in time like the rest,
+because after join it IS the rest. Nothing is kept beside the reading at any
+level.
+
+**Accepting is joining; discarding is not.** Taking a sub-history into its
+parent is join restricted to the objects chosen: an agent's batch accepted
+or rejected object by object, an overlay flushed to the replica of record
+(§6.1), a plugin's store admitted after its laws pass, a draft committed.
+Discarding an in-memory sub-history removes objects nothing outside rests on,
+which is why it may.
+
+**Causality crosses levels only through pointers.** An inner object's deps are
+inner. An outer write that depends on inner state names the inner heads it
+saw, as a change names its entity's heads (§3's change identity), so
+happens-before between levels is exactly what the pointers say.
+
+**And the rest composes.** A prodrome of prodromes is a tree of
+content-addressed histories, so the memoised fold (§6.2) folds it with no
+further mechanism, and a client built this way is Elm's architecture with
+three changes: the model is the reading of a history that only grows (time
+travel, undo and sync are not extras), views are data loaded at run time
+(§6.0), and nested components compose by join instead of by hand-written
+message plumbing.
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -447,6 +501,11 @@ Each is a property test over generated histories, in the core's `tests/`:
 9. **Next change.** For a behaviour that answers its next observed change at
    `t₁` after `t₀`, the observed value is constant on `[t₀, t₁)` and differs
    at `t₁`.
+10. **Nesting.** Over generated nested histories: `join ∘ unit = id` and
+    `join ∘ fmap unit = id`; `join ∘ join = join ∘ fmap join`; reading the
+    joined history at a path equals reading the inner history there; and a
+    join restricted to chosen objects reads as the parent plus exactly those
+    objects.
 
 ## 8. Stages
 
