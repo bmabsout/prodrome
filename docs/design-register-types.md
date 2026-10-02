@@ -342,6 +342,64 @@ that writes through, and an overlay does not have it.
 A third tier never syncs: in-memory registers of the same types over events
 too local or too frequent to be objects (a keystroke, a streaming answer).
 
+### 6.2 Caches are tabulations of pure functions
+
+Once a view is a pure function of a reading (§6.0), every cache in the
+application is one structure, and it is a prodrome of a particular type.
+
+**A cache has no meaning of its own.** The meaning of `memo f` is `f`
+(Elliott's denotational discipline: observing through the cache equals
+observing the function). A function `a → b` is isomorphic to a table indexed
+by `a`, so memoising is tabulating `f` and indexing the table, filled on
+demand (Elliott's functional memo tries). Everything below follows from that
+one equation.
+
+**The cache is a partial function, ordered by information.** A finite cache
+is an approximation of `f`, ordered by inclusion of graphs: the more pairs it
+holds, the more of `f` it knows, and `f` itself is the top (Scott's order). So
+a cache is a store whose register per key has the FLAT order (unknown, then
+one value) and whose join is union. Because `f` is pure, the union of two
+caches is always consistent: two replicas that computed `f(a)` hold the same
+`b`. Two different values at one key are not a conflict to show but a
+FINDING: `f` was not pure, or its key left out something it read.
+
+**A key names the whole computation.** The key is the hash of the function
+(its code and everything that code reads: the view's modules, the
+typesetter's version, the fonts) together with the hash of its argument,
+which is what a build system's derivation is. The argument is itself a
+content-addressed value, so a sub-value has a name and equality is a
+comparison of names.
+
+**What it may do that no other store may.**
+
+- An entry may be DELETED. Nothing rests on it (it has no deps, and nothing
+  takes it as one), and anything dropped is recomputed on demand. Eviction
+  moves the cache down the information order and leaves every meaning where
+  it was.
+- An entry is VERIFIED by recomputing it, as an object is verified by
+  rehashing it, so an entry from an untrusted writer is a claim to check, and
+  a trusted one is a shortcut (a binary cache's signature is the same choice).
+- A cache stays out of a checkpoint. A checkpoint is the data and the code
+  that reads it, and a cache is a function of the two.
+- It syncs like any replica (§6.1): what the host computed reaches the
+  client by union, and the other way.
+
+**Incremental without a diff.** A view over a collection that factors
+through a monoid, `view(rows) = ⊕ row(r)`, memoises per element, and
+memoised again at each node of a balanced tree over the elements (a measured
+finger tree) a change costs one element and a logarithmic number of
+combines. No change is tracked; unchanged inputs are hits because their
+names did not move.
+
+**Time is an input like any other, keyed by what is observed.** A cache keyed
+by the instant never hits. But a view shows a behaviour's value at a
+precision (a whole percent, a pie's drawn angle), so it is a function of the
+OBSERVED value, `view ∘ observe ∘ v`, and is keyed by that. A behaviour that
+is an explicit function of time (a fulfillment term) can also answer when its
+observed value next changes (push-pull reactivity: a behaviour knows its next
+discontinuity), so a client redraws exactly at those instants instead of on a
+ticking clock.
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -362,6 +420,13 @@ Each is a property test over generated histories, in the core's `tests/`:
    completes on the next, and a reading after `sync(a, b)` equals the
    reading of `a ∪ b`; an overlay reads as its union, and its flush leaves
    the replica of record reading that union.
+8. **Memo.** Reading through a cache equals computing (`memo f = f` on
+   generated arguments, with entries evicted at random between reads); a
+   key's two values are reported, never chosen; and a view memoised per
+   element over a monoid equals the view over the whole.
+9. **Next change.** For a behaviour that answers its next observed change at
+   `t₁` after `t₀`, the observed value is constant on `[t₀, t₁)` and differs
+   at `t₁`.
 
 ## 8. Stages
 
