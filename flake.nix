@@ -214,11 +214,12 @@
         # ONE BUILD PER FEATURE SET. The viewer's module is the crate's
         # default features: the compiler, `compile_html`, and the editor's
         # highlighting, completion and hover. A host that compiles views over
-        # its state takes `prodrome-typst-wasm-views`, `--no-default-features`:
-        # the compiler and the persistent `Project`, and nothing else, so the
-        # module a first visit pays for holds nothing a view never calls.
-        # Both share one dependency build: typst-ide is the only crate the
-        # default features add, and it changes no other crate's features.
+        # its state takes `prodrome-typst-wasm-views`: the compiler, the
+        # persistent `Project` and `highlight`, which is the parser Typst
+        # already holds; and its editor `prodrome-typst-wasm-editor`, the same
+        # with typst-ide's completion and hover. All three share one
+        # dependency build: typst-ide is the only crate a feature adds, and it
+        # changes no other crate's features.
         typstWasmArgs = features: typstCommon // {
           nativeBuildInputs = [ pkgs.lld ];
           doCheck = false;
@@ -270,8 +271,14 @@
 
         prodrome-typst-wasm-views = typstWasm {
           pname = "prodrome-typst-wasm-views";
-          features = "--no-default-features";
+          features = "--no-default-features --features highlight";
           description = "Typst 0.15.1 as WebAssembly for views: HTML export over a persistent world";
+        };
+
+        prodrome-typst-wasm-editor = typstWasm {
+          pname = "prodrome-typst-wasm-editor";
+          features = "--no-default-features --features highlight,ide";
+          description = "Typst 0.15.1 as WebAssembly for a views editor: the views module and completion";
         };
 
         # THE VIEWER (`nix build .#prodrome-viewer`): the static app — no
@@ -349,7 +356,7 @@
       {
         packages = {
           inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-typst-wasm-views
-            prodrome-viewer;
+            prodrome-typst-wasm-editor prodrome-viewer;
           default = prodrome-cli;
         };
 
@@ -432,7 +439,8 @@
           # published pair differs only in the profile and in wasm-opt.
           prodrome-wasm = prodrome-wasm-check;
           prodrome-viewer = viewer { pname = "prodrome-viewer-check"; wasm = prodrome-wasm-check; };
-          inherit prodrome-cli prodrome-github prodrome-typst-wasm prodrome-typst-wasm-views;
+          inherit prodrome-cli prodrome-github prodrome-typst-wasm prodrome-typst-wasm-views
+            prodrome-typst-wasm-editor;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's

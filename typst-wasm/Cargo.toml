@@ -16,9 +16,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # EVERYTHING BUT THE COMPILER IS A FEATURE, each independent of the others.
-# The default is the viewer's module, editor and all; `--no-default-features`
-# is a host's views module (`nix build .#prodrome-typst-wasm-views`): `Project`,
-# `add_font` and `typst_version`, and nothing a view never calls.
+# The default is the viewer's module, editor and all. A host's views module
+# (`nix build .#prodrome-typst-wasm-views`) is `highlight` alone: `Project`,
+# `add_font`, `typst_version` and `highlight`; its editor module
+# (`.#prodrome-typst-wasm-editor`) adds `ide`.
 [features]
 default = ["oneshot", "highlight", "ide"]
 # `compile_html(source, files_json)`: a world made for one call.
