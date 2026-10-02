@@ -299,7 +299,8 @@ Typst, and nothing in them assumes a store's text is Typst. Typst lives in
 three directories of its own, for a host whose items hold Typst:
 
 ```
-typst-wasm/   Typst 0.15.1 for the browser: HTML export, highlighting, completion
+typst-wasm/   Typst 0.15.1 for the browser: HTML export, highlighting, completion,
+              and a world kept between compilations for a host's views
               (its own cargo workspace and lock file, outside the core's)
 typst/        prodrome-typst, a Typst package: the list, an item, the two marks
 viewer/       the static web app, in TypeScript, built by nix with tsc and esbuild
