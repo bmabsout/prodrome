@@ -10,13 +10,28 @@
 //! THIN ON PURPOSE, like `prodrome-wasm`: every export parses its arguments,
 //! calls one thing in Typst, and prints the answer as JSON.
 //!
-//! | function       | asks                                                  |
-//! | -------------- | ----------------------------------------------------- |
-//! | `add_font`     | here is a font file; how many faces did it hold        |
-//! | `compile_html` | this source, these files: what HTML, or what went wrong |
-//! | `highlight`    | which spans of this source are which syntax            |
-//! | `complete`     | what could go at this cursor                           |
-//! | `hover`        | what is the thing under this cursor                    |
+//! | export         | feature     | asks                                             |
+//! | -------------- | ----------- | ------------------------------------------------ |
+//! | `add_font`     |             | here is a font file; how many faces did it hold   |
+//! | `Project`      |             | these files, kept: what HTML over this state      |
+//! | `compile_html` | `oneshot`   | this source, these files: what HTML               |
+//! | `highlight`    | `highlight` | which spans of this source are which syntax       |
+//! | `complete`     | `ide`       | what could go at this cursor                      |
+//! | `hover`        | `ide`       | what is the thing under this cursor               |
+//!
+//! TWO MODULES, ONE CRATE. The default features are the viewer's module
+//! (`nix build .#prodrome-typst-wasm`), editor and all. A host that compiles
+//! views over its state builds `--no-default-features`
+//! (`.#prodrome-typst-wasm-views`): the compiler, `Project` and `add_font`.
+//! Each feature stands alone and they compose; what one adds is measured in
+//! the CHANGELOG.
+//!
+//! A `Project` IS A WORLD KEPT, as typst-cli's watch mode keeps one: a host
+//! sets its view modules once and each again only when it changes, and
+//! passes the state to each compilation, so a module that did not change is
+//! neither copied in nor reparsed, and nothing memoised over what did not
+//! change is recomputed (see `world.rs`). `typst-wasm/bench/` measures it
+//! against `compile_html`.
 //!
 //! ERRORS ARE VALUES. Nothing here throws: a document with an error answers
 //! `{html: null, diagnostics: [...]}`, each diagnostic with the span it is
@@ -24,7 +39,7 @@
 //! keystroke and a failure is its most common answer.
 //!
 //! EVERY OFFSET IS UTF-16, the unit a browser's strings and selections count
-//! in; see [`offsets`].
+//! in; see `offsets.rs`.
 
 use serde::Serialize;
 use typst::diag::{Severity, SourceDiagnostic};
@@ -180,6 +195,15 @@ impl Project {
         Project { world: Sandbox::new() }
     }
 
+    /// A project for markup whose author is not trusted: its library has no
+    /// `html` module and no `plugin`, under any name, `eval` included, so a
+    /// document naming either fails to compile with a diagnostic saying so.
+    /// A document that names neither compiles to the same HTML either way.
+    #[must_use]
+    pub fn restricted() -> Project {
+        Project { world: Sandbox::restricted() }
+    }
+
     /// Set or replace the file at `key` (a key as `compile_html`'s files
     /// have). Answers `undefined`, or why the key names no file.
     pub fn set(&mut self, key: &str, text: &str) -> Option<String> {
@@ -226,6 +250,46 @@ mod tests {
         project.set("/lib.typ", "#let twice(n) = 3 * n");
         let edited = compiled(&project.compile("/view.typ", "{\"n\": 8}"));
         assert!(edited["html"].as_str().is_some_and(|html| html.contains("24")), "{edited}");
+    }
+
+    #[test]
+    fn a_restricted_project_cannot_reach_html_or_plugin() {
+        let page = "= A page\n\nWith *strong* text and #link(\"https://example.org\")[a link].";
+        let (mut open, mut closed) = (Project::new(), Project::restricted());
+        for project in [&mut open, &mut closed] {
+            project.set("/view.typ", page);
+        }
+        let same = compiled(&open.compile("/view.typ", "{}"));
+        assert!(same["html"].is_string(), "{same}");
+        assert_eq!(compiled(&closed.compile("/view.typ", "{}"))["html"], same["html"]);
+        for reach in [
+            "#html.elem(\"script\")[x]",
+            "#std.html.elem(\"script\")[x]",
+            "#eval(\"html.elem(\\\"script\\\")[x]\")",
+            "#eval(\"std.html\")",
+            "#plugin(bytes(()))",
+            "#eval(\"plugin\")",
+        ] {
+            open.set("/view.typ", reach);
+            closed.set("/view.typ", reach);
+            let refused = compiled(&closed.compile("/view.typ", "{}"));
+            assert!(refused["html"].is_null(), "{reach}: {refused}");
+            let named = refused["diagnostics"].as_array().expect("diagnostics").iter().any(|d| {
+                d["severity"] == "error"
+                    && d["message"]
+                        .as_str()
+                        .is_some_and(|m| m.contains("html") || m.contains("plugin"))
+            });
+            assert!(named, "{reach}: {refused}");
+            // The same document reaches them in an open project: it is the
+            // library that refuses, not the document that is broken.
+            let reached = compiled(&open.compile("/view.typ", "{}"));
+            let unknown =
+                reached["diagnostics"].as_array().expect("diagnostics").iter().any(|d| {
+                    d["message"].as_str().is_some_and(|m| m.starts_with("unknown variable"))
+                });
+            assert!(!unknown, "{reach}: {reached}");
+        }
     }
 
     #[test]

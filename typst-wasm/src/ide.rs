@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::offsets::Offsets;
 use crate::world::Sandbox;
-use crate::{json, MAIN};
+use crate::{json, Project, MAIN};
 
 #[derive(Serialize)]
 struct Item {
@@ -91,19 +91,11 @@ fn narrowed(completions: Vec<Completion>, typed: &str) -> Vec<Completion> {
     starts
 }
 
-/// What could go at `cursor` (UTF-16) in `source`: `{from, items}`, or `null`
-/// when nothing completes there. `explicit` is a request the reader made
-/// (Ctrl+Space) rather than one typing implied, and widens what is offered.
-#[wasm_bindgen]
-pub fn complete(source: &str, cursor: usize, explicit: Option<bool>) -> String {
-    let Some((world, main)) = alone(source) else {
-        return "null".to_owned();
-    };
-    let main = &main;
+fn completions(world: &Sandbox, main: &Source, cursor: usize, explicit: Option<bool>) -> String {
     let offsets = Offsets::of(main.text());
     let at = offsets.byte(cursor);
     let found =
-        typst_ide::autocomplete(&world, None::<&HtmlDocument>, main, at, explicit.unwrap_or(false));
+        typst_ide::autocomplete(world, None::<&HtmlDocument>, main, at, explicit.unwrap_or(false));
     match found {
         Some((from, completions)) => {
             let typed = main.text().get(from..at).unwrap_or("");
@@ -116,25 +108,87 @@ pub fn complete(source: &str, cursor: usize, explicit: Option<bool>) -> String {
     }
 }
 
-/// What the thing under `cursor` (UTF-16) is: `{kind, text}` with `kind`
-/// `"text"` or `"code"`, or `null`.
-#[wasm_bindgen]
-pub fn hover(source: &str, cursor: usize) -> String {
-    let Some((world, main)) = alone(source) else {
-        return "null".to_owned();
-    };
-    let main = &main;
+fn tooltip(world: &Sandbox, main: &Source, cursor: usize) -> String {
     let at = Offsets::of(main.text()).byte(cursor);
-    match typst_ide::tooltip(&world, None::<&HtmlDocument>, main, at, Side::After) {
+    match typst_ide::tooltip(world, None::<&HtmlDocument>, main, at, Side::After) {
         Some(Tooltip::Text(text)) => json(&Hover { kind: "text", text: text.to_string() }),
         Some(Tooltip::Code(text)) => json(&Hover { kind: "code", text: text.to_string() }),
         None => "null".to_owned(),
     }
 }
 
+/// What could go at `cursor` (UTF-16) in `source`: `{from, items}`, or `null`
+/// when nothing completes there. `explicit` is a request the reader made
+/// (Ctrl+Space) rather than one typing implied, and widens what is offered.
+#[wasm_bindgen]
+pub fn complete(source: &str, cursor: usize, explicit: Option<bool>) -> String {
+    alone(source).map_or_else(
+        || "null".to_owned(),
+        |(world, main)| completions(&world, &main, cursor, explicit),
+    )
+}
+
+/// What the thing under `cursor` (UTF-16) is: `{kind, text}` with `kind`
+/// `"text"` or `"code"`, or `null`.
+#[wasm_bindgen]
+pub fn hover(source: &str, cursor: usize) -> String {
+    alone(source).map_or_else(|| "null".to_owned(), |(world, main)| tooltip(&world, &main, cursor))
+}
+
+/// The same two over a file of a project, so what is offered is what that
+/// file can reach: the project's other files, and its library — a
+/// restricted project offers no name its library withholds.
+#[wasm_bindgen]
+impl Project {
+    /// `complete` at `cursor` in the file at `key`, set before.
+    pub fn complete(&mut self, key: &str, cursor: usize, explicit: Option<bool>) -> String {
+        self.at(key).map_or_else(
+            || "null".to_owned(),
+            |main| completions(&self.world, &main, cursor, explicit),
+        )
+    }
+
+    /// `hover` at `cursor` in the file at `key`, set before.
+    pub fn hover(&mut self, key: &str, cursor: usize) -> String {
+        self.at(key).map_or_else(|| "null".to_owned(), |main| tooltip(&self.world, &main, cursor))
+    }
+
+    fn at(&mut self, key: &str) -> Option<Source> {
+        self.world.prepare(key).ok()?;
+        self.world.source(self.world.main()).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labels(answer: &str) -> Vec<String> {
+        let value: serde_json::Value = serde_json::from_str(answer).expect("json");
+        value["items"]
+            .as_array()
+            .map(|items| {
+                items.iter().filter_map(|i| i["label"].as_str().map(str::to_owned)).collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_restricted_project_offers_no_withheld_name() {
+        for (project, offered) in [(Project::new(), true), (Project::restricted(), false)] {
+            let mut project = project;
+            for (typed, name) in [("#htm", "html"), ("#plug", "plugin")] {
+                project.set("/edit.typ", typed);
+                let labels = labels(&project.complete("/edit.typ", typed.len(), Some(true)));
+                assert_eq!(labels.iter().any(|l| l == name), offered, "{typed}: {labels:?}");
+            }
+        }
+        let mut project = Project::new();
+        project.set("/lib.typ", "#let twice(n) = 2 * n");
+        project.set("/edit.typ", "#import \"/lib.typ\": twice\n#twi");
+        let labels = labels(&project.complete("/edit.typ", 32, Some(true)));
+        assert!(labels.iter().any(|l| l == "twice"), "{labels:?}");
+    }
 
     #[test]
     fn completion_offers_functions_after_a_hash() {
