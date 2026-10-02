@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b911af60c752d5c70af5bb3a3c9d027d44897d8127d57044948ad02636258aae # shrinks to term = Term(Piecewise { head: Term(Flat { value: 0.02 }), pieces: [(2026-09-01T00:00:00, Term(Flat { value: 0.8555363673153229 }))] }), now = 2026-08-31T23:00:05.196833, observation = Observation { levels: 2, rounding: Down }, k = 1
