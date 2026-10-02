@@ -296,8 +296,9 @@ fn an_after_changes_where_its_binding_comes_into_force() {
         next_change(&term, moment(0), &env, Observation::PERCENT),
         NextChange {
             at: None,
-            exact: false
-        }
+            exact: true
+        },
+        "an enclosure that proves never is the step itself"
     );
     env.bind("alpha", Outcome::Completed(moment(50)));
     assert_eq!(
@@ -346,6 +347,13 @@ fn a_cycle_or_a_window_of_a_flat_term_never_changes() {
     let window = ok(fpl::mk_within(Duration::hours(24), -4.0, flat));
     for term in [cycle, window] {
         let next = next_change(&closed(&term), moment(3), &Env::new(), Observation::PERCENT);
-        assert_eq!(next.at, None, "{term:?}");
+        assert_eq!(
+            next,
+            NextChange {
+                at: None,
+                exact: true
+            },
+            "{term:?}"
+        );
     }
 }

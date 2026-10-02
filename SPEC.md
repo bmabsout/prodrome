@@ -596,7 +596,8 @@ lowers anything it is composed with.
   `After` and `Recur` split where a binding or tending comes into force,
   `Periodic` folded onto one cycle) stops being one observed value. Never
   later than the true change, possibly earlier; an enclosure over all time
-  that is one value is never. The environment is a snapshot, read as
+  that is one value proves never, which is exact. `exact` is a fact about
+  the behaviour, not the term's syntax. The environment is a snapshot, read as
   evaluation reads it: a binding or tending dated after `now` comes into
   force at its instant.
 - A term has ONE serialization and it is §2's literal print. A JavaScript
