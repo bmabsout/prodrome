@@ -242,3 +242,33 @@ fn the_todo_class_answers_as_the_reference_exports() {
     let readings = parse(ok(todos.readings(None, UNTRUSTED)));
     assert!(!readings["readings"].as_array().expect("rows").is_empty());
 }
+
+/// `Todos::next_changes` answers, per row, what [`crate::next_change`]
+/// answers of that row's function linked against its prodrome's, under the
+/// environment `prices` gives: one reading of the price, at every instant.
+#[test]
+fn the_todo_class_answers_each_row_s_next_change() {
+    let sent = json!(objects()
+        .iter()
+        .map(|(hash, text)| json!({ "hash": hash, "text": text }))
+        .collect::<Vec<_>>())
+    .to_string();
+    let todos = ok(crate::Todos::new(&sent));
+    let parse = |text: String| -> Value { serde_json::from_str(&text).expect("JSON") };
+    let percent = r#"{"levels": 100, "rounding": "nearest"}"#;
+    for now in NOWS {
+        let changes = parse(ok(todos.next_changes(Some(now.into()), UNTRUSTED, percent)));
+        let prices = parse(ok(todos.prices(Some(now.into()), UNTRUSTED)));
+        let (changes, prices) = (&changes["changes"][0], &prices["prices"][0]);
+        let functions = prices["functions"].as_object().expect("functions");
+        let specs = Value::Object(functions.clone()).to_string();
+        let env = prices["env"].to_string();
+        let next = changes["next"].as_object().expect("per row");
+        assert_eq!(next.len(), functions.len(), "a row per function at {now}");
+        for (todo, function) in functions {
+            let linked = ok(crate::link(&function.to_string(), &specs));
+            let theirs = parse(ok(crate::next_change(&linked, now, &env, percent)));
+            assert_eq!(next[todo], theirs, "{todo} at {now}");
+        }
+    }
+}

@@ -579,6 +579,27 @@ lowers anything it is composed with.
   at each and a second knot before each jump is the curve; a knot is `∅`
   where the term has no value, and no line is drawn to or from one. Other
   terms are sampled and say so.
+- **Next change** (`observe::next_change(term, now, env, observation)`): a
+  view shows a value at a precision, so what it draws is a function of the
+  OBSERVED value. An `Observation` is a quantisation: `[0, 1]` in `n ≥ 1`
+  equal steps, a value read as the step it rounds to (`down`, `nearest`
+  with a half read upward, or `up`), and `∅` read as itself; it is
+  monotone, so each step observes an interval and `observation ∘ ⟦t⟧` is a
+  step function of time. The answer is `(at, exact)`: the first instant
+  after `now`, on the microsecond grid, at which the observed value
+  differs from its value at `now`, or none for never. EXACT on the exact
+  fragment: affine between its breakpoints, so the step inside each
+  stretch is found by bisection against the evaluator itself, and constant
+  past the last. CONSERVATIVE elsewhere: the first instant at which an
+  enclosure of the term over `[now, t]` (each atom's range, monotone
+  composites on their children's bounds, a `Within` over its widened span,
+  `After` and `Recur` split where a binding or tending comes into force,
+  `Periodic` folded onto one cycle) stops being one observed value. Never
+  later than the true change, possibly earlier; an enclosure over all time
+  that is one value proves never, which is exact. `exact` is a fact about
+  the behaviour, not the term's syntax. The environment is a snapshot, read as
+  evaluation reads it: a binding or tending dated after `now` comes into
+  force at its instant.
 - A term has ONE serialization and it is §2's literal print. A JavaScript
   boundary may carry a JSON shape of the same term — the reference one is
   `prodrome-wasm-exports`'s `json` module, lowercase kind tags and spans in
@@ -1119,6 +1140,19 @@ replicas in memory sync in between and whose events are dated anywhere.
     writes that no other write TO IT descends from: a write descending from
     a write in another register supersedes nothing there.
     `causal.rs::a_change_rests_on_what_its_writer_saw`.
+
+Law 38 is §7's next change, over generated terms, environments, instants
+and observations.
+
+38. **A next change is never late.** The observed value is constant on
+    `[now, at)`; where the answer is exact it differs at `at`; it is never
+    later than the first change an hourly sampling finds; and it is a
+    function of its arguments, so every instant of an exact step answers
+    that step's end.
+    `observe.rs::every_term_is_constant_until_its_answer`,
+    `observe.rs::an_exact_term_answers_its_next_step`,
+    `observe.rs::the_answer_is_never_later_than_a_sampled_change`,
+    `observe.rs::every_instant_of_a_step_answers_its_end`.
 
 ## 10. Non-goals
 

@@ -110,6 +110,28 @@ rule: a new module, and no stored byte, vector or export moves.
   `memo::balance`, a long sequence as a balanced tree of the host's own
   measured chunks, its shape a function of the elements alone. Laws in
   `core/tests/all/memo.rs`, `memo_fold.rs` and `memo_balance.rs`.
+And a behaviour names its next observed change
+(`docs/design-register-types.md` §6.2, SPEC §7 and law 38): a view reads a
+fulfillment through an `Observation`, and `next_change` answers when what it
+shows next changes, exactly on the exact fragment and never late elsewhere.
+A MINOR change under this file's rule: new API only, no stored byte moves,
+and every vector and export reads as it did.
+
+### Added
+
+- **The next observed change (design §6.2, SPEC §7 and law 38):**
+  `observe::Observation`, a quantisation of `[0, 1] ∪ {∅}` (`levels` equal
+  steps, `Rounding::{Down, Nearest, Up}`, `Observation::PERCENT`), and
+  `observe::next_change(term, now, env, observation)`, answering
+  `NextChange { at, exact }`: the first microsecond after `now` at which the
+  observed value differs, `None` for never. Exact on the exact fragment,
+  each atom's closed form cutting time into affine stretches bisected
+  against the evaluator; conservative elsewhere, by an enclosure of the term
+  over `[now, t]`, never later than the true change. The wasm exports carry
+  it: `next_change(term, now, env, observation)` in the reference module,
+  and `next_changes(at, untrusted, observation)` per row on a priced
+  schema's class, an observation crossing as `{levels, rounding}`.
+
 - **Replicas (design §6.1, stage 7, SPEC §3 and law 35):** `store::Replica`,
   what every store is: `held` (its objects, fold and tips of one look),
   `tips`, `print`, `append` and `receive`, which takes in what some seeds
