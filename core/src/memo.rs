@@ -9,16 +9,20 @@
 //! Hierarchical caching is then one combinator, the memoised fold over a
 //! content-addressed tree of any shape ([`fold()`]): a node's [`name`]
 //! covers its children's names, Merkle style, the algebra is memoised at
-//! every node, and what a fold looked at is a [`Report`].
+//! every node, and what a fold looked at is a [`Report`]. A long sequence
+//! is given a balanced shape ([`balance()`]) so a change's spine through it
+//! is logarithmic.
 //!
 //! The module depends on the hash type and on nothing else of the crate: no
 //! schema, no store and no FPL.
 
 #![warn(clippy::pedantic)]
 
+pub mod balance;
 pub mod cache;
 pub mod fold;
 
+pub use balance::balance;
 pub use cache::{Cache, Evict, Finding, Keep, Key, Lookup, Lru};
 pub use fold::{fold, Algebra, Counts, Outcome, Report, Tree, Visit};
 

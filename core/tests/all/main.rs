@@ -21,6 +21,7 @@ mod fuzz;
 mod link_vectors;
 mod literals;
 mod memo;
+mod memo_balance;
 mod memo_fold;
 mod memory;
 mod order_laws;
