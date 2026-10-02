@@ -238,6 +238,42 @@ writing no register its change writes.
   HTML document or diagnostics with spans, as a value, never a throw),
   `highlight`, `complete`, `hover` and `add_font`; every offset is UTF-16.
   The module is 22.0 MB, 6.3 MB with brotli.
+- **`typst-wasm/` for views**: `Project`, a world kept between compilations
+  as typst-cli's watch mode keeps one. A host sets each view module on its
+  own (`set(key, text)`, `remove(key)`): a file set again unchanged keeps its
+  parse and its hash, and an edited one is `Source::replace`d, so only the
+  edit reparses. The state is each compilation's own argument
+  (`compile(main, state)`, read as `/state.json`), never one JSON object of
+  every file. `Project.restricted()` compiles markup whose author is not
+  trusted: its library has no `html` module and no `plugin`, under any name,
+  `eval` and `std` included, and completion there offers neither.
+  `Project.complete` and `Project.hover` answer over a file of the project.
+  `compile_html`, `highlight`, and `complete` and `hover` (typst-ide) are
+  each a cargo feature, all on by default, so `prodrome-typst-wasm` is the
+  viewer's module as before; `nix build .#prodrome-typst-wasm-views` is
+  `Project` and `highlight`, and `.#prodrome-typst-wasm-editor` adds
+  typst-ide. Each writes `web/typst_bg.wasm.br` (brotli, quality 11) beside
+  the wasm, for a host to serve precompressed.
+  `checks.prodrome-typst-wasm-bench` times a 250-item page and a keystroke,
+  old export against new (`typst-wasm/bench/views.mjs`), and
+  `checks.prodrome-typst-wasm-tests` runs clippy, pedantic, over every
+  feature set. What each feature costs, after `wasm-opt -Os`:
+
+  | module (`nix build .#…`)    | features                | raw         | brotli     |
+  | ---------------------------- | ----------------------- | ----------- | ---------- |
+  | `prodrome-typst-wasm`        | oneshot, highlight, ide | 22 064 360  | 6 266 825  |
+  | `prodrome-typst-wasm-editor` | highlight, ide          | 22 054 373  | 6 268 139  |
+  | `prodrome-typst-wasm-views`  | highlight               | 21 824 480  | 6 209 471  |
+
+  Feature by feature, in bytes: `ide` 230 600 raw and 66 000 brotli,
+  `oneshot` 10 000 and 3 900, `highlight` 2 400 and nothing measurable, the
+  parser being the compiler's own. So an editor costs its host 1% more if it
+  loads `-editor` instead of `-views`, and a second, lazily loaded module
+  would cost it 6.3 MB more.
+
+  Little, because link-time optimisation already drops what no export
+  reaches: the module is the compiler and the data its dependencies embed,
+  which no feature of this crate can leave out.
 - **`typst/`**, the `prodrome-typst` package: the roadmap list ordered by
   fulfillment, an item's page, and two marks: a value's pie beside its
   percentage, and a todo's thirty days (fifteen back, fifteen ahead) as one
