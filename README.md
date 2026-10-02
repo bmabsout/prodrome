@@ -205,7 +205,10 @@ binds every reference to that todo's function, `Absent` for a known todo
 with none, and answers a `Closed` term, refusing a todo the store has never
 seen or a loop as a value. `fulfillment` evaluates a
 closed term at an instant; `explain` returns the same computation with a value
-at every node; `series_knots` gives a term's curve over a window.
+at every node; `series_knots` gives a term's curve over a window; and
+`observe::next_change` answers when its value, as a view shows it (an
+`Observation`, a whole percent say), next changes, so a client redraws then
+and not on a ticking clock.
 
 **The chain compiler.** `After` and `Recur` are the terms that read history,
 so `chain::compile(term, env)` resolves every one of them against a snapshot
@@ -269,8 +272,8 @@ $ nix build .#prodrome-wasm
 
 Produces `result/web/` for a bundler and `result/nodejs/` for a script. The
 exports (`verify_objects`, `fold`, `registers`, `entries`, `fulfillment`,
-`explain`, `compile`, `link`, `series_knots`, `term_json`, `lifecycle`,
-`seal` and `merge_object`) each parse their arguments, call the core, and
+`explain`, `compile`, `link`, `series_knots`, `next_change`, `term_json`,
+`lifecycle`, `seal` and `merge_object`) each parse their arguments, call the core, and
 return JSON.
 The JSON shape of a term is this crate's — `wasm/exports/src/json.rs`, since 0.4 —
 because JSON is JavaScript's literal grammar and the core has its own. A

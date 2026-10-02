@@ -418,6 +418,24 @@ observed value next changes (push-pull reactivity: a behaviour knows its next
 discontinuity), so a client redraws exactly at those instants instead of on a
 ticking clock.
 
+LANDED for fulfillment terms. `observe::Observation` is the `observe`, a
+value of its own rather than a constant in a view: `[0, 1]` in `n` equal
+steps with a stated rounding, `∅` read as itself, monotone, so `observe ∘ v`
+is a step function. `observe::next_change(term, now, env, observation)` is
+its next step, `(at, exact)`, `at` none for never. On the exact fragment
+(SPEC §7 breakpoints) it is the step itself: each atom's closed form (a
+`Decay`'s window, a `Curve`'s points, a `Piecewise`'s knots, two lines'
+crossing) cuts time into stretches where the term is affine, and the step
+inside one is bisected against the evaluator, so it agrees with
+`fulfillment` bit for bit. Elsewhere (`Within`, composites of moving parts,
+`After`, `Recur`, `Periodic`) it is CONSERVATIVE: the first instant an
+enclosure of the term over `[now, t]` stops being one observed value, never
+later than the step and early only where the enclosure is loose (members
+moving in opposite directions). New history is not time: it arrives by sync,
+a new input, and the answer is asked again. The wasm exports carry it:
+`next_change` beside `fulfillment` in the reference module, and
+`next_changes` per row on a priced schema's class.
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -445,8 +463,10 @@ Each is a property test over generated histories, in the core's `tests/`:
    shape; and a redraw's reported recomputes and hits are exactly the nodes
    whose names did and did not move.
 9. **Next change.** For a behaviour that answers its next observed change at
-   `t₁` after `t₀`, the observed value is constant on `[t₀, t₁)` and differs
-   at `t₁`.
+   `t₁` after `t₀`, the observed value is constant on `[t₀, t₁)`; where the
+   answer is exact it differs at `t₁`, and where it is conservative `t₁` is
+   no later than the first instant it does. BUILT: SPEC law 38,
+   `core/tests/all/observe.rs`.
 
 ## 8. Stages
 
