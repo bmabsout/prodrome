@@ -27,10 +27,12 @@
 //! since §6.7 it is `Entry::at`, in the core — one spelling, in one place.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
 use prodrome::fpl::{self, Candidates, Closed, Env, Instant, Outcome};
 use prodrome::literal;
+use prodrome::observe::{NextChange, Observation, Rounding};
 use prodrome::payload::Payload;
 use prodrome::policy::Untrusted;
 use prodrome::term::Term;
@@ -118,6 +120,49 @@ pub fn parse_specs(json_text: &str) -> Result<BTreeMap<String, Term>, Refusal> {
 pub fn parse_closed(field: &str, json_text: &str) -> Result<Closed, Refusal> {
     Closed::of(parse_term(field, json_text)?)
         .ok_or_else(|| format!("{field}: holds a ref; link it first"))
+}
+
+/// `{"levels": n, "rounding": "down" | "nearest" | "up"}`: what a view
+/// observes of a fulfillment (§7), `[0, 1]` in `n ≥ 1` steps read by the
+/// rounding. A whole percent is `{"levels": 100, "rounding": "nearest"}`.
+/// Any other key is refused, never ignored.
+///
+/// # Errors
+///
+/// Text that is not that shape, or no steps.
+pub fn parse_observation(json_text: &str) -> Result<Observation, Refusal> {
+    let raw: ObservationIn =
+        serde_json::from_str(json_text).map_err(|e| format!("observation: {e}"))?;
+    let levels = NonZeroU32::new(raw.levels)
+        .ok_or_else(|| "observation.levels: must be at least 1".to_owned())?;
+    let rounding = match raw.rounding {
+        RoundingIn::Down => Rounding::Down,
+        RoundingIn::Nearest => Rounding::Nearest,
+        RoundingIn::Up => Rounding::Up,
+    };
+    Ok(Observation::new(levels, rounding))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationIn {
+    levels: u32,
+    rounding: RoundingIn,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RoundingIn {
+    Down,
+    Nearest,
+    Up,
+}
+
+/// `{"at": "<iso>" | null, "exact": bool}`: when an observed value next
+/// changes, `null` for never; `exact` where `at` is its next step, and not
+/// where it is a bound that is never later than the step.
+pub fn json_next_change(next: NextChange) -> Value {
+    json!({ "at": next.at.map(fpl::iso), "exact": next.exact })
 }
 
 /// `{"outcomes": {"<name>": {"kind": "Completed" | "Cancelled", "at":
