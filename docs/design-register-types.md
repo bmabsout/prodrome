@@ -384,12 +384,23 @@ comparison of names.
 - It syncs like any replica (§6.1): what the host computed reaches the
   client by union, and the other way.
 
-**Incremental without a diff.** A view over a collection that factors
-through a monoid, `view(rows) = ⊕ row(r)`, memoises per element, and
-memoised again at each node of a balanced tree over the elements (a measured
-finger tree) a change costs one element and a logarithmic number of
-combines. No change is tracked; unchanged inputs are hits because their
-names did not move.
+**Hierarchical, always.** A view is a tree of functions (a page of
+sections, a section of rows, a row of a mark and a title), and the cache is
+the same tree: every node is memoised, keyed by the name of its own input, so
+a change recomputes exactly the path from the changed leaf to the root and
+every other node is a hit. A cache only at the root is all or nothing; a
+cache only at the leaves still rebuilds everything above them on every
+change. Inside a long homogeneous level (a list of rows) the tree is a
+balanced one over the elements (a measured finger tree), since the view
+factors through a monoid, `view(rows) = ⊕ row(r)`: a change there costs one
+element and a logarithmic number of combines. No change is tracked;
+unchanged inputs are hits because their names did not move.
+
+So a cost is EXPLAINED, not only measured: a redraw reports per level how
+many nodes hit and how many were recomputed, and its cost is the work along
+the paths that moved. A number that does not follow from those counts is a
+finding (a key that names too much, so too much misses, or too little, so a
+hit is wrong).
 
 **Time is an input like any other, keyed by what is observed.** A cache keyed
 by the instant never hits. But a view shows a behaviour's value at a
@@ -422,8 +433,10 @@ Each is a property test over generated histories, in the core's `tests/`:
    the replica of record reading that union.
 8. **Memo.** Reading through a cache equals computing (`memo f = f` on
    generated arguments, with entries evicted at random between reads); a
-   key's two values are reported, never chosen; and a view memoised per
-   element over a monoid equals the view over the whole.
+   key's two values are reported, never chosen; a view memoised per
+   element over a monoid equals the view over the whole; and a redraw's
+   reported per-level recomputes and hits are exactly the nodes whose input
+   names did and did not move.
 9. **Next change.** For a behaviour that answers its next observed change at
    `t₁` after `t₀`, the observed value is constant on `[t₀, t₁)` and differs
    at `t₁`.
