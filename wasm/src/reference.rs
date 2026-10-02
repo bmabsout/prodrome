@@ -14,9 +14,10 @@ use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 
 use prodrome_wasm_exports::wire::{
-    json_candidates, json_entry, json_env, json_marker, json_reading, json_record, json_tended,
-    json_terms, object, parse_closed, parse_env, parse_instant, parse_moment, parse_names,
-    parse_specs, parse_term, parse_untrusted, strings, History, Refusal,
+    json_candidates, json_entry, json_env, json_marker, json_next_change, json_reading,
+    json_record, json_tended, json_terms, object, parse_closed, parse_env, parse_instant,
+    parse_moment, parse_names, parse_observation, parse_specs, parse_term, parse_untrusted,
+    strings, History, Refusal,
 };
 
 /// THE RECORD SHAPE THIS MODULE WAS BUILT WITH: `prodrome::reference::Todo`,
@@ -444,6 +445,31 @@ pub fn fulfillment(term: &str, now: &str, env: &str) -> Result<Option<f64>, JsEr
     Ok(prodrome::fpl::fulfillment(&term, now, &env))
 }
 
+/// §7 — when `term`'s value, read through `observation` (`{levels,
+/// rounding}`, a whole percent being `{"levels": 100, "rounding":
+/// "nearest"}`), next changes after `now` under `env`: `{at, exact}`, `at`
+/// an ISO instant or `null` for never, and `exact` where it is the observed
+/// value's next step rather than a bound never later than it. A page
+/// schedules its next redraw at `at` instead of on a ticking clock.
+///
+/// # Errors
+///
+/// A term that is not closed, an instant, environment or observation that
+/// does not parse: the thrown refusal.
+#[wasm_bindgen]
+pub fn next_change(term: &str, now: &str, env: &str, observation: &str) -> Result<String, JsError> {
+    let term = parse_closed("term", term).map_err(refused)?;
+    let now = parse_instant("now", now).map_err(refused)?;
+    let env = parse_env(env).map_err(refused)?;
+    let observation = parse_observation(observation).map_err(refused)?;
+    printed(&json_next_change(prodrome::observe::next_change(
+        &term,
+        now,
+        &env,
+        observation,
+    )))
+}
+
 /// §2 → §7: a term as the CHAIN stores it — its canonical print, the text
 /// inside a `SpecRevised` or an `Authored` — read back as the JSON shape
 /// everything else here speaks.
@@ -556,6 +582,36 @@ mod tests {
     use prodrome::genesis::mk_genesis;
     use prodrome::literal::Datetime;
     use serde_json::{json, Value};
+
+    /// A decay read in whole percents steps where its line crosses one, and
+    /// an observation is refused, never guessed, where it is malformed.
+    #[test]
+    fn a_term_answers_its_next_observed_change() {
+        let decay = r#"{"kind": "decay", "start": 0.9, "end": 0.1,
+            "endDate": "2026-10-01T00:00:00", "leadUpHours": 100.0}"#;
+        let percent = r#"{"levels": 100, "rounding": "nearest"}"#;
+        let answer = |now: &str, observation: &str| {
+            super::next_change(decay, now, "{}", observation)
+                .map(|text| serde_json::from_str::<Value>(&text).expect("JSON"))
+        };
+        let before = answer("2026-09-20T00:00:00", percent).unwrap_or_else(|_| panic!("answers"));
+        assert_eq!(
+            before,
+            json!({"at": "2026-09-26T20:00:00", "exact": true}),
+            "0.98 until the window opens"
+        );
+        let after = answer("2026-10-02T00:00:00", percent).unwrap_or_else(|_| panic!("answers"));
+        assert_eq!(after, json!({"at": null, "exact": true}));
+        for malformed in [
+            r#"{"levels": 0, "rounding": "nearest"}"#,
+            r#"{"levels": 100, "rounding": "half"}"#,
+            r#"{"levels": 100}"#,
+            r#"{"levels": 100, "rounding": "up", "step": 0.01}"#,
+        ] {
+            // The refusal itself: a `JsError` is built only on a wasm target.
+            assert!(super::parse_observation(malformed).is_err(), "{malformed}");
+        }
+    }
 
     /// A store of changes begins at its `Genesis`: a change with no deps
     /// names no parents, and is no beginning.

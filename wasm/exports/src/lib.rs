@@ -18,6 +18,7 @@
 //! | `readings` | §6: each entity's registers, each its maximal writes          |
 //! | `entries`  | §6.7, `priced` only: every entity as the folds see it        |
 //! | `prices`   | §6.1, §6.4, `priced` only: the environment and every function |
+//! | `next_changes` | §7, `priced` only: when each entity's observed price next changes |
 //! | `append`   | §3: an event sealed into this replica, and the object to send |
 //!
 //! A schema crosses the boundary by [`Json`]: the field its events
@@ -64,8 +65,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use wire::{
-    json_env, json_literal, json_reading, object, parse_moment, parse_names, parse_objects,
-    parse_untrusted, strings, ObjectIn, Refusal,
+    json_env, json_literal, json_next_change, json_reading, object, parse_moment, parse_names,
+    parse_objects, parse_observation, parse_untrusted, strings, ObjectIn, Refusal,
 };
 
 /// What a schema says to cross this boundary, beside what it says to be
@@ -235,6 +236,18 @@ macro_rules! schema {
                 untrusted: &str,
             ) -> Result<String, wasm_bindgen::JsError> {
                 $crate::thrown($crate::prices(&self.0, at, untrusted))
+            }
+
+            /// §7, per prodrome: when each entity's price, read through
+            /// `observation` (`{levels, rounding}`), next changes after `at`,
+            /// so a page schedules each row's redraw then.
+            pub fn next_changes(
+                &self,
+                at: Option<String>,
+                untrusted: &str,
+                observation: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::next_changes(&self.0, at, untrusted, observation))
             }
         }
     };
@@ -861,5 +874,62 @@ pub fn prices<E: History + Bind>(
     printed(&object(vec![
         ("at", Value::String(iso(now))),
         ("prices", Value::Array(prices)),
+    ]))
+}
+
+/// §7, per prodrome: when each entity's price, read through `observation`
+/// ([`wire::parse_observation`]), next changes after `at` under `untrusted`:
+/// `{at, changes: [{genesis, next: {<key>: {at, exact}}}]}`, a row's `at`
+/// `null` for never ([`wire::json_next_change`]), and a row `null` where its
+/// function does not link. The price is the one `entries` shows: the
+/// entity's function linked against its prodrome's, under the environment
+/// at `at`. A page redraws a row at its `at` and not on a ticking clock.
+///
+/// # Errors
+///
+/// What `prices` refuses, and an observation [`wire::parse_observation`]
+/// refuses.
+pub fn next_changes<E: History + Bind>(
+    replica: &Replica<E>,
+    at: Option<String>,
+    untrusted: &str,
+    observation: &str,
+) -> Result<String, Refusal> {
+    let read = replica.read()?;
+    let policy = parse_untrusted(untrusted)?;
+    let observation = parse_observation(observation)?;
+    let now = instant_of(moment(&read, at)?);
+    let state = prodrome::registers::fold(read.nodes);
+    let mut changes = Vec::new();
+    for (genesis, prodrome) in state.prodromes() {
+        let functions = prodrome::fold::flatten(prodrome, now, &policy).map_err(|e| e.0)?;
+        let linkable = prodrome::fold::link_specs(&functions, prodrome.keys());
+        let env = prodrome::fold::env(prodrome, now, &policy);
+        let next = prodrome
+            .keys()
+            .map(|key| {
+                let spec = functions
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(prodrome::fpl::mk_absent);
+                let next = prodrome::fpl::link(&spec, &linkable).map_or(Value::Null, |closed| {
+                    json_next_change(prodrome::observe::next_change(
+                        &closed,
+                        now,
+                        &env,
+                        observation,
+                    ))
+                });
+                (key.as_ref().to_owned(), next)
+            })
+            .collect();
+        changes.push(object(vec![
+            ("genesis", json!(genesis.as_ref().map(Hash::as_str))),
+            ("next", Value::Object(next)),
+        ]));
+    }
+    printed(&object(vec![
+        ("at", Value::String(iso(now))),
+        ("changes", Value::Array(changes)),
     ]))
 }
