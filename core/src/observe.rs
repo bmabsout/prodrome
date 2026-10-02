@@ -89,10 +89,12 @@ impl Observation {
 /// When a behaviour's observed value next changes after an instant.
 ///
 /// `at` is `None` where the observed value never changes again. `exact` says
-/// which kind of answer `at` is: the observed value's NEXT STEP, where it
-/// differs from the value now, or a CONSERVATIVE bound, never later than the
-/// next step and possibly earlier. An early answer costs a redraw that changes
-/// nothing; a late one would show a stale number, so no answer is late.
+/// which kind of answer `at` is, a fact about the behaviour and not about how
+/// the term is written: the observed value's NEXT STEP, where it differs from
+/// the value now (or, `None`, a proof that it never does), or a CONSERVATIVE
+/// bound, never later than the next step and possibly earlier. An early
+/// answer costs a redraw that changes nothing; a late one would show a stale
+/// number, so no answer is late.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NextChange {
     pub at: Option<Instant>,
@@ -129,7 +131,7 @@ pub struct NextChange {
 /// proves the observed value has not moved, so the answer is never late; it
 /// is early where the enclosure is loose (members moving in opposite
 /// directions). An enclosure over all time that is one observed value
-/// answers never. The search looks about a thousand years ahead (2⁵⁵ µs) and
+/// answers never, exactly. The search looks about a thousand years ahead (2⁵⁵ µs) and
 /// answers that horizon if nothing ends sooner, which is early, not late.
 ///
 /// The enclosure applies the evaluator's own float operations to bounds, so
@@ -145,9 +147,12 @@ pub fn next_change(term: &Closed, now: Instant, env: &Env, observation: Observat
             exact: true,
         }
     } else {
+        // An enclosure over all time that is one value proves "never", which
+        // is then the step itself.
+        let at = bounded(term.term(), now, env, observation);
         NextChange {
-            at: bounded(term.term(), now, env, observation),
-            exact: false,
+            at,
+            exact: at.is_none(),
         }
     }
 }
