@@ -384,22 +384,29 @@ comparison of names.
 - It syncs like any replica (§6.1): what the host computed reaches the
   client by union, and the other way.
 
-**Hierarchical, always.** A view is a tree of functions (a page of
-sections, a section of rows, a row of a mark and a title), and the cache is
-the same tree: every node is memoised, keyed by the name of its own input, so
-a change recomputes exactly the path from the changed leaf to the root and
-every other node is a hit. A cache only at the root is all or nothing; a
-cache only at the leaves still rebuilds everything above them on every
-change. Inside a long homogeneous level (a list of rows) the tree is a
-balanced one over the elements (a measured finger tree), since the view
-factors through a monoid, `view(rows) = ⊕ row(r)`: a change there costs one
-element and a logarithmic number of combines. No change is tracked;
-unchanged inputs are hits because their names did not move.
+**Hierarchical, always, and generically so.** Nothing names levels. Any
+value a view reads is a tree (a fixed point of some functor), and made
+content-addressed it is a Merkle tree, every subtree named by its bytes, as
+the history itself is. A view over it is a fold, and the cache is ONE
+combinator, the memoised catamorphism:
 
-So a cost is EXPLAINED, not only measured: a redraw reports per level how
-many nodes hit and how many were recomputed, and its cost is the work along
-the paths that moved. A number that does not follow from those counts is a
-finding (a key that names too much, so too much misses, or too little, so a
+    memoCata alg (Fix f) = memo (name (Fix f)) (alg (fmap (memoCata alg) f))
+
+the algebra memoised at every node, keyed by that node's name. So the cache
+has the data's own shape, whatever the data is: a change recomputes the
+spine from the changed subtree to the root and every other node is a hit,
+with no change tracked and no level chosen. A cache only at the root is all
+or nothing, and a cache only at the leaves rebuilds everything above them;
+this is neither, and it is the same for a list, a page, a conversation or a
+term. Where a node holds a long sequence, the sequence is itself a balanced
+tree (a measured finger tree), so the spine through it is logarithmic. The
+output is a tree of the same names (a keyed DOM, a node per name), so
+placing a redraw also touches only the spine.
+
+So a cost is EXPLAINED, not only measured: a redraw reports, per node and by
+depth, what hit and what was recomputed, and its cost is the work along the
+spines that moved. A number that does not follow from those counts is a
+finding (a name that covers too much, so too much misses, or too little, so a
 hit is wrong).
 
 **Time is an input like any other, keyed by what is observed.** A cache keyed
@@ -433,10 +440,10 @@ Each is a property test over generated histories, in the core's `tests/`:
    the replica of record reading that union.
 8. **Memo.** Reading through a cache equals computing (`memo f = f` on
    generated arguments, with entries evicted at random between reads); a
-   key's two values are reported, never chosen; a view memoised per
-   element over a monoid equals the view over the whole; and a redraw's
-   reported per-level recomputes and hits are exactly the nodes whose input
-   names did and did not move.
+   key's two values are reported, never chosen; a fold memoised at every
+   node (`memoCata`) equals the plain fold, over generated trees of any
+   shape; and a redraw's reported recomputes and hits are exactly the nodes
+   whose names did and did not move.
 9. **Next change.** For a behaviour that answers its next observed change at
    `t₁` after `t₀`, the observed value is constant on `[t₀, t₁)` and differs
    at `t₁`.
