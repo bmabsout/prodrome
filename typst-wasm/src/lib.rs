@@ -55,6 +55,7 @@ const STATE: &str = "/state.json";
 /// The Typst version this module was built against — the version the page's
 /// documents are written for.
 #[wasm_bindgen]
+#[must_use]
 pub fn typst_version() -> String {
     "0.15.1".to_owned()
 }
@@ -62,6 +63,7 @@ pub fn typst_version() -> String {
 /// Add every face in one font file (TTF, OTF or a collection) to every later
 /// compilation. Answers the number of faces; zero means not a font.
 #[wasm_bindgen]
+#[allow(clippy::must_use_candidate)] // JavaScript calls it for its effect
 pub fn add_font(data: Vec<u8>) -> usize {
     world::add_font(data)
 }

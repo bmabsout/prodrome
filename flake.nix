@@ -374,17 +374,32 @@
             doInstallCargoArtifacts = false;
             installPhaseCommand = "touch $out";
           });
-          # typst-wasm's own tests (offsets, errors as values, packages,
-          # highlighting, completion), natively: a separate workspace, so a
-          # separate check.
+          # typst-wasm's own tests (offsets, errors as values, packages, the
+          # persistent world, highlighting, completion), natively: a separate
+          # workspace, so a separate check. Clippy, pedantic, over every
+          # feature set, since each must stand alone with no dead code; the
+          # tests over the two that are built.
           prodrome-typst-wasm-tests = craneLib.mkCargoDerivation (typstCommon // {
             pname = "prodrome-typst-wasm-tests";
             cargoArtifacts = craneLib.buildDepsOnly (typstCommon // {
               pname = "prodrome-typst-wasm-tests";
               doCheck = false;
-              buildPhaseCargoCommand = "cargo test --release --locked --no-run";
+              buildPhaseCargoCommand = ''
+                cargo check --release --locked --all-targets
+                cargo test --release --locked --no-run
+                cargo test --release --locked --no-run --no-default-features
+              '';
             });
-            buildPhaseCargoCommand = "cargo test --release --locked";
+            nativeBuildInputs = [ pkgs.clippy ];
+            buildPhaseCargoCommand = ''
+              for features in "" oneshot highlight ide oneshot,highlight oneshot,ide highlight,ide \
+                  oneshot,highlight,ide; do
+                cargo clippy --release --locked --all-targets --no-default-features --features "$features" \
+                  -- -D warnings -W clippy::pedantic
+              done
+              cargo test --release --locked
+              cargo test --release --locked --no-default-features
+            '';
             doInstallCargoArtifacts = false;
             installPhaseCommand = "touch $out";
           });
