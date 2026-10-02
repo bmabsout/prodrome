@@ -108,6 +108,7 @@
 //! - `registers`— §6.6: the DAG's structure and each todo's stream, a monoid action
 //! - `fold`     — §6.1–6.5: the registers, and every reading a projection of them
 //! - `breaks`   — §7 breakpoints and series knots
+//! - `observe`  — §7: a view's precision, and when the value it shows next changes
 //! - `view`     — §6.7: the entry, the composition of the folds above
 //! - `reference`— the payload the vectors were taken with (feature `reference`)
 
@@ -123,6 +124,7 @@ pub mod fpl;
 pub mod genesis;
 pub mod literal;
 pub mod memo;
+pub mod observe;
 pub mod payload;
 pub mod policy;
 /// The reference payload — the record shape `conformance/*.py` was taken

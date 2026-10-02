@@ -35,6 +35,7 @@
 //! | `fulfillment`    | §7: what is this term worth now                          |
 //! | `explain`        | §7: what is that number made of                          |
 //! | `series_knots`   | §7 knots: what is that term's curve over a window        |
+//! | `next_change`    | §7: when does that term's value, as a view shows it, next change |
 //! | `link`           | §7.2: every ref in a term bound to the todo it names     |
 //! | `term_json`      | §2 → §7: a stored term's print, as the JSON shape above  |
 //! | `version`        | which core answered                                     |
