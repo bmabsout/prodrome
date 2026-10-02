@@ -202,6 +202,7 @@ impl World for Sandbox {
     }
 }
 
+#[cfg(feature = "ide")]
 impl typst_ide::IdeWorld for Sandbox {
     fn upcast(&self) -> &dyn World {
         self

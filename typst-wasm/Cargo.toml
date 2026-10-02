@@ -10,11 +10,23 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 typst = "=0.15.1"
 typst-html = "=0.15.1"
-typst-syntax = "=0.15.1"
-typst-ide = "=0.15.1"
+typst-ide = { version = "=0.15.1", optional = true }
 wasm-bindgen = "=0.2.127"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# EVERYTHING BUT THE COMPILER IS A FEATURE, each independent of the others.
+# The default is the viewer's module, editor and all; `--no-default-features`
+# is a host's views module (`nix build .#prodrome-typst-wasm-views`): `Project`,
+# `add_font` and `typst_version`, and nothing a view never calls.
+[features]
+default = ["oneshot", "highlight", "ide"]
+# `compile_html(source, files_json)`: a world made for one call.
+oneshot = []
+# `highlight(source)`: the editor's syntax colouring.
+highlight = []
+# `complete` and `hover`, from typst-ide.
+ide = ["dep:typst-ide"]
 
 [workspace]
 
