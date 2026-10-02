@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 and 7 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3, 7 and 8 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -418,6 +418,45 @@ observed value next changes (push-pull reactivity: a behaviour knows its next
 discontinuity), so a client redraws exactly at those instants instead of on a
 ticking clock.
 
+**What landed.** `prodrome::memo` (stage 8, §8), which depends on the hash
+type and on nothing else of the crate.
+
+- **The cache as a store.** `memo::Cache` holds (key, value) pairs, a
+  `memo::Key` being a function's name and its argument's. A key reads as a
+  miss, a hit or a FINDING (`Lookup::Finding`, every value it holds), so
+  the cache is the free structure on its pairs, read as a partial function
+  where it is one. `join` is union and answers each finding it makes;
+  `insert` does the same for one pair. Any entry may be removed, and a
+  `memo::Evict` policy decides which go: `Keep` drops none, `Lru` keeps a
+  bounded number. It is not an `EventStore` and holds no objects, on
+  purpose: an object is never deleted, is verified by rehashing and
+  belongs in a checkpoint, an entry is none of these, and with no type in
+  common no entry can be received into a history or an object evicted from
+  one. It syncs as a replica does, by `join`, and a host sends
+  `Cache::pairs`.
+- **The memoised fold.** A `memo::Tree` is a node with a content name and
+  children; a `memo::Algebra` has a name and a step from one layer (the
+  node, its children's results) to a result. `memo::fold` runs the step
+  bottom-up, memoised at every node by (the algebra's name, the node's
+  name), and never enters a subtree whose top hits. Its `memo::Report`
+  says, per node and by depth, what hit, what was computed and which keys
+  held two values (computed, and neither used). `memo::name` is the name a
+  node must have: its own bytes, length-prefixed, and its children's
+  names in order, so a change renames exactly its spine.
+- **A long sequence.** `memo::balance` builds a sequence into a balanced
+  tree of the host's own chunk nodes, each named over its children and
+  holding their measure. A run of nodes closes after a node whose name
+  ends a chunk (one in four) or at sixteen, so the shape is a function of
+  the elements alone: two replicas holding one sequence build one tree and
+  share its cache, and an edit renames a logarithmic spine.
+
+No wasm export. The algebra is a host's code, so a fold in the module
+would call back across the boundary at every node it computes, and what
+the boundary would carry (a tree of JSON and a name per algebra) is the
+host's to define. The first host is a client's view, in the host's own
+language or in `typst-wasm`'s workspace, and an export is added when one
+reads a cache through the module.
+
 ### 6.3 A prodrome of prodromes is a prodrome
 
 A register's value may itself be a prodrome: a conversation inside the store
@@ -611,6 +650,28 @@ In this repository, after stage 3:
    completes when cut short, and reads as the union; a store in memory
    appends as a disk store does over any history; an overlay reads as its
    union and its flush leaves the base reading it.
+8. **Caches** (§6.2). A cache as a store of (key, value) pairs in the flat
+   order per key, joined by union, a key's two values a finding; eviction
+   by any policy, one bounded LRU shipped; and the memoised fold over a
+   content-addressed tree of any shape, memoised at every node and
+   reporting what hit and what was computed; a long sequence as a
+   balanced, measured tree. Law 8.
+
+   BUILT: `prodrome::memo` (§6.2's "What landed"). Laws,
+   `core/tests/all/memo.rs`: a join is union (commutative, associative,
+   idempotent), a key holding two values reads as a finding with both and
+   never as either, an LRU cache holds its bound. `memo_fold.rs`, over
+   lists, binary trees and rose trees and generated edits (a node
+   relabelled, a subtree grafted): the memoised fold is the plain fold,
+   two algebras sharing one cache, entries dropped at random between folds
+   and under a small LRU; after an edit the fold computes exactly the spine
+   from the edited subtrees to the root, each node once, and hits exactly at
+   the top of each unchanged subtree beside it; with subtrees shared, it
+   computes exactly the names it had not seen; two caches joined fold as
+   either; a forged second value is reported and the node computed.
+   `memo_balance.rs`: a balanced sequence folds to the sequence and its
+   measures index it, its shape is its elements, and an edit computes a
+   logarithmic number of nodes where a list computes all before it.
 
 ## 9. Non-goals
 

@@ -87,8 +87,29 @@ a different object than before wherever its entity has a head outside the
 registers it writes. A reader before this one reports such a dep as
 writing no register its change writes.
 
+And caches (`docs/design-register-types.md` §6.2, stage 8): a cache is a
+tabulation of a pure function, a store of (key, value) pairs joined by
+union, and hierarchical caching is one memoised fold over a
+content-addressed tree of any shape. A MINOR change under this file's
+rule: a new module, and no stored byte, vector or export moves.
+
 ### Added
 
+- **Caches (design §6.2, stage 8, law 8):** `memo`, depending on the hash
+  type alone. `memo::Cache`, pairs keyed by `memo::Key` (a function's
+  name and its argument's), each key a register in the flat order:
+  `get` answers a miss, a hit or a `Finding` (two values, held and never
+  chosen), `insert` and `join` (union) answer the findings they make,
+  and any entry may be removed. `memo::Evict` decides what is dropped;
+  `Keep` and a bounded `Lru` ship. `memo::fold`, the memoised
+  catamorphism over any `memo::Tree` (a content name and children) by any
+  `memo::Algebra` (a name and a step), memoised at every node by
+  (algebra, node) and answering a `memo::Report`: per node and by depth,
+  what hit, what was computed and which keys held two values.
+  `memo::name`, the Merkle name a node must have, covering its children's.
+  `memo::balance`, a long sequence as a balanced tree of the host's own
+  measured chunks, its shape a function of the elements alone. Laws in
+  `core/tests/all/memo.rs`, `memo_fold.rs` and `memo_balance.rs`.
 - **Replicas (design §6.1, stage 7, SPEC §3 and law 35):** `store::Replica`,
   what every store is: `held` (its objects, fold and tips of one look),
   `tips`, `print`, `append` and `receive`, which takes in what some seeds
