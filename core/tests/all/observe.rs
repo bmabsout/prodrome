@@ -9,7 +9,7 @@ use std::num::NonZeroU32;
 
 use crate::common::terms::{a_closed_leaf, an_env, an_exact_term, grown_to, hours, moment, ok};
 use chrono::Duration;
-use prodrome::fpl::{self, Closed, Env, Instant};
+use prodrome::fpl::{self, Closed, Env, Instant, Outcome};
 use prodrome::observe::{next_change, NextChange, Observation, Rounding};
 use prodrome::term::Term;
 use proptest::prelude::*;
@@ -276,4 +276,76 @@ fn a_schedule_steps_at_its_knots_and_a_coarse_view_steps_less() {
     let fine = next_change(&term, moment(10), &env, Observation::PERCENT).at;
     let coarse = next_change(&term, moment(10), &env, tenths).at;
     assert!(fine < coarse, "{fine:?} vs {coarse:?}");
+}
+
+/// A lookup of history is conservative, and as sharp as its parts: an `After`
+/// whose two readings are flat changes where its binding comes into force,
+/// and never where none is held.
+#[test]
+fn an_after_changes_where_its_binding_comes_into_force() {
+    let after = ok(fpl::mk_after(
+        "alpha".into(),
+        moment(0),
+        ok(fpl::mk_flat(0.3)),
+        ok(fpl::mk_flat(0.6)),
+        None,
+    ));
+    let term = closed(&after);
+    let mut env = Env::new();
+    assert_eq!(
+        next_change(&term, moment(0), &env, Observation::PERCENT),
+        NextChange {
+            at: None,
+            exact: false
+        }
+    );
+    env.bind("alpha", Outcome::Completed(moment(50)));
+    assert_eq!(
+        next_change(&term, moment(0), &env, Observation::PERCENT),
+        NextChange {
+            at: Some(moment(50)),
+            exact: false
+        }
+    );
+}
+
+/// A sampled composite of parts that move together is enclosed exactly by
+/// its parts' ends, so its conservative answer is its step.
+#[test]
+fn a_conjunction_of_falling_parts_answers_its_step() {
+    let falling = |end| {
+        ok(fpl::mk_decay(
+            0.9,
+            0.1,
+            moment(end),
+            Duration::hours(100),
+            None,
+        ))
+    };
+    let term = closed(&ok(fpl::mk_conj(vec![falling(100), falling(150)], -4.0)));
+    let env = Env::new();
+    for now in [moment(10), moment(60), moment(120)] {
+        let next = next_change(&term, now, &env, Observation::PERCENT);
+        assert!(!next.exact);
+        let at = next.at.expect("a falling term changes");
+        let seen = |at| seen(&term, at, &env, Observation::PERCENT);
+        assert_ne!(seen(at), seen(now), "a step at {at}");
+        assert_eq!(seen(at - Duration::microseconds(1)), seen(now));
+    }
+}
+
+/// Folding time onto a cycle, or windowing a flat term, moves nothing.
+#[test]
+fn a_cycle_or_a_window_of_a_flat_term_never_changes() {
+    let flat = ok(fpl::mk_flat(0.25));
+    let cycle = ok(fpl::mk_periodic(
+        Duration::hours(24),
+        moment(0),
+        flat.clone(),
+    ));
+    let window = ok(fpl::mk_within(Duration::hours(24), -4.0, flat));
+    for term in [cycle, window] {
+        let next = next_change(&closed(&term), moment(3), &Env::new(), Observation::PERCENT);
+        assert_eq!(next.at, None, "{term:?}");
+    }
 }
