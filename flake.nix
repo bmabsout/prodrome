@@ -211,18 +211,28 @@
           strictDeps = true;
         };
 
-        typstWasmArgs = typstCommon // {
+        # ONE BUILD PER FEATURE SET. The viewer's module is the crate's
+        # default features: the compiler, `compile_html`, and the editor's
+        # highlighting, completion and hover. A host that compiles views over
+        # its state takes `prodrome-typst-wasm-views`, `--no-default-features`:
+        # the compiler and the persistent `Project`, and nothing else, so the
+        # module a first visit pays for holds nothing a view never calls.
+        # Both share one dependency build: typst-ide is the only crate the
+        # default features add, and it changes no other crate's features.
+        typstWasmArgs = features: typstCommon // {
           nativeBuildInputs = [ pkgs.lld ];
           doCheck = false;
           buildPhaseCargoCommand = ''
-            cargo build --offline --frozen \
+            cargo build --offline --frozen ${features} \
               --profile wasm-release --target wasm32-unknown-unknown
           '';
         };
 
-        prodrome-typst-wasm = craneLib.mkCargoDerivation (typstWasmArgs // {
-          pname = "prodrome-typst-wasm";
-          cargoArtifacts = craneLib.buildDepsOnly (typstWasmArgs // { pname = "prodrome-typst-wasm"; });
+        typstWasmDeps = craneLib.buildDepsOnly (typstWasmArgs "" // { pname = "prodrome-typst-wasm"; });
+
+        typstWasm = { pname, features, description }: craneLib.mkCargoDerivation (typstWasmArgs features // {
+          inherit pname;
+          cargoArtifacts = typstWasmDeps;
 
           nativeBuildInputs = [
             pkgs.lld
@@ -247,10 +257,22 @@
           '';
 
           meta = {
-            description = "Typst 0.15.1 as WebAssembly: HTML export, highlighting and completion";
+            inherit description;
             license = with lib.licenses; [ mit asl20 ];
           };
         });
+
+        prodrome-typst-wasm = typstWasm {
+          pname = "prodrome-typst-wasm";
+          features = "";
+          description = "Typst 0.15.1 as WebAssembly: HTML export, highlighting and completion";
+        };
+
+        prodrome-typst-wasm-views = typstWasm {
+          pname = "prodrome-typst-wasm-views";
+          features = "--no-default-features";
+          description = "Typst 0.15.1 as WebAssembly for views: HTML export over a persistent world";
+        };
 
         # THE VIEWER (`nix build .#prodrome-viewer`): the static app — no
         # data in it — that folds a store with prodrome-wasm and typesets it
@@ -326,7 +348,8 @@
       in
       {
         packages = {
-          inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-viewer;
+          inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-typst-wasm-views
+            prodrome-viewer;
           default = prodrome-cli;
         };
 
@@ -394,7 +417,7 @@
           # published pair differs only in the profile and in wasm-opt.
           prodrome-wasm = prodrome-wasm-check;
           prodrome-viewer = viewer { pname = "prodrome-viewer-check"; wasm = prodrome-wasm-check; };
-          inherit prodrome-cli prodrome-github prodrome-typst-wasm;
+          inherit prodrome-cli prodrome-github prodrome-typst-wasm prodrome-typst-wasm-views;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's
