@@ -454,7 +454,11 @@ FPL, below. A content record joins whoever wrote it.
 5. `history(policy)`: the environment as a function of time. `history.at(t)`
    is the registers folded at `t`, which change only at the instants writes
    are dated; the tendings, a grow-only set, are their own history. No
-   causal order enters it.
+   causal order enters it. It is a SCHEDULE: a value before any write, and
+   from each instant a write is dated the registers folded there, its value
+   at `t` that of the last such instant at or before `t`. Every fold at a
+   moment above is this schedule, under its policy, read at `t`, and
+   `flatten`'s pieces are it priced.
 6. **Registers** over nodes `(name, parents, event, genesis)`, under any
    schema; for the todo's, one register
    per `(genesis, kind ∈ {state, spec, content}, todo)` holds its frontier,
@@ -614,7 +618,9 @@ lowers anything it is composed with.
   `Periodic` folded onto one cycle) stops being one observed value. Never
   later than the true change, possibly earlier; an enclosure over all time
   that is one value proves never, which is exact. `exact` is a fact about
-  the behaviour, not the term's syntax. The environment is a snapshot, read as
+  the behaviour, not the term's syntax. On the exact fragment the observed
+  value from `now` on is itself a schedule, a knot at every step, and the
+  answer is its first knot after `now` whose value differs. The environment is a snapshot, read as
   evaluation reads it: a binding or tending dated after `now` comes into
   force at its instant.
 - A term has ONE serialization and it is §2's literal print. A JavaScript
