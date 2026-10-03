@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use crate::common::terms::{a_closed_leaf, an_env, an_exact_term, grown_to, hours, moment, ok};
 use chrono::Duration;
 use prodrome::fpl::{self, Closed, Env, Instant, Outcome};
-use prodrome::observe::{next_change, NextChange, Observation, Rounding};
+use prodrome::observe::{next_change, observed, NextChange, Observation, Rounding};
 use prodrome::term::Term;
 use proptest::prelude::*;
 
@@ -188,6 +188,42 @@ proptest! {
             .find(|at| seen(&term, *at, &env, observation) != here);
         if let Some(found) = found {
             prop_assert!(next.at.is_some_and(|at| at <= found), "{:?} after a change at {}", next, found);
+        }
+    }
+
+    /// The observed schedule MEANS the observed value: on the exact fragment
+    /// it reads as `observation ∘ ⟦term⟧` at every instant from `now`, at
+    /// each of its knots and the microsecond before, and its `next_change`
+    /// is `next_change`; off it there is none.
+    #[test]
+    fn the_observed_schedule_is_the_observed_value(
+        term in a_sampled_term(),
+        now in an_instant(),
+        observation in an_observation(),
+        k in prop::collection::vec(0i64..2000 * 3600, 8),
+    ) {
+        let term = closed(&term);
+        let env = Env::new();
+        let Some(schedule) = observed(&term, now, &env, observation) else {
+            // Off the fragment the answer is a bound, exact only where an
+            // enclosure proves "never".
+            let next = next_change(&term, now, &env, observation);
+            prop_assert!(!next.exact || next.at.is_none());
+            return Ok(());
+        };
+        prop_assert_eq!(
+            next_change(&term, now, &env, observation),
+            NextChange { at: schedule.next_change(now), exact: true }
+        );
+        let one = Duration::microseconds(1);
+        let mut at: Vec<Instant> = k.iter().map(|s| now + Duration::seconds(*s)).collect();
+        at.push(now);
+        for (knot, _) in schedule.knots() {
+            prop_assert!(*knot > now);
+            at.extend([*knot - one, *knot]);
+        }
+        for t in at.into_iter().filter(|t| *t >= now) {
+            prop_assert_eq!(*schedule.at(t), seen(&term, t, &env, observation), "at {}", t);
         }
     }
 
