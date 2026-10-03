@@ -226,7 +226,10 @@ fn lowered(candidates: &Candidates) -> String {
 /// Per entity: `reading` is the confirmed one; `claim` the claimed one where
 /// it disputes it; `spec` is `flatten`'s function, `Absent` where none, and
 /// `value` its fulfillment at `t`, linked against its prodrome's functions
-/// under the CONFIRMED environment; `conflicts` every register with two
+/// under the CONFIRMED environment, and a qualified reference through the
+/// set of the DAG's prodromes a `Genesis` begins (design §6.3.1), each read
+/// as `spec` is;
+/// `conflicts` every register with two
 /// writes; and `confidence` whether a claim was refused or a winning write is
 /// one the policy does not confirm.
 ///
@@ -240,9 +243,16 @@ pub fn entries<E: Row + History + Bind>(
 ) -> Result<Vec<Entry<E>>, ProdromeError> {
     let state = registers::fold(nodes);
     let now = fpl::instant_of(t);
-    let mut out = Vec::new();
+    let mut members = Vec::new();
     for (genesis, prodrome) in state.prodromes() {
-        let fpl::Member { specs, env } = fold::member(prodrome, now, policy)?;
+        members.push((genesis, prodrome, fold::member(prodrome, now, policy)?));
+    }
+    let set: fpl::Stores = members
+        .iter()
+        .filter_map(|(genesis, _, member)| Some(((*genesis).clone()?, member.clone())))
+        .collect();
+    let mut out = Vec::new();
+    for (genesis, prodrome, fpl::Member { specs, env }) in members {
         for (key, stream) in prodrome {
             let registers = fold::read(stream, Some(now), policy);
             let reading = E::reading(&registers);
@@ -250,8 +260,11 @@ pub fn entries<E: Row + History + Bind>(
             let claim = (!stream.iter().all(|s| policy.standing(&*s.event).binds()))
                 .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
                 .filter(|claimed| E::disputes(&reading, claimed));
-            let spec = specs[key.as_ref()].clone();
-            let linked = fpl::link(&spec, &specs);
+            let spec = specs
+                .get(key.as_ref())
+                .cloned()
+                .unwrap_or_else(fpl::mk_absent);
+            let linked = fpl::link_in(&spec, &specs, &set);
             out.push(Entry {
                 genesis: genesis.clone(),
                 key: key.clone(),

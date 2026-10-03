@@ -718,7 +718,9 @@ moves, and at no other time.
   as references read them (`fpl::Member`: functions and environment), with
   a host's names (`Stores::named`); `fold::member` reads one prodrome so,
   `fold::stores` a replica's prodromes, and `view::entries` prices each
-  entry through `fold::member`, so the two cannot disagree.
+  entry through `fold::member`, so the two cannot disagree, and links it
+  through the set of its DAG's prodromes, so a replica of several reads as
+  the set it is.
 - **The qualified reference.** `fpl::mk_ref_in` and `fpl::link_in`, of
   which `link` is the case with no other stores.
 - **The motivating use**, as a test: `core/tests/schemas/inbox.rs`, an
@@ -778,7 +780,9 @@ Each is a property test over generated histories, in the core's `tests/`:
     qualified reference reads, through the set, what its member alone
     prices its entity at, by genesis or by a declared name; one to a store
     or an entity the set lacks reads `∅`; an unqualified term links alike
-    under any set; and a proposal priced by the todo it serves moves
+    under any set; a view prices a qualified reference to a sibling
+    prodrome as that prodrome's view does; and a proposal priced by the
+    todo it serves moves
     exactly when that todo's history does. BUILT: SPEC law 41,
     `core/tests/all/sets.rs`.
 
