@@ -195,7 +195,8 @@
         # dependencies built once, the same pinned wasm-bindgen, `wasm-opt
         # -Os` — with the `web/` glue only: its one consumer is the viewer.
         # `SIZES` records the module raw and brotli-compressed, since the size
-        # is what a first visit pays.
+        # is what a first visit pays, and `web/typst_bg.wasm.br` is that
+        # brotli file, quality 11.
         typstCommon = {
           version = "0.1.0";
           src = lib.fileset.toSource {
@@ -211,18 +212,29 @@
           strictDeps = true;
         };
 
-        typstWasmArgs = typstCommon // {
+        # ONE BUILD PER FEATURE SET. The viewer's module is the crate's
+        # default features: the compiler, `compile_html`, and the editor's
+        # highlighting, completion and hover. A host that compiles views over
+        # its state takes `prodrome-typst-wasm-views`: the compiler, the
+        # persistent `Project` and `highlight`, which is the parser Typst
+        # already holds; and its editor `prodrome-typst-wasm-editor`, the same
+        # with typst-ide's completion and hover. All three share one
+        # dependency build: typst-ide is the only crate a feature adds, and it
+        # changes no other crate's features.
+        typstWasmArgs = features: typstCommon // {
           nativeBuildInputs = [ pkgs.lld ];
           doCheck = false;
           buildPhaseCargoCommand = ''
-            cargo build --offline --frozen \
+            cargo build --offline --frozen ${features} \
               --profile wasm-release --target wasm32-unknown-unknown
           '';
         };
 
-        prodrome-typst-wasm = craneLib.mkCargoDerivation (typstWasmArgs // {
-          pname = "prodrome-typst-wasm";
-          cargoArtifacts = craneLib.buildDepsOnly (typstWasmArgs // { pname = "prodrome-typst-wasm"; });
+        typstWasmDeps = craneLib.buildDepsOnly (typstWasmArgs "" // { pname = "prodrome-typst-wasm"; });
+
+        typstWasm = { pname, features, description }: craneLib.mkCargoDerivation (typstWasmArgs features // {
+          inherit pname;
+          cargoArtifacts = typstWasmDeps;
 
           nativeBuildInputs = [
             pkgs.lld
@@ -241,16 +253,38 @@
             wasm-bindgen --target web --out-dir "$out/web" --out-name typst "$wasm"
             # shellcheck disable=SC2086
             wasm-opt -Os $features -o "$out/web/typst_bg.wasm" "$out/web/typst_bg.wasm"
+            # PRECOMPRESSED, so a host serves `typst_bg.wasm.br` with
+            # `Content-Encoding: br` and never compresses 20 MB per request,
+            # nor settles for the quality an on-the-fly compressor can afford.
+            brotli -q 11 -o "$out/web/typst_bg.wasm.br" "$out/web/typst_bg.wasm"
             raw=$(stat -c %s "$out/web/typst_bg.wasm")
-            brotli=$(brotli -c -q 11 "$out/web/typst_bg.wasm" | wc -c)
+            brotli=$(stat -c %s "$out/web/typst_bg.wasm.br")
             printf 'typst_bg.wasm\t%s bytes raw\t%s bytes brotli\n' "$raw" "$brotli" | tee "$out/SIZES"
           '';
 
           meta = {
-            description = "Typst 0.15.1 as WebAssembly: HTML export, highlighting and completion";
+            inherit description;
             license = with lib.licenses; [ mit asl20 ];
           };
         });
+
+        prodrome-typst-wasm = typstWasm {
+          pname = "prodrome-typst-wasm";
+          features = "";
+          description = "Typst 0.15.1 as WebAssembly: HTML export, highlighting and completion";
+        };
+
+        prodrome-typst-wasm-views = typstWasm {
+          pname = "prodrome-typst-wasm-views";
+          features = "--no-default-features --features highlight";
+          description = "Typst 0.15.1 as WebAssembly for views: HTML export over a persistent world";
+        };
+
+        prodrome-typst-wasm-editor = typstWasm {
+          pname = "prodrome-typst-wasm-editor";
+          features = "--no-default-features --features highlight,ide";
+          description = "Typst 0.15.1 as WebAssembly for a views editor: the views module and completion";
+        };
 
         # THE VIEWER (`nix build .#prodrome-viewer`): the static app — no
         # data in it — that folds a store with prodrome-wasm and typesets it
@@ -326,7 +360,8 @@
       in
       {
         packages = {
-          inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-viewer;
+          inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-typst-wasm-views
+            prodrome-typst-wasm-editor prodrome-viewer;
           default = prodrome-cli;
         };
 
@@ -351,20 +386,46 @@
             doInstallCargoArtifacts = false;
             installPhaseCommand = "touch $out";
           });
-          # typst-wasm's own tests (offsets, errors as values, packages,
-          # highlighting, completion), natively: a separate workspace, so a
-          # separate check.
+          # typst-wasm's own tests (offsets, errors as values, packages, the
+          # persistent world, highlighting, completion), natively: a separate
+          # workspace, so a separate check. Clippy, pedantic, over every
+          # feature set, since each must stand alone with no dead code; the
+          # tests over the two that are built.
           prodrome-typst-wasm-tests = craneLib.mkCargoDerivation (typstCommon // {
             pname = "prodrome-typst-wasm-tests";
             cargoArtifacts = craneLib.buildDepsOnly (typstCommon // {
               pname = "prodrome-typst-wasm-tests";
               doCheck = false;
-              buildPhaseCargoCommand = "cargo test --release --locked --no-run";
+              buildPhaseCargoCommand = ''
+                cargo check --release --locked --all-targets
+                cargo test --release --locked --no-run
+                cargo test --release --locked --no-run --no-default-features
+              '';
             });
-            buildPhaseCargoCommand = "cargo test --release --locked";
+            nativeBuildInputs = [ pkgs.clippy ];
+            buildPhaseCargoCommand = ''
+              for features in "" oneshot highlight ide oneshot,highlight oneshot,ide highlight,ide \
+                  oneshot,highlight,ide; do
+                cargo clippy --release --locked --all-targets --no-default-features --features "$features" \
+                  -- -D warnings -W clippy::pedantic
+              done
+              cargo test --release --locked
+              cargo test --release --locked --no-default-features
+            '';
             doInstallCargoArtifacts = false;
             installPhaseCommand = "touch $out";
           });
+          # What a host recompiling its views pays, old export against new,
+          # on the published modules (`typst-wasm/bench/views.mjs`): a
+          # verdict that every compilation it times answers the HTML it
+          # should, and the timings and memory as its output, `$out/BENCH`.
+          prodrome-typst-wasm-bench = pkgs.runCommand "prodrome-typst-wasm-bench"
+            { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            mkdir -p $out
+            node ${./typst-wasm/bench/views.mjs} ${prodrome-typst-wasm}/web ${prodrome-typst-wasm-views}/web \
+              > $out/BENCH
+            cat $out/BENCH
+          '';
           # The Typst package compiles its examples with the typst the
           # pinned nixpkgs ships — 0.15.1, the version typst-wasm pins — to
           # PDF and to HTML, so a layout that breaks either target fails here,
@@ -394,7 +455,8 @@
           # published pair differs only in the profile and in wasm-opt.
           prodrome-wasm = prodrome-wasm-check;
           prodrome-viewer = viewer { pname = "prodrome-viewer-check"; wasm = prodrome-wasm-check; };
-          inherit prodrome-cli prodrome-github prodrome-typst-wasm;
+          inherit prodrome-cli prodrome-github prodrome-typst-wasm prodrome-typst-wasm-views
+            prodrome-typst-wasm-editor;
         };
 
         # `nix develop` — the toolchain the checks above use, plus the editor's
