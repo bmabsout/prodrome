@@ -1097,3 +1097,5 @@ In this repository, after stage 3:
 - Merging values a type does not order. Incomparable concurrent values are a
   conflict, shown, and a later write that descends from both settles it
   (under an inflationary register, only a write at or above both, §6.0).
+
+(Probe: a one-line change to the docs only, timed by CI.)
