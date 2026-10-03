@@ -707,6 +707,21 @@ and every vector and export reads as it did.
 - `conformance/dag.py`: the `env` of seeds 9, 27 and 34, whose state is in
   conflict, reads as the candidate set (law 22). Nothing else moves.
 
+### Changed
+
+- **CI: the pull request loop is about a minute (README, Testing).** A
+  pull request's `cargo` job runs fmt, clippy and the workspace's tests
+  with the flake's toolchain, in a `target/` restored from main's last
+  run, and recompiles only the crates whose sources it changed: freshness
+  is decided by the git blob names of what an artefact was built from
+  (`.github/scripts/target-sources.sh`), not by checkout times. Each
+  property law runs at most `PRODROME_MAX_CASES` cases, 32 on a pull
+  request, through one rule every law's configuration now goes through
+  (`core/tests/common/cases.rs`); main and a new nightly run take every
+  law's full count, the nightly with fresh seeds. `nix flake check` stays
+  the gate on main and runs beside the loop on a pull request. No law,
+  vector or stored byte changes.
+
 ### Fixed
 
 - **`fsck` quarantines what fails its hash and loses no byte (SPEC §3,
