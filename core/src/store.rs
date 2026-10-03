@@ -493,9 +493,12 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let mut decision = self.decision()?;
         let memory = &mut decision.memory;
         let taken = memory::receive(|name| memory.holds(name), seeds, print_of)?;
+        // A waiting object is walked through, to what it waits for, and its
+        // file, already here, is not written again.
         self.place(
             taken
                 .iter()
+                .filter(|(verified, _)| !memory.files().contains_key(verified.name()))
                 .map(|(verified, print)| (verified.name(), print.as_slice())),
         )?;
         let now = SystemTime::now();

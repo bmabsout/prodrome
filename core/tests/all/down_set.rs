@@ -214,9 +214,11 @@ proptest! {
 /// The quarantine law at one history and one object of it.
 fn quarantine_reads_without_it(
     store: &Store,
+    intact: &Store,
     pick: prop::sample::Index,
 ) -> Result<(), TestCaseError> {
     let whole = store.dag().expect("a history reads");
+    copy_store(store.root(), intact.root());
     let names: Vec<&Hash> = whole.objects().keys().collect();
     let damaged = (*pick.get(&names)).clone();
     let resting: BTreeSet<Hash> = whole
@@ -284,6 +286,17 @@ fn quarantine_reads_without_it(
     fs::write(&path, &again).expect("damages the same way");
     let _ = store.fsck();
     prop_assert_eq!(fs::read_dir(&aside).expect("lists").count(), 2);
+
+    // The repair is a sync from a replica that has the object: the walk
+    // passes through what waited for it, and the whole history is back.
+    for tip in intact.tips().expect("derives") {
+        store.adopt(intact, &tip).expect("adopts");
+    }
+    prop_assert_eq!(&*store.dag().expect("reads"), &*whole);
+    prop_assert_eq!(
+        fs::read(&path).expect("restored"),
+        fs::read(intact.root().join("objects").join(&file)).expect("reads")
+    );
     Ok(())
 }
 
@@ -295,7 +308,8 @@ proptest! {
     /// report and kept byte for byte, and the store, through the handle that
     /// read it whole and a fresh one, reads its objects, its fold and its
     /// tips as the history without it and everything resting on it. Damaged
-    /// again, the second file is set aside beside the first.
+    /// again, the second file is set aside beside the first; a sync from a
+    /// replica that has the object brings the whole history back.
     #[test]
     fn quarantine_is_the_down_set_without_what_rests_on_it(
         logs in two_writers(),
@@ -304,7 +318,7 @@ proptest! {
     ) {
         prop_assume!(!log.is_empty());
         let scratch = Scratch::new("quarantine");
-        quarantine_reads_without_it(&changes(&scratch, &logs), pick)?;
-        quarantine_reads_without_it(&legacy(&scratch, &log), pick)?;
+        quarantine_reads_without_it(&changes(&scratch, &logs), &scratch.store("intact"), pick)?;
+        quarantine_reads_without_it(&legacy(&scratch, &log), &scratch.store("intact-legacy"), pick)?;
     }
 }
