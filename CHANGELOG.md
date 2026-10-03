@@ -123,6 +123,55 @@ answer moves; the API breaks where a `Piecewise` layer had two fields.
   instant on, as a schedule. Laws in `core/tests/all/schedule.rs`,
   `fold_laws.rs` (a reading at a moment is the readings at it) and
   `observe.rs` (the observed schedule is the observed value).
+And device signatures (`docs/design-register-types.md` §6.4, stage 11,
+SPEC §3, §5 and law 41): who wrote an object can be proven. A signature is
+an object of its own naming what it signs, so no object's bytes or name
+change and an object gains signatures at any time; a key belongs to an
+actor because an object says so; and a policy may require the proof. A
+MINOR change under this file's rule: `Signed`, `KeyAdded` and `KeyRevoked`
+are new constructors, no stored object changes, and a history whose actors
+have no keys reads, verifies and exports exactly as it did under every
+policy that does not require signatures. The API breaks where a policy
+answered about an event: it answers about an object.
+
+### Added
+
+- **Signatures and keys as objects (SPEC §3):** `sign`. `Signed(object,
+  key, signature)`, Ed25519 (`ed25519-dalek`, strict verification) over
+  `prodrome object ` and the object's name, its one parent the object it
+  signs; `KeyAdded(genesis, actor, key)`, with no parents;
+  `KeyRevoked(genesis, deps, actor, key)`, keeping the signatures beneath
+  its deps. `sign::Secret`, a device key from the seed its host keeps,
+  signing deterministically; `sign::PublicKey`, `sign::Signature`.
+- **The proof (SPEC §5, law 41):** `sign::Proof::of(dag, registrar)`, the
+  objects a key registered to their actor signed, beneath every revocation
+  of it, a function of the object set; `sign::Registrar::Anyone` (every
+  key object, as `verify` reads them) or `Roots`.
+- **The policy that requires signatures (SPEC §5):** `policy::Proven<P>`,
+  the meet of any policy and the proof, its keys registered by root keys,
+  made at a history (`Proven::new(policy, roots, history)`) and read at
+  another by `Policy::at`; `Standing::and`. An unproven object claims, a content record included.
+- **`verify` reports** a `Signed` that does not verify
+  (`Finding::Forged`) and an object whose actor has a key and which no key
+  of that actor's proves (`Finding::Unsigned`).
+- **The wasm exports:** every schema's class gains `sign(secret, object)`,
+  sealing a held object's signature into the page's replica and answering
+  `{hash, objects}` as `append` does; `proven(roots)`; and the static
+  `public_key(secret)`. Every reading's policy argument also takes
+  `{untrusted, roots}`; an array of actor names reads as it did.
+
+### Changed (breaking)
+
+- **A policy answers about an object:** `Policy::standing(object, event)`
+  and `Policy::confirms(object, event)` take the object's name, and a
+  policy is asked of every object carrying an event, where the readers
+  asked only of events the schema `asks` about. `Untrusted` and
+  `Everything` answer exactly as they did; a host's own policy binds what
+  the schema does not ask about by checking `asks` itself, as `Untrusted`
+  does. `Policy::at(history)`, the policy at a history (`None` for one
+  that reads nothing of a history), which the store's `verify` asks.
+- **`dag::Finding`** gains `Forged` and `Unsigned`.
+
 And a schema as data (`docs/design-register-types.md` §5 and §6.0, stage
 10, SPEC law 40): a schema may arrive as text at run time, is admitted only
 when its laws hold, and is read by the code a Rust schema is read by. A
