@@ -355,10 +355,11 @@ law's configuration goes through.
 
 **CI** (`.github/workflows/ci.yml`) is two jobs on the flake's toolchain:
 
-- `cargo`, the loop: fmt, clippy at `-D warnings` and `cargo test` over the
-  workspace through `nix develop`, then `prodrome verify` and `list` over
-  the `roadmap-data` branch with the binary the tests built. Its `target/`
-  is restored from main's last run, and a file counts as unchanged when its
+- `cargo`, the loop, through `nix develop` as two checks in parallel:
+  `lint` (fmt, clippy at `-D warnings`, the doctests) and `test` (every
+  other test in the workspace, then `prodrome verify` and `list` over the
+  `roadmap-data` branch with the binary the tests built). Each check's
+  `target/` is restored from its own run on main, and a file counts as unchanged when its
   git blob name is the one that `target/` was built from
   (`.github/scripts/target-sources.sh`), so a pull request recompiles only
   the crates it changed. A pull request runs each law at 32 cases at most;
