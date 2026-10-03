@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use thiserror::Error;
 
+use crate::event::Hash;
 use crate::literal::{self, print_literal, Call, Finite, ProdromeError};
 use crate::schedule::Schedule;
 use crate::term::schema::{self, signatures, Field, FieldSource, Fields, Slot};
@@ -1065,15 +1066,20 @@ pub struct Member {
 }
 
 /// THE SET OF PRODROMES a term's qualified references read (§7.2), each
-/// member by its genesis, and the names a host declares for some of them.
-/// A host's environment, passed in: a schema never reads another store
-/// (design §4, `Bind`). Its reading is the product of its members'
-/// readings, so a reference into one member reads that member and nothing
-/// else (the disjointness law).
+/// member by its genesis's name, its content name, and the names a host
+/// declares for some of them. A host's environment, passed in: a schema
+/// never reads another store (design §4, `Bind`). Its reading is the
+/// product of its members' readings, so a reference into one member reads
+/// that member and nothing else (the disjointness law).
+///
+/// A member is ONE READING of one prodrome: two replicas of a prodrome are
+/// joined by syncing their objects and reading the union, never by setting
+/// two readings side by side, so `with` a genesis the set holds replaces
+/// its reading.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stores {
-    members: BTreeMap<String, Member>,
-    names: BTreeMap<String, String>,
+    members: BTreeMap<Hash, Member>,
+    names: BTreeMap<String, Hash>,
 }
 
 impl Stores {
@@ -1083,32 +1089,35 @@ impl Stores {
         Stores::default()
     }
 
-    /// These stores with `member`, the prodrome `genesis` begins.
+    /// These stores with `member`, the reading of the prodrome `genesis`
+    /// begins.
     #[must_use]
-    pub fn with(mut self, genesis: impl Into<String>, member: Member) -> Stores {
-        self.members.insert(genesis.into(), member);
+    pub fn with(mut self, genesis: Hash, member: Member) -> Stores {
+        self.members.insert(genesis, member);
         self
     }
 
     /// These stores with `name` declared for the prodrome `genesis`.
     #[must_use]
-    pub fn named(mut self, name: impl Into<String>, genesis: impl Into<String>) -> Stores {
-        self.names.insert(name.into(), genesis.into());
+    pub fn named(mut self, name: impl Into<String>, genesis: Hash) -> Stores {
+        self.names.insert(name.into(), genesis);
         self
     }
 
     /// The member a qualifier names, by its genesis: a declared name's,
-    /// else the qualifier read as a genesis.
-    fn member<'a>(&'a self, store: &'a str) -> Option<(&'a str, &'a Member)> {
-        let genesis = self.names.get(store).map_or(store, String::as_str);
-        self.members
-            .get_key_value(genesis)
-            .map(|(genesis, member)| (genesis.as_str(), member))
+    /// else the qualifier read as a genesis's name.
+    fn member(&self, store: &str) -> Option<(&Hash, &Member)> {
+        match self.names.get(store) {
+            Some(genesis) => self.members.get_key_value(genesis),
+            None => Hash::new(store)
+                .ok()
+                .and_then(|genesis| self.members.get_key_value(&genesis)),
+        }
     }
 }
 
-impl FromIterator<(String, Member)> for Stores {
-    fn from_iter<I: IntoIterator<Item = (String, Member)>>(members: I) -> Stores {
+impl FromIterator<(Hash, Member)> for Stores {
+    fn from_iter<I: IntoIterator<Item = (Hash, Member)>>(members: I) -> Stores {
         Stores {
             members: members.into_iter().collect(),
             names: BTreeMap::new(),
@@ -1150,7 +1159,7 @@ pub fn link_in(
 
 /// A variable as the linker keys it: the member it lives in, by genesis,
 /// none for the term's own prodrome, and its entity.
-type Variable = (Option<String>, String);
+type Variable = (Option<Hash>, String);
 
 /// A variable as a refusal names it: `entity` at home, `genesis/entity`
 /// elsewhere.
@@ -1164,7 +1173,7 @@ fn shown((genesis, entity): &Variable) -> String {
 /// whose functions are `specs`), every reference bound.
 fn linked(
     term: &Term,
-    home: Option<&str>,
+    home: Option<&Hash>,
     specs: &BTreeMap<String, Term>,
     stores: &Stores,
     topo: &mut Topo<Variable, Term>,
@@ -1191,13 +1200,13 @@ fn linked(
 /// The variable `entity` of the member `home`, whose functions are `specs`:
 /// its function linked there, and closed against that member's history.
 fn resolved(
-    home: Option<&str>,
+    home: Option<&Hash>,
     specs: &BTreeMap<String, Term>,
     entity: String,
     stores: &Stores,
     topo: &mut Topo<Variable, Term>,
 ) -> Result<Term, LinkError> {
-    let variable = (home.map(str::to_owned), entity);
+    let variable = (home.cloned(), entity);
     topo.settle(
         &variable,
         |path| LinkError::Cycle(path.iter().map(shown).collect()),

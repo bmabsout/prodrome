@@ -465,7 +465,7 @@ pub fn stores<E: History + Bind>(
         .into_iter()
         .map(|genesis| {
             let prodrome = folded.prodromes().get(&dag.key(&genesis)).unwrap_or(&none);
-            Ok((genesis.into_string(), member(prodrome, at, policy)?))
+            Ok((genesis, member(prodrome, at, policy)?))
         })
         .collect()
 }
