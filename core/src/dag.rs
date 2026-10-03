@@ -257,10 +257,11 @@ impl<E: Schema> Dag<E> {
     /// One object as the registers read it, in this DAG's prodromes.
     pub(crate) fn node(&self, name: &Hash) -> Option<Node<E>> {
         let (name, object) = self.objects.get_key_value(name)?;
-        Some(Node {
-            genesis: self.prodrome(name, object),
-            ..Node::of(name.clone(), object)
-        })
+        Some(Node::placed(
+            name.clone(),
+            object,
+            self.prodrome(name, object),
+        ))
     }
 
     /// §3's findings: every print that is not an object, by name, then every

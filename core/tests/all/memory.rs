@@ -131,7 +131,7 @@ fn sealed(
 /// `nodes` in the topological order `keys` draws: of the objects whose
 /// parents are all placed, the one with the least key, then name.
 fn shuffled(nodes: &[Node<Event>], keys: &[u32]) -> Vec<Node<Event>> {
-    let names: BTreeSet<&Hash> = nodes.iter().map(|node| &node.name).collect();
+    let names: BTreeSet<&Hash> = nodes.iter().map(|node| node.name()).collect();
     let mut placed: BTreeSet<&Hash> = BTreeSet::new();
     let mut left: Vec<(u32, &Node<Event>)> = nodes
         .iter()
@@ -144,15 +144,15 @@ fn shuffled(nodes: &[Node<Event>], keys: &[u32]) -> Vec<Node<Event>> {
             .iter()
             .enumerate()
             .filter(|(_, (_, node))| {
-                node.parents
+                node.parents()
                     .iter()
                     .all(|p| placed.contains(p) || !names.contains(p))
             })
-            .min_by_key(|(_, (key, node))| (*key, &node.name))
+            .min_by_key(|(_, (key, node))| (*key, node.name()))
             .map(|(i, _)| i)
             .expect("a DAG always has a ready node");
         let (_, node) = left.remove(ready);
-        placed.insert(&node.name);
+        placed.insert(node.name());
         out.push(node.clone());
     }
     out
@@ -162,10 +162,10 @@ fn shuffled(nodes: &[Node<Event>], keys: &[u32]) -> Vec<Node<Event>> {
 /// order, and the rest inserted in `order`'s.
 fn inserted(nodes: &[Node<Event>], order: &[Node<Event>], split: usize) -> Folded<Event> {
     let split = split.min(order.len());
-    let first: BTreeSet<&Hash> = order[..split].iter().map(|node| &node.name).collect();
+    let first: BTreeSet<&Hash> = order[..split].iter().map(|node| node.name()).collect();
     let prefix: Vec<Node<Event>> = nodes
         .iter()
-        .filter(|node| first.contains(&node.name))
+        .filter(|node| first.contains(node.name()))
         .cloned()
         .collect();
     let mut state = fold(&prefix);
@@ -507,12 +507,12 @@ fn an_append_answers_the_first_twin() {
             .expect("reads")
             .into_iter()
             .find(|node| {
-                node.event
-                    .as_ref()
+                node.event()
                     .is_some_and(|e| prodrome::event::canonical(e) == print)
             })
             .expect("a twin")
-            .name;
+            .name()
+            .clone();
         let objects = names_in(here.root());
         assert_eq!(here.append(twin.clone()).expect("appends"), first);
         assert_eq!(scratch.store("here").append(twin).expect("appends"), first);

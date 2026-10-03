@@ -47,7 +47,7 @@ use crate::event::{mk_woven, parents_of, Envelope, Hash};
 use crate::genesis::mk_genesis;
 use crate::literal::ProdromeError;
 use crate::policy::{Policy, Untrusted};
-use crate::registers::Folded;
+use crate::registers::{Folded, Node};
 use crate::schema::Schema;
 use crate::snapshot::mk_snapshot;
 
@@ -708,7 +708,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             .dag()?
             .nodes()?
             .into_iter()
-            .filter_map(|node| node.event)
+            .filter_map(Node::into_event)
             .collect())
     }
 

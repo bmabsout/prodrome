@@ -170,7 +170,10 @@ impl Reading {
 /// do.
 pub fn read(store: &Store, at: Datetime) -> Result<Reading, Error> {
     let nodes = store.dag()?.nodes()?;
-    let events: Vec<TodoEvent<Todo>> = nodes.iter().filter_map(|node| node.event.clone()).collect();
+    let events: Vec<TodoEvent<Todo>> = nodes
+        .iter()
+        .filter_map(|node| node.event().cloned())
+        .collect();
 
     let mut created = BTreeMap::new();
     let mut bodies = BTreeMap::new();

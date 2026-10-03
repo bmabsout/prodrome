@@ -421,6 +421,15 @@ and every vector and export reads as it did.
 
 ### Changed (breaking)
 
+- **Only a `Dag` makes a `registers::Node`** (SPEC §3, §8): `Node::of` is
+  gone and the fields are private, read by `name()`, `parents()`,
+  `event()`, `genesis()` and `into_event()`. An object's prodrome is a
+  function of the set it is in, since a `Change` naming a legacy root is in
+  the legacy prodrome and nothing in its bytes says so; a node made of one
+  envelope put such a change in a prodrome of its own. A caller folds
+  `Dag::nodes()`, and a test that built nodes by hand builds the objects
+  and collects them into a `Dag`. Two compile-fail doctests pin it.
+
 - **A change's deps are its entity's heads (SPEC §3):** `registers::deps_for`
   answers every write to the entity, in any register, that no other write
   to it descends from (`registers::heads`), so the store on disk, the store
@@ -529,6 +538,12 @@ and every vector and export reads as it did.
 
 ### Fixed
 
+- **A mixed store reads each todo as one stream.** A caller folding a store
+  of legacy objects and changes object by object (`Node::of`) split a todo
+  whose changes name the legacy root into two prodromes; nodes now come
+  only from the DAG, which places every such change with the `Sealed`s of
+  its todo. Test: `a_mixed_store_folds_a_todo_as_one_stream` in
+  `core/tests/all/registers.rs`.
 - **A handle sees a file change under a name it has read (SPEC §3).** The
   parent index a handle kept said what it gave up: an object tampered with
   after the handle verified it was not noticed by `tips()`. The memory keeps

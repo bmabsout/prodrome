@@ -68,10 +68,10 @@ pub fn verify_objects(objects: &str) -> Result<String, JsError> {
 fn streams(read: &Read<'_, Event>) -> BTreeMap<String, Vec<(Hash, Event)>> {
     let mut out: BTreeMap<String, Vec<(Hash, Event)>> = BTreeMap::new();
     for node in read.nodes {
-        if let Some(event) = &node.event {
+        if let Some(event) = node.event() {
             out.entry(event.todo().as_str().to_owned())
                 .or_default()
-                .push((node.name.clone(), event.clone()));
+                .push((node.name().clone(), event.clone()));
         }
     }
     out
