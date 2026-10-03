@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::memory::{self, Memory, Verified};
-use super::replica::{sync, Held, Replica};
+use super::replica::{accept, Held, Replica};
 use crate::dag::Dag;
 use crate::event::Hash;
 use crate::literal::ProdromeError;
@@ -74,13 +74,30 @@ impl<E: Schema, B: Replica<E>> Overlay<E, B> {
 
     /// `sync(self, base)`: the base takes in this overlay's own objects it
     /// lacks, verified, and reads the union this overlay reads. Answers
-    /// what it took.
+    /// what it took. [`Overlay::accept`] with everything chosen.
     ///
     /// # Errors
     ///
-    /// [`sync`]'s; the base takes nothing then, and a flush again completes.
+    /// [`Overlay::accept`]'s; the base takes nothing then, and a flush again
+    /// completes.
     pub fn flush(&self) -> Result<Vec<Hash>, ProdromeError> {
-        sync(self, &self.base)
+        self.accept(self.tips()?)
+    }
+
+    /// THE RESTRICTED JOIN (design §6.3): the base takes in the objects
+    /// `chosen` rest on that it lacks, verified, and nothing else of this
+    /// overlay; a batch accepted object by object. Where `chosen` is closed
+    /// under parents over the base, the base reads as it did plus exactly
+    /// `chosen`. What is not chosen stays this overlay's own, read over the
+    /// base as before, and a later flush takes it. Answers what the base
+    /// took, parents first.
+    ///
+    /// # Errors
+    ///
+    /// [`accept`]'s, a chosen name this overlay does not hold among them;
+    /// the base takes nothing then.
+    pub fn accept(&self, chosen: BTreeSet<Hash>) -> Result<Vec<Hash>, ProdromeError> {
+        accept(self, &self.base, chosen)
     }
 
     fn lock(&self) -> MutexGuard<'_, Layer<E>> {

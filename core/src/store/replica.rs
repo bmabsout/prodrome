@@ -99,8 +99,35 @@ impl<E: Schema, R: Replica<E> + ?Sized> Replica<E> for &R {
     }
 }
 
+/// THE RESTRICTED JOIN (design §6.3): `to ∪ ↓chosen`, adopting into `to`
+/// the objects of `from` that `chosen` rest on and `to` lacks, each verified
+/// on adoption, and answering them, parents first.
+///
+/// Every way one replica takes objects from another is this, with a choice
+/// of `chosen`: a sync chooses everything `from` holds (its tips), an
+/// overlay's flush chooses all of its own objects ([`super::Overlay::flush`])
+/// and its acceptance chooses some ([`super::Overlay::accept`]), and an
+/// adoption chooses one tip ([`super::EventStore::adopt`]). Where `chosen`
+/// is closed under parents over what `to` holds, `to` reads as it did plus
+/// exactly `chosen`; elsewhere it takes what they rest on too, since a
+/// replica is closed under parents. No object is renamed or rewritten: what
+/// arrives is the bytes `from` holds under each name.
+///
+/// # Errors
+///
+/// [`Replica::receive`] of `to`, a chosen name `from` does not hold among
+/// them; `to` takes nothing then.
+pub fn accept<E: Schema>(
+    from: &(impl Replica<E> + ?Sized),
+    to: &(impl Replica<E> + ?Sized),
+    chosen: BTreeSet<Hash>,
+) -> Result<Vec<Hash>, ProdromeError> {
+    to.receive(chosen, &|name| from.print(name))
+}
+
 /// `to ∪ from`: adopt into `to` every object of `from` that `to` lacks,
-/// each verified on adoption, and answer them, parents first.
+/// each verified on adoption, and answer them, parents first. [`accept`]
+/// with everything chosen.
 ///
 /// THE JOIN, AND NOTHING ELSE. It reads no register and asks no schema:
 /// idempotent (an object adopted twice is one object), order-free (union
@@ -116,5 +143,5 @@ pub fn sync<E: Schema>(
     from: &(impl Replica<E> + ?Sized),
     to: &(impl Replica<E> + ?Sized),
 ) -> Result<Vec<Hash>, ProdromeError> {
-    to.receive(from.tips()?, &|name| from.print(name))
+    accept(from, to, from.tips()?)
 }

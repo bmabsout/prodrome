@@ -235,6 +235,11 @@ since this grammar has tuples and no mapping.
   takes any, parents first. An append decides on what the replica holds by
   the rules above, so two replicas holding the same objects write the same
   bytes, wherever each is held.
+- **`accept(from, to, chosen)`** is `to.receive(chosen)` with `from`'s
+  prints: the join restricted to what `chosen` rest on. Where `chosen` is
+  closed under parents over `to`, `to` reads as it did plus exactly
+  `chosen` (law 39). `sync`, an overlay's flush and `adopt` are it, with
+  everything, all of the overlay's own objects and one tip chosen.
 - **`sync(from, to)`** is `to.receive(from.tips())`: `to ∪ from`, the join.
   It reads no register. It is idempotent and order-free, and a sync cut
   short leaves `to` closed under parents and is completed by the next
@@ -250,6 +255,18 @@ since this grammar has tuples and no mapping.
   an overlay hold no lock another writer takes and do not write through, so
   no decision is asked of one; monotone writes need no lock, and every
   replica appends them.
+- **A history held in a register** is held by its heads: an event field of
+  names, printed as a tuple sorted and distinct, whose register's type says
+  which schema's objects they name (design §6.3). THE OBJECT MODEL GAINS
+  NOTHING: no constructor and no field of an envelope is new, the inner
+  objects are objects of their own schema in a replica of it, and their
+  names are global. A NEST of such histories flattens into one history
+  keyed by path, each object at the path of the register that held its
+  history and then its entity's key, under the name it had: no object is
+  renamed and no dep rewritten. An object's parents are of its own level,
+  so a held history's head, or a parent within it, that its level lacks is
+  a missing object; causality crosses levels only where a write names the
+  inner heads it saw.
 
 ## 4. Events
 
@@ -1153,6 +1170,32 @@ and observations.
     `observe.rs::an_exact_term_answers_its_next_step`,
     `observe.rs::the_answer_is_never_later_than_a_sampled_change`,
     `observe.rs::every_instant_of_a_step_answers_its_end`.
+
+Law 39 is the design's law 10: nests of histories, over generated nests of
+two and three levels.
+
+39. **A nest flattens to a history.** Histories keyed by path form a monad:
+    `join ∘ unit = id`, `join ∘ fmap unit = id`, `join ∘ join = join ∘ fmap
+    join`, `fmap` a functor and `join` natural, `bind` is `join ∘ fmap`;
+    reading the joined history at a path where no key begins another is
+    reading the history held there; and a join restricted to chosen values
+    reads as the parent plus exactly them, as `accept` of a down-set of an
+    overlay's objects leaves its base reading as one given exactly those.
+    Over histories held in registers, the join holds every object of every
+    level once under its name, reading it at a held register's path reads
+    as the inner replica does, a pointer reads as the union of its maximal
+    writes' heads, an outer write's past reaches an inner object only
+    through heads it or a write beneath it named, and the memoised fold of
+    the join's algebra is the join and recomputes after a deep write
+    exactly the spine it moved.
+    `nest.rs::unit_is_a_unit_of_join`, `nest.rs::join_is_associative`,
+    `nest.rs::fmap_is_a_functor_and_join_is_natural`,
+    `nest.rs::bind_is_the_monads`, `nest.rs::reading_commutes_with_join`,
+    `nest.rs::a_restricted_join_reads_as_the_parent_plus_the_chosen`,
+    `replica.rs::accepting_chosen_objects_reads_as_the_parent_plus_them`,
+    `nest_histories.rs::three_levels_flatten_and_read_as_their_parts`,
+    `nest_histories.rs::concurrent_pointers_read_as_the_union_of_their_histories`,
+    `nest_histories.rs::the_memoised_fold_recomputes_only_the_spine_a_write_moved`.
 
 ## 10. Non-goals
 

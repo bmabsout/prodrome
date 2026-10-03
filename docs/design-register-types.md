@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3, 7 and 8 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 to 9 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -529,6 +529,53 @@ travel, undo and sync are not extras), views are data loaded at run time
 (§6.0), and nested components compose by join instead of by hand-written
 message plumbing.
 
+**What landed.** `prodrome::nest` (stage 9, §8).
+
+- **The monad.** `nest::Path` is the free monoid on segments, and
+  `nest::History<T>`, a finite set of `(path, value)` pairs, is the
+  powerset of its writer: `unit`, `fmap`, `join` (`{(p·q, v)}`), `bind` as
+  `join ∘ fmap` (the writer's bind, whose function never sees the key),
+  `at` (reading at a path, the values under it with the path stripped) and
+  `accept`, the join of a parent and the chosen values of an inner history,
+  defined as that join so it is no second mechanism.
+- **A register whose value is a history.** `nest::Heads<I>` is a value
+  holding a history of the schema `I` by its heads, a tuple of names printed
+  sorted as a change's deps are. A schema declares such a register as it
+  declares any other, by a `RegisterType` whose values are `&Heads<I>`, so
+  the inner schema is the register's TYPE and never a field of an object,
+  as the store's schema is never a field (§5); `nest::Nests` names a
+  schema's held registers, gives each a path segment and reads the heads an
+  event writes. Heads are ordered by inclusion, which is sound (heads within
+  heads name a history within a history) and needs no inner object; the
+  register's reading, `nest::pointer`, is the UNION of its maximal writes'
+  heads, the inner history's own join, which the order cannot compute and
+  does not pretend to. Not inflationary: a pointer moves to what its writer
+  saw.
+- **The nest and its join.** A `nest::Nest`, read from each level's
+  replica (`Leaf`, `Holding`, one replica per schema holding every
+  sub-history of that level, as one object database holds a repository's
+  trees), is one level's objects, each at its entity's key, and the nest
+  each pointer holds at `key/register`. A pointer holds everything ANY write
+  to it named, as a commit reaches every tree its ancestors named, so the
+  join is a function of the object sets. `Nest::flatten` is the join: every
+  object at its path under the name it had. An object of a level rests only
+  on objects of that level: a head or parent the level lacks is a missing
+  object, never an edge to another level. `Nest::past` is happens-before
+  across levels: an object's own level's ancestors, and through each
+  pointer among them, what it named.
+- **One mechanism for accepting.** `store::accept(from, to, chosen)` is the
+  restricted join for replicas: `to` takes what `chosen` rest on, verified,
+  renaming nothing. `sync` is it with every tip chosen, `Overlay::flush`
+  with all of the overlay's own objects, and `EventStore::adopt` with one
+  tip; `Overlay::accept` is an agent's batch accepted object by object.
+  What moved: the receive each of those called directly is now reached
+  through `accept`, and nothing else changed. An admitted plugin store has
+  no code yet; it will be `accept` too.
+- **The memoised fold.** `Nest` is a `memo::Tree`: a node is a level's
+  history, its children the nests its pointers hold, its name
+  `memo::name` over its keyed objects and their children's names. The join
+  is `memo::fold` of one algebra, and nothing was added to `memo`.
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -564,7 +611,8 @@ Each is a property test over generated histories, in the core's `tests/`:
     `join ∘ fmap unit = id`; `join ∘ join = join ∘ fmap join`; reading the
     joined history at a path equals reading the inner history there; and a
     join restricted to chosen objects reads as the parent plus exactly those
-    objects.
+    objects. BUILT: SPEC law 39, `core/tests/all/nest.rs` and
+    `nest_histories.rs`.
 
 ## 8. Stages
 
@@ -697,6 +745,27 @@ In this repository, after stage 3:
    `bind`; a restricted join that accepts chosen objects (the shape an
    agent's batch, an overlay's flush and an admitted plugin store share);
    reading commuting with join. Law 10.
+
+   BUILT: `prodrome::nest` and `store::accept` (§6.3's "What landed"). Laws,
+   `core/tests/all/nest.rs`, over generated nests of two and three levels
+   whose keys share prefixes: unit, associativity, the functor's laws and
+   join's naturality, bind's laws and bind as `join ∘ fmap`, join only
+   prefixing keys, reading at a path commuting with join, and the
+   restricted join reading as the parent plus exactly the chosen values.
+   `nest_histories.rs`, over histories held in registers of a test schema
+   (`core/tests/schemas/holder.rs`, a shelf holding a history of any schema)
+   at two levels over reviews and over todos and at three over shelves of
+   reviews: the join holds every object of every replica once, under its
+   name; reading it at a held register's path reads, through a replica that
+   accepts exactly those objects, as the inner replica reads; a pointer
+   reads the heads its last write saw, and two concurrent pointers the
+   union; an outer write's past reaches an inner object only through heads
+   it, or a write beneath it, named, and an inner object's past is inner; a
+   pointer naming another level's object is missing; and the memoised fold
+   of the join's algebra is the join, recomputing after a write two levels
+   deep exactly the spine of three nests it moved. `replica.rs`: accepting a
+   down-set of an overlay's objects leaves the store reading as one given
+   exactly those, and the flush takes the rest.
 
 ## 9. Non-goals
 

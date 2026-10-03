@@ -10,7 +10,9 @@
 //! byte for byte. An overlay over a store reads as the union of its own
 //! objects and the store's, appends as a store holding that union appends,
 //! writes nothing to the store until it is flushed, and its flush leaves the
-//! store reading that union.
+//! store reading that union. Accepting chosen objects of an overlay is the
+//! same join restricted to them: the store reads as it did plus exactly
+//! those, and a sync is that join with everything chosen.
 
 use crate::common;
 
@@ -22,7 +24,7 @@ use prodrome::literal::ProdromeError;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::registers::Folded;
-use prodrome::store::{sync, EventStore, Held, MemoryStore, Overlay, Replica};
+use prodrome::store::{accept, sync, EventStore, Held, MemoryStore, Overlay, Replica};
 use proptest::prelude::*;
 
 use crate::memory::{copy_store, replicas, Scratch};
@@ -302,5 +304,66 @@ proptest! {
         prop_assert_eq!(reading(&overlay), reading(&union));
         prop_assert_eq!(overlay.flush().expect("flushes"), Vec::<Hash>::new());
         prop_assert_eq!(reading(&scratch.store("here")), reading(&union), "and cold");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// A RESTRICTED JOIN READS AS THE PARENT PLUS EXACTLY THE CHOSEN
+    /// OBJECTS (design §6.3, law 10). An overlay holds a batch of its own
+    /// over a store in memory; a down-set of the batch over the store is
+    /// chosen, and accepting it leaves the store reading as one given its
+    /// objects and exactly the chosen ones, answered parents first, while
+    /// the overlay still reads its union. Choosing a name outside the
+    /// down-set takes what it rests on too, and the flush takes the rest.
+    /// `sync` is `accept` with every tip chosen.
+    #[test]
+    fn accepting_chosen_objects_reads_as_the_parent_plus_them(
+        logs in two_writers(),
+        picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4),
+    ) {
+        let (_, _, theirs) = &logs;
+        let scratch = Scratch::new("accept");
+        let (disk, _) = replicas(&scratch, &logs);
+        let base = in_memory(&disk);
+        let overlay = Overlay::new(&base);
+        for event in theirs {
+            let _ = overlay.append(event.clone());
+        }
+        let parent = reading(&base).objects;
+        let union = reading(&overlay);
+        let own: Vec<Hash> = union.objects.difference(&parent).cloned().collect();
+        prop_assume!(!own.is_empty());
+        let picked: BTreeSet<Hash> = picks.iter().map(|pick| pick.get(&own).clone()).collect();
+        let dag = overlay.held().expect("reads").dag;
+        let chosen: BTreeSet<Hash> = dag.closure(picked.clone()).difference(&parent).cloned().collect();
+
+        let taken = overlay.accept(chosen.clone()).expect("accepts");
+        prop_assert_eq!(taken.iter().cloned().collect::<BTreeSet<Hash>>(), chosen.clone());
+        for (n, name) in taken.iter().enumerate() {
+            let above = dag.closure([name.clone()]);
+            prop_assert!(
+                taken[n + 1..].iter().all(|later| !above.contains(later)),
+                "parents first"
+            );
+        }
+        let expected = in_memory(&disk);
+        accept(&overlay, &expected, picked).expect("accepts the picks and what they rest on");
+        prop_assert_eq!(reading(&base), reading(&expected));
+        prop_assert_eq!(
+            reading(&base).objects,
+            parent.union(&chosen).cloned().collect::<BTreeSet<Hash>>()
+        );
+        prop_assert_eq!(reading(&overlay), union);
+
+        let rest = overlay.flush().expect("flushes");
+        prop_assert_eq!(
+            rest.into_iter().collect::<BTreeSet<Hash>>(),
+            own.iter().filter(|name| !chosen.contains(*name)).cloned().collect::<BTreeSet<Hash>>()
+        );
+        let whole = in_memory(&disk);
+        accept(&overlay, &whole, overlay.tips().expect("derives")).expect("accepts");
+        prop_assert_eq!(reading(&base), reading(&whole));
     }
 }
