@@ -21,6 +21,12 @@ use crate::schema::Schema;
 pub trait Product<'a>: Default + Clone + Debug + PartialEq {
     type Schema: Schema;
 
+    /// The registers a write supersedes in that this product holds, in the
+    /// order a reading lists them: a Rust schema's every one, a declared
+    /// schema's those of the declaration its writes were made at (none,
+    /// before any was joined: an empty product has nothing to read).
+    fn registers(&self) -> Vec<<Self::Schema as Schema>::Register>;
+
     /// The route: `stamp` joined into every register its event writes.
     fn join(&mut self, stamp: &'a Stamp<Self::Schema>);
 
@@ -57,10 +63,10 @@ pub trait Product<'a>: Default + Clone + Debug + PartialEq {
     /// Every register with more than one write in its frontier, each named
     /// by its writes: what a human settles with the next one.
     fn conflicts(&self) -> BTreeMap<<Self::Schema as Schema>::Register, Vec<Hash>> {
-        Self::Schema::REGISTERS
-            .iter()
-            .filter(|register| self.frontier(**register).is_conflict())
-            .map(|register| (*register, self.frontier(*register).names()))
+        self.registers()
+            .into_iter()
+            .filter(|register| self.frontier(*register).is_conflict())
+            .map(|register| (register, self.frontier(register).names()))
             .collect()
     }
 }

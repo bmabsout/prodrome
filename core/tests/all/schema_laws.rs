@@ -45,16 +45,16 @@ use crate::review::{self, Field, Phase, PhaseRegister, Review, PHASES};
 /// the order it is folded in, the objects folded twice, and the objects one
 /// replica starts from.
 #[derive(Debug, Clone)]
-struct Draw<E> {
-    events: Vec<(E, u64)>,
-    ranks: Vec<u32>,
-    twice: Vec<usize>,
-    replica: u64,
+pub(crate) struct Draw<E> {
+    pub(crate) events: Vec<(E, u64)>,
+    pub(crate) ranks: Vec<u32>,
+    pub(crate) twice: Vec<usize>,
+    pub(crate) replica: u64,
 }
 
 /// The objects: a genesis, and one change per event over the earlier
 /// changes to its entity its bits name.
-fn history<E: Schema>(events: &[(E, u64)]) -> Vec<(Hash, Envelope<E>)> {
+pub(crate) fn history<E: Schema>(events: &[(E, u64)]) -> Vec<(Hash, Envelope<E>)> {
     let genesis = Envelope::Genesis(mk_genesis("law 1", &"0".repeat(32)).expect("a genesis"));
     let root = seal_hash(&genesis);
     let mut objects = vec![(root.clone(), genesis)];
@@ -86,12 +86,13 @@ fn reading<E: Schema>(state: &Folded<E>) -> Reading<E> {
     for (genesis, prodrome) in state.prodromes() {
         for (key, stream) in prodrome {
             let registers = read(stream, None, &Everything);
-            let frontiers = E::REGISTERS
-                .iter()
+            let frontiers = registers
+                .registers()
+                .into_iter()
                 .map(|register| {
-                    let read = registers.reading(*register);
+                    let read = registers.reading(register);
                     let names = read.iter().map(|stamp| stamp.name.clone()).collect();
-                    (registers.frontier(*register).names(), names)
+                    (registers.frontier(register).names(), names)
                 })
                 .collect();
             out.insert((genesis.clone(), key.clone()), frontiers);
@@ -129,7 +130,7 @@ fn ordered<E: Schema>(nodes: &[Node<E>], ranks: &[u32]) -> Vec<Node<E>> {
 }
 
 /// Law 1 at one draw.
-fn free<E: Schema>(draw: &Draw<E>) -> Result<(), TestCaseError> {
+pub(crate) fn free<E: Schema>(draw: &Draw<E>) -> Result<(), TestCaseError> {
     let dag: Dag<E> = history(&draw.events).into_iter().collect();
     let nodes = dag.nodes().expect("a DAG");
     let expected = reading(&fold(&nodes));
@@ -229,15 +230,15 @@ fn historied<E: History>(draw: &Draw<E>) -> Result<(), TestCaseError> {
 }
 
 /// One write, folded alone, joins exactly the frontiers its event names.
-fn routed<E: Schema>(event: &E) -> Result<(), TestCaseError> {
+pub(crate) fn routed<E: Schema>(event: &E) -> Result<(), TestCaseError> {
     let dag: Dag<E> = history(&[(event.clone(), 0)]).into_iter().collect();
     let state = fold(&dag.nodes().expect("a DAG"));
     let (_, stream) = state.entities().next().expect("one entity");
     let registers = read(stream, None, &Everything);
-    for register in E::REGISTERS {
+    for register in registers.registers() {
         prop_assert_eq!(
-            registers.frontier(*register).writes().len(),
-            usize::from(event.writes().any(|written| written == *register)),
+            registers.frontier(register).writes().len(),
+            usize::from(event.writes().any(|written| written == register)),
             "{:?}",
             register
         );
@@ -308,7 +309,7 @@ fn a_review_event() -> impl Strategy<Value = Review> {
         })
 }
 
-fn a_draw<E: Schema>(event: impl Strategy<Value = E>) -> impl Strategy<Value = Draw<E>> {
+pub(crate) fn a_draw<E: Schema>(event: impl Strategy<Value = E>) -> impl Strategy<Value = Draw<E>> {
     (
         prop::collection::vec((event, any::<u64>()), 1..12),
         prop::collection::vec(any::<u32>(), 13),

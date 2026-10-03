@@ -38,7 +38,7 @@ fn every_stored_object_is_a_typed_envelope_that_prints_back() {
     assert!(corpus.len() > 5, "a corpus, not a single object");
     for (name, envelope) in &corpus {
         let text = canonical_envelope(envelope);
-        let parsed = parse_envelope::<TodoEvent<Todo>>(&text)
+        let parsed = parse_envelope::<TodoEvent<Todo>>(&Default::default(), &text)
             .unwrap_or_else(|e| panic!("object {}: {e}", name.as_str()));
         assert_eq!(&parsed, envelope, "object {}", name.as_str());
         assert_eq!(
@@ -163,7 +163,7 @@ fn a_name_outside_spec_4_is_refused_at_the_envelope() {
         "Snapshot(genesis='', tips=(), previous='')",
     ] {
         assert!(
-            parse_envelope::<TodoEvent<Todo>>(text).is_err(),
+            parse_envelope::<TodoEvent<Todo>>(&Default::default(), text).is_err(),
             "must refuse {text:?}"
         );
     }
@@ -344,7 +344,7 @@ proptest! {
     #[test]
     fn a_new_object_prints_and_parses_back(object in a_new_object()) {
         let text = canonical_envelope(&object);
-        let parsed = parse_envelope::<TodoEvent<Todo>>(&text).expect("a canonical print parses");
+        let parsed = parse_envelope::<TodoEvent<Todo>>(&Default::default(), &text).expect("a canonical print parses");
         prop_assert_eq!(&parsed, &object);
         prop_assert_eq!(canonical_envelope(&parsed), text);
         prop_assert_eq!(seal_hash(&parsed), seal_hash(&object));

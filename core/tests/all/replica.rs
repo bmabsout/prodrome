@@ -24,6 +24,7 @@ use prodrome::literal::ProdromeError;
 use prodrome::policy::Untrusted;
 use prodrome::reference::Todo;
 use prodrome::registers::Folded;
+use prodrome::schema::Schema;
 use prodrome::store::{accept, sync, EventStore, Held, MemoryStore, Overlay, Replica};
 use proptest::prelude::*;
 
@@ -73,6 +74,10 @@ struct Cut<'r, R: ?Sized> {
 }
 
 impl<R: Replica<Event> + ?Sized> Replica<Event> for Cut<'_, R> {
+    fn schema(&self) -> &<Event as Schema>::Vocabulary {
+        self.replica.schema()
+    }
+
     fn held(&self) -> Result<Held<Event>, ProdromeError> {
         self.replica.held()
     }

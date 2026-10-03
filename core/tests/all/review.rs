@@ -103,13 +103,13 @@ fn the_append_refuses_a_move_back() {
 fn an_event_the_schema_does_not_name_is_refused_at_the_boundary() {
     let todo =
         "Created(todo='alpha', at=datetime(2026, 10, 1, 12, 0, 0), actor='ana', text='', note='')";
-    assert!(prodrome::event::parse_event::<Review>(todo).is_err());
+    assert!(prodrome::event::parse_event::<Review>(&Default::default(), todo).is_err());
     let envelope = format!("Sealed(prev='', event={todo})");
-    assert!(parse_envelope::<Review>(&envelope).is_err());
+    assert!(parse_envelope::<Review>(&Default::default(), &envelope).is_err());
     let review =
         "Moved(pr='pr-1', at=datetime(2026, 10, 1, 12, 0, 0), actor='ana', phase='merged')";
     assert_eq!(
-        prodrome::event::parse_event::<Review>(review),
+        prodrome::event::parse_event::<Review>(&Default::default(), review),
         Ok(moved("pr-1", day(1), "ana", Phase::Merged))
     );
     assert_eq!(
@@ -117,7 +117,7 @@ fn an_event_the_schema_does_not_name_is_refused_at_the_boundary() {
         review
     );
     let unnamed = "Moved(pr='pr-1', at=datetime(2026, 10, 1, 12, 0, 0), actor='ana', phase='lost')";
-    assert!(prodrome::event::parse_event::<Review>(unnamed).is_err());
+    assert!(prodrome::event::parse_event::<Review>(&Default::default(), unnamed).is_err());
 
     let scratch = Scratch::new();
     let store = &scratch.0;

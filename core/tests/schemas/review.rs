@@ -126,7 +126,7 @@ const REVIEW_SIGNATURES: &[(&str, &[&str])] = &[
     ("Moved", &["pr", "at", "actor", "phase"]),
 ];
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ReviewVocabulary;
 
 impl Vocabulary for ReviewVocabulary {
@@ -173,6 +173,10 @@ impl Phases<'_> {
 impl<'a> Product<'a> for Phases<'a> {
     type Schema = Review;
 
+    fn registers(&self) -> Vec<Field> {
+        vec![Field::Phase]
+    }
+
     fn join(&mut self, stamp: &'a Stamp<Review>) {
         if PhaseRegister::value(&stamp.event).is_some() {
             self.0.join(stamp);
@@ -207,7 +211,9 @@ impl Schema for Review {
     type Key = Pr;
     type Register = Field;
 
-    const REGISTERS: &'static [Field] = &[Field::Phase];
+    fn registers(_: &ReviewVocabulary) -> Vec<Field> {
+        vec![Field::Phase]
+    }
 
     type Registers<'a> = Phases<'a>;
 
@@ -244,7 +250,7 @@ impl Schema for Review {
         }
     }
 
-    fn from_value(value: &Value) -> Result<Review, ProdromeError> {
+    fn from_value(_: &ReviewVocabulary, value: &Value) -> Result<Review, ProdromeError> {
         let call: &Call = value
             .as_call()
             .ok_or_else(|| ProdromeError::invalid("a review event is a constructor call"))?;

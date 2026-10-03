@@ -16,14 +16,16 @@ use crate::Json;
 #[path = "../../../core/tests/schemas/review.rs"]
 mod schema;
 
-use schema::{day, moved, opened, Field, Phase, Review};
+use schema::{day, moved, opened, Field, Phase, Review, ReviewVocabulary};
 
 /// A review names its entity `pr`; its one register is its phase, whose
 /// value is the phase a move names.
 impl Json for Review {
-    const KEY: &'static str = "pr";
+    fn key_field(_: &ReviewVocabulary) -> &str {
+        "pr"
+    }
 
-    fn register(_phase: Field) -> &'static str {
+    fn register(_: &ReviewVocabulary, _phase: Field) -> &str {
         "phase"
     }
 
@@ -211,7 +213,8 @@ fn a_page_seals_into_its_replica() {
         assert_eq!(Some(text.as_bytes().to_vec()), store.print(&name));
         sealed.push((name, text.to_owned()));
     }
-    let Ok(Envelope::Change(merged)) = prodrome::event::parse_envelope::<Review>(&sealed[1].1)
+    let Ok(Envelope::Change(merged)) =
+        prodrome::event::parse_envelope::<Review>(&Default::default(), &sealed[1].1)
     else {
         panic!("a change: {}", sealed[1].1);
     };
