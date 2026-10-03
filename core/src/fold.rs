@@ -26,7 +26,7 @@ use crate::fpl::{self, Candidates, Env, FplError, Instant};
 use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
-use crate::registers::{Prodrome, Stamp};
+use crate::registers::{Folded, Prodrome, Stamp};
 use crate::schedule::Schedule;
 use crate::schema::{Bind, History, Price, Schema};
 use crate::term::Term;
@@ -424,6 +424,46 @@ pub fn link_specs<'a, K: AsRef<str> + 'a>(
             .map(|(key, term)| (key.as_ref().to_owned(), term.clone())),
     );
     specs
+}
+
+/// One prodrome as a term elsewhere reads it (SPEC §7.2): each entity's
+/// [`flatten`] function, `Absent` for an entity with none, and the
+/// environment ([`env`]) its terms read, at `at` under `policy`.
+///
+/// # Errors
+///
+/// A function [`flatten`] cannot build.
+pub fn member<E: History + Bind>(
+    prodrome: &Prodrome<E>,
+    at: Instant,
+    policy: &impl Policy<E>,
+) -> Result<fpl::Member, FplError> {
+    Ok(fpl::Member {
+        specs: link_specs(&flatten(prodrome, at, policy)?, prodrome.keys()),
+        env: env(prodrome, at, policy),
+    })
+}
+
+/// A REPLICA'S PRODROMES AS A SET (design §6.3.1, SPEC §7.2): each
+/// prodrome a `Genesis` begins, a [`member`] by its genesis. The product of
+/// its members' readings, each read from its own prodrome alone, so what
+/// one member holds never moves another's reading (the disjointness law,
+/// §3). The legacy prodrome, which no `Genesis` begins, is no member.
+///
+/// # Errors
+///
+/// A function [`flatten`] cannot build.
+pub fn stores<E: History + Bind>(
+    folded: &Folded<E>,
+    at: Instant,
+    policy: &impl Policy<E>,
+) -> Result<fpl::Stores, FplError> {
+    folded
+        .prodromes()
+        .iter()
+        .filter_map(|(genesis, prodrome)| Some((genesis.clone()?, prodrome)))
+        .map(|(genesis, prodrome)| Ok((genesis, member(prodrome, at, policy)?)))
+        .collect()
 }
 
 #[cfg(test)]

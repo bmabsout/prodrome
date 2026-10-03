@@ -42,13 +42,13 @@ mod holder;
 use holder::{placed, Holder, Slot};
 
 /// A sub-history: a replica in memory, writing into its own prodrome.
-struct Sub<E: Schema> {
-    store: MemoryStore<E>,
+pub(crate) struct Sub<E: Schema> {
+    pub(crate) store: MemoryStore<E>,
 }
 
 /// A replica at the schema `schema` holding a genesis of its own,
 /// `label`'s, writing into it.
-fn sub<E: Schema>(schema: E::Vocabulary, label: &str) -> Sub<E> {
+pub(crate) fn sub<E: Schema>(schema: E::Vocabulary, label: &str) -> Sub<E> {
     let object = Envelope::<E>::Genesis(mk_genesis(label, &nonce_of(label)).expect("a genesis"));
     let print = canonical_envelope(&object).into_bytes();
     let name = seal_hash(&object);
@@ -96,7 +96,7 @@ fn level<E: Schema<Key: AsRef<str>>>(replica: &impl Replica<E>) -> History<Hash>
         .collect()
 }
 
-fn dag<E: Schema>(replica: &impl Replica<E>) -> Arc<Dag<E>> {
+pub(crate) fn dag<E: Schema>(replica: &impl Replica<E>) -> Arc<Dag<E>> {
     replica.held().expect("reads").dag
 }
 
@@ -118,7 +118,7 @@ fn reading<E: Schema>(replica: &impl Replica<E>) -> Reading<E> {
 }
 
 /// One replica holding every sub-history of a level.
-fn union<E: Schema>(subs: &[&Sub<E>]) -> MemoryStore<E> {
+pub(crate) fn union<E: Schema>(subs: &[&Sub<E>]) -> MemoryStore<E> {
     let union = MemoryStore::at(subs[0].store.schema().clone());
     for sub in subs {
         sync(&sub.store, &union).expect("syncs");

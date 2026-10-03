@@ -459,7 +459,7 @@ fn range(term: &Term, span: Span, env: &Env) -> Range {
         TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Absent => {
             exact_range(term, span, env, &breaks)
         }
-        TermF::Ref { todo } => unreachable!("Ref({todo:?}) inside a Closed term"),
+        TermF::Ref { entity, .. } => unreachable!("Ref({entity:?}) inside a Closed term"),
     }
 }
 
