@@ -426,6 +426,11 @@ pub enum Signature<'a> {
     /// are the core's three plus the host payload's — owns its own slice and
     /// lends it. A static table lends `'static`, which coerces.
     Fields(&'a [&'a str]),
+    /// The same declared field order, held as owned names: a vocabulary that
+    /// arrives as data at run time (a declared schema, [`crate::declared`])
+    /// lends what it owns. A field order is a field order however it is
+    /// held, so the parse binds both by one function.
+    Owned(&'a [String]),
     /// Any keyword field, no positional arguments — for reading a canonical
     /// print back without knowing the kind. Used by conformance tests and by
     /// tooling that inspects an object; the shipped read path never uses it,
@@ -1110,6 +1115,7 @@ impl<'a> Parser<'a> {
                 keywords
             }
             Signature::Fields(order) => bind(name, order, positional, keywords)?,
+            Signature::Owned(order) => bind(name, order, positional, keywords)?,
         };
         Ok(Value::Call(Call::new(name, fields)))
     }
@@ -1120,7 +1126,7 @@ impl<'a> Parser<'a> {
 /// canonical however the text was written.
 fn bind(
     name: &str,
-    order: &[&str],
+    order: &[impl AsRef<str>],
     positional: Vec<Value>,
     keywords: Vec<(String, Value)>,
 ) -> Result<Vec<(String, Value)>, ProdromeError> {
@@ -1135,13 +1141,13 @@ fn bind(
     let mut bound: Vec<(String, Value)> = order
         .iter()
         .take(taken)
-        .map(|field| (*field).to_owned())
+        .map(|field| field.as_ref().to_owned())
         .zip(positional)
         .collect();
     for (key, value) in keywords {
         let index = order
             .iter()
-            .position(|field| *field == key)
+            .position(|field| field.as_ref() == key)
             .ok_or_else(|| {
                 ProdromeError::parse(format!("bad call to {name}(...): unexpected field {key:?}"))
             })?;
@@ -1156,7 +1162,7 @@ fn bind(
     }
     let mut ordered: Vec<(String, Value)> = Vec::with_capacity(bound.len());
     for field in order {
-        if let Some(index) = bound.iter().position(|(key, _)| key == field) {
+        if let Some(index) = bound.iter().position(|(key, _)| key == field.as_ref()) {
             ordered.push(bound.remove(index));
         }
     }
@@ -1255,6 +1261,34 @@ mod tests {
 
     fn round_trip(text: &str) -> String {
         print_literal(&parse_literal(text, &Open).expect("parses"))
+    }
+
+    /// A field order held as owned names binds exactly as the same order in
+    /// a static table: positional, keyword and refused alike.
+    #[test]
+    fn an_owned_field_order_binds_as_a_static_one() {
+        struct Owned(Vec<String>);
+        impl Vocabulary for Owned {
+            fn signature(&self, name: &str) -> Option<Signature<'_>> {
+                (name == "Moved").then_some(Signature::Owned(&self.0))
+            }
+        }
+        let owned = Owned(vec!["pr".to_owned(), "phase".to_owned()]);
+        let table = Table(&[("Moved", &["pr", "phase"])]);
+        for text in [
+            "Moved('a', 'b')",
+            "Moved(phase='b', pr='a')",
+            "Moved('a', phase='b')",
+            "Moved('a', pr='b')",
+            "Moved(x=1)",
+            "Moved(1, 2, 3)",
+        ] {
+            assert_eq!(
+                parse_literal(text, &owned),
+                parse_literal(text, &table),
+                "{text}"
+            );
+        }
     }
 
     #[test]
