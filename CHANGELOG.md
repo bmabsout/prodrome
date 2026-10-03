@@ -421,6 +421,10 @@ and every vector and export reads as it did.
 
 ### Changed (breaking)
 
+- **`Dag::nodes_across_gaps` is gone**: a set of objects missing a parent
+  reads as its `Dag::interior()`, whose `nodes()` never refuses one, and
+  `EventStore::dag` answers that interior (SPEC §3, law 40).
+
 - **Only a `Dag` makes a `registers::Node`** (SPEC §3, §8): `Node::of` is
   gone and the fields are private, read by `name()`, `parents()`,
   `event()`, `genesis()` and `into_event()`. An object's prodrome is a
@@ -538,6 +542,16 @@ and every vector and export reads as it did.
 
 ### Fixed
 
+- **A store reads the largest down-set it holds (SPEC §3, law 40).** A
+  store missing an object (set aside, or not arrived) read every other
+  object across the gap: an object resting on the missing one was folded,
+  was a tip, and was a head an append wrote over, though no replica that
+  lacks the object could hold it, and `events()` and the CLI's reads
+  refused outright on the missing parent. The store's history is now the
+  interior of its objects, `Dag::interior`, every object whose ancestors
+  are all held; one outside it waits, verified, and joins when what it
+  rests on arrives. `Dag::nodes_across_gaps` is gone. Laws:
+  `core/tests/all/down_set.rs`.
 - **Every file the store writes is written durably (SPEC §3).** One write
   serves them all: a randomly named temp in the target's own directory,
   synced, renamed, and the directory synced. A directory the store makes

@@ -503,7 +503,7 @@ fn an_append_answers_the_first_twin() {
         let print = prodrome::event::canonical(&twin);
         let first = here
             .dag()
-            .and_then(|dag| dag.nodes_across_gaps())
+            .and_then(|dag| dag.nodes())
             .expect("reads")
             .into_iter()
             .find(|node| {

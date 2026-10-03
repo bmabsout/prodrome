@@ -28,12 +28,19 @@ use crate::schema::Schema;
 /// object gone, one that something held names, one resting on another scope)
 /// sets the fold aside, to be taken again from memory, never from the files.
 ///
+/// ITS HISTORY IS THE LARGEST DOWN-SET OF WHAT IT HOLDS ([`Dag::interior`]).
+/// An object resting on one it lacks (set aside, or not arrived yet) is held
+/// and verified, and WAITS: it is in no reading, no tip and no fold until
+/// what it rests on arrives, and then it joins as any arrival does.
+///
 /// INCREMENTAL EQUALS COLD: after any looks, admissions and forgettings, a
-/// memory is what one fresh look at the same files makes, its fold
-/// `fold(&dag.nodes_across_gaps()?)`, its tips `dag.tips()` and its geneses
-/// `dag.geneses()` (`core/tests/all/memory.rs`).
+/// memory is what one fresh look at the same files makes, its DAG the
+/// files' `interior()`, its fold `fold(&dag.nodes()?)`, its tips
+/// `dag.tips()` and its geneses `dag.geneses()` (`core/tests/all/memory.rs`).
 pub struct Memory<E: Schema> {
     dag: Arc<Dag<E>>,
+    /// Held objects outside the history: each rests on something not held.
+    waiting: BTreeMap<Hash, Envelope<E>>,
     folded: Option<Arc<Folded<E>>>,
     tips: BTreeSet<Hash>,
     /// What a held object names (a parent, a genesis) that is not held.
@@ -141,6 +148,7 @@ impl<E: Schema> Memory<E> {
     pub fn empty() -> Memory<E> {
         Memory {
             dag: Arc::new(Dag::from_iter([])),
+            waiting: BTreeMap::new(),
             folded: None,
             tips: BTreeSet::new(),
             wanted: BTreeSet::new(),
@@ -180,6 +188,7 @@ impl<E: Schema> Memory<E> {
                 .collect(),
             twins,
             folded: Some(folded),
+            waiting: BTreeMap::new(),
             dag,
         }
     }
@@ -238,15 +247,16 @@ impl<E: Schema> Memory<E> {
         Ok((verified.name.clone(), Some((verified, print))))
     }
 
-    /// The fold of what is held, across a parent set aside: taken from
-    /// memory the first time, and extended since.
+    /// The fold of the history: taken from memory the first time, and
+    /// extended since.
     ///
     /// # Errors
     ///
-    /// A cycle among what is held, which only a hash collision could make.
+    /// None the history can make, which is closed under parents and has no
+    /// cycle; the type is the fold's.
     pub fn folded(&mut self) -> Result<&Arc<Folded<E>>, ProdromeError> {
         if self.folded.is_none() {
-            self.folded = Some(Arc::new(fold(&self.dag.nodes_across_gaps()?)));
+            self.folded = Some(Arc::new(fold(&self.dag.nodes()?)));
         }
         Ok(self.folded.as_ref().expect("folded above"))
     }
@@ -285,8 +295,10 @@ impl<E: Schema> Memory<E> {
             .map(|stamp| stamp.name.clone()))
     }
 
+    /// Is `name` in the history? A waiting object is not, so a walk that
+    /// stops at what is held walks on through it to what it waits for.
     pub fn holds(&self, name: &Hash) -> bool {
-        self.files.contains_key(name)
+        self.dag.get(name).is_some()
     }
 
     pub fn tips(&self) -> &BTreeSet<Hash> {
@@ -312,11 +324,14 @@ impl<E: Schema> Memory<E> {
     }
 
     /// Forget `gone` and take in `fresh`, each with its file as it was seen
-    /// before it was read. The tips, the geneses and the fold follow, each
-    /// fresh object in turn, parents first: the fold by [`Folded::insert`].
-    /// Where that cannot say (an object gone, one a held object names, one
-    /// resting on another scope), the tips and the geneses are taken again
-    /// from the held DAG and the fold is set aside until it is asked for.
+    /// before it was read. What joins the history is what [`Dag::grow`]
+    /// takes: the fresh objects and the waiting ones that now rest only on
+    /// the history. The tips, the geneses and the fold follow, each joining
+    /// object in turn, parents first: the fold by [`Folded::insert`]. Where
+    /// that cannot say (an object gone, one a held object names, one resting
+    /// on another scope), the history is grown again from nothing, the tips
+    /// and the geneses taken again from it, and the fold set aside until it
+    /// is asked for.
     pub fn admit(&mut self, gone: &[Hash], fresh: Vec<(Verified<E>, Option<Seen>)>) {
         if gone.is_empty() && fresh.is_empty() {
             return;
@@ -326,16 +341,20 @@ impl<E: Schema> Memory<E> {
                 .iter()
                 .all(|(verified, _)| !self.wanted.contains(&verified.name));
         let dag = Arc::make_mut(&mut self.dag);
+        let mut waiting = std::mem::take(&mut self.waiting);
         for name in gone {
-            if let Some(event) = dag.get(name).and_then(Envelope::event) {
+            let object = dag.remove(name).or_else(|| waiting.remove(name));
+            if let Some(event) = object.as_ref().and_then(Envelope::event) {
                 if let Some(twins) = self.twins.get_mut(&(event.key().clone(), event.at())) {
                     twins.remove(name);
                 }
             }
-            dag.remove(name);
             self.files.remove(name);
         }
-        let mut names = BTreeSet::new();
+        if !gone.is_empty() {
+            // What rested on a gone object leaves the history with it.
+            waiting.append(&mut std::mem::replace(dag, Dag::from_iter([])).into_objects());
+        }
         for (Verified { name, object }, seen) in fresh {
             if let Some(event) = object.event() {
                 self.twins
@@ -344,9 +363,10 @@ impl<E: Schema> Memory<E> {
                     .insert(name.clone());
             }
             self.files.insert(name.clone(), seen);
-            dag.insert(name.clone(), object);
-            names.insert(name);
+            waiting.insert(name, object);
         }
+        let (names, waiting) = dag.grow(waiting);
+        self.waiting = waiting;
         let order = match dag.order_among(&names.iter().collect()) {
             Ok(order) if extends => order,
             _ => {
