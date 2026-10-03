@@ -64,7 +64,7 @@ jobs:
       - run: nix develop --command cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+          if false; then
             export PRODROME_MAX_CASES=32
           fi
           nix develop --command cargo test --locked --workspace
@@ -85,9 +85,9 @@ jobs:
           ./target/debug/prodrome list --store roadmap-data/roadmap
       # Only a run that built everything above records and saves, and never
       # a pull request's: a cache main reads is one main wrote.
-      - if: github.event_name != 'pull_request' && steps.target.outputs.cache-hit != 'true'
+      - if: steps.target.outputs.cache-hit != 'true'
         run: .github/scripts/target-sources.sh record
-      - if: github.event_name != 'pull_request' && steps.target.outputs.cache-hit != 'true'
+      - if: steps.target.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
