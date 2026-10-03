@@ -240,11 +240,11 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Listing::default())
             }
-            Err(error) => return Err(Self::io(&dir, error)),
+            Err(error) => return Err(io(&dir, error)),
         };
         let mut listing = Listing::default();
         for entry in entries {
-            let entry = entry.map_err(|e| Self::io(&dir, e))?;
+            let entry = entry.map_err(|e| io(&dir, e))?;
             let file = entry.file_name().to_string_lossy().into_owned();
             match file.strip_suffix(".py").map(Hash::new) {
                 Some(Ok(name)) => listing.objects.push((name, entry)),
@@ -307,11 +307,11 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     #[cfg(unix)]
     fn lock(&self) -> Result<Option<File>, ProdromeError> {
         use rustix::fs::{flock, FlockOperation};
-        fs::create_dir_all(&self.root).map_err(|e| Self::io(&self.root, e))?;
+        make_dir(&self.root)?;
         let path = self.lock_file();
-        let handle = File::create(&path).map_err(|e| Self::io(&path, e))?;
+        let handle = File::create(&path).map_err(|e| io(&path, e))?;
         flock(&handle, FlockOperation::LockExclusive)
-            .map_err(|e| Self::io(&path, std::io::Error::from(e)))?;
+            .map_err(|e| io(&path, std::io::Error::from(e)))?;
         Ok(Some(handle))
     }
 
@@ -322,13 +322,6 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     #[cfg(not(unix))]
     fn lock(&self) -> Result<Option<File>, ProdromeError> {
         Ok(None)
-    }
-
-    fn io(path: &Path, error: std::io::Error) -> ProdromeError {
-        ProdromeError::Io {
-            path: path.display().to_string(),
-            message: error.to_string(),
-        }
     }
 
     /// This handle, writing into the prodrome `genesis` begins; without one
@@ -496,8 +489,6 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let mut decision = self.decision()?;
         let memory = &mut decision.memory;
         let taken = memory::receive(|name| memory.holds(name), seeds, print_of)?;
-        let objects = self.objects_dir();
-        fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
         self.place(
             taken
                 .iter()
@@ -519,48 +510,34 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         Ok(names)
     }
 
-    /// Objects onto disk under their names, in the order given, DURABLY: each
-    /// is [`EventStore::stage`]d and renamed over its name, and the directory
-    /// is synced once when all of them are, so a batch — one adoption, one
-    /// append — costs one directory sync and not one per object.
-    ///
-    /// The file is synced BEFORE its rename, which is the order that matters:
-    /// a rename can reach the disk before the bytes it names, and a power loss
-    /// between the two would leave a zero-length file under a name that
-    /// promises content. Synced first, a crash anywhere leaves either no
-    /// object or the whole one, and at worst a temp that `verify` reports.
+    /// Objects onto disk under their names, in the order given, DURABLY:
+    /// each is [`put_durably`] without the directory sync, and `objects/` is
+    /// synced once when all of them are, so a batch — one adoption, one
+    /// append — costs one directory sync and not one per object. The store's
+    /// `.gitattributes` goes first, the same way, where there is none.
     fn place<'a>(
         &self,
         objects: impl IntoIterator<Item = (&'a Hash, &'a [u8])>,
     ) -> Result<(), ProdromeError> {
+        let dir = self.objects_dir();
+        make_dir(&dir)?;
+        self.gitattributes()?;
         for (digest, bytes) in objects {
-            let temp = self.stage(bytes)?;
-            fs::rename(&temp, self.object_path(digest)).map_err(|e| Self::io(&temp, e))?;
+            rename_into(&stage(&dir, bytes)?, &self.object_path(digest))?;
         }
-        sync_dir(&self.objects_dir())
+        sync_dir(&dir)
     }
 
-    /// Bytes into a fresh temp file in `objects/`, synced to disk: the first
-    /// half of a placement, and all a crash before the rename leaves behind.
-    ///
-    /// The name is RANDOM and the file is created EXCLUSIVELY, never a fixed
-    /// `<name>.tmp`: two writers placing the same object would otherwise
-    /// write into one temp together, and one of them rename the other's half.
-    /// A temp is not named like an object, so no read takes it for one.
-    fn stage(&self, bytes: &[u8]) -> Result<PathBuf, ProdromeError> {
-        loop {
-            let temp = self.objects_dir().join(temp_name());
-            match File::options().write(true).create_new(true).open(&temp) {
-                Ok(mut file) => {
-                    file.write_all(bytes)
-                        .and_then(|()| file.sync_all())
-                        .map_err(|e| Self::io(&temp, e))?;
-                    return Ok(temp);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(Self::io(&temp, error)),
-            }
+    /// `root/.gitattributes`, written once, durably, where there is none:
+    /// [`GITATTRIBUTES`], so that git never rewrites a byte a name is the
+    /// hash of, wherever in a repository the store lies. One a host already
+    /// has is the host's, and is never rewritten.
+    fn gitattributes(&self) -> Result<(), ProdromeError> {
+        let path = self.root.join(".gitattributes");
+        if path.exists() {
+            return Ok(());
         }
+        put_durably(&path, GITATTRIBUTES.as_bytes())
     }
 
     /// One object onto disk, content-addressed and idempotent, and into
@@ -580,10 +557,8 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         if memory.holds(&digest) && path.exists() {
             return Ok(digest);
         }
-        let objects = self.objects_dir();
-        fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
         if path.exists() {
-            let existing = fs::read(&path).map_err(|e| Self::io(&path, e))?;
+            let existing = fs::read(&path).map_err(|e| io(&path, e))?;
             if existing != text {
                 return Err(ProdromeError::Store(format!(
                     "object {} exists with different bytes — sha256 collision or corruption",
@@ -621,7 +596,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 digest.as_str()
             )));
         }
-        fs::read(&path).map_err(|e| Self::io(&path, e))
+        fs::read(&path).map_err(|e| io(&path, e))
     }
 
     fn quarantine_dir(&self) -> PathBuf {
@@ -663,10 +638,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             )));
         }
         let aside = self.quarantine_dir();
-        fs::create_dir_all(&aside).map_err(|e| Self::io(&aside, e))?;
+        make_dir(&aside)?;
         let to = self.quarantined_path(digest);
-        fs::rename(&path, &to).map_err(|e| Self::io(&path, e))?;
-        sync_dir(&aside)?;
+        rename_into(&path, &to)?;
         sync_dir(&self.objects_dir())?;
         Ok(to)
     }
@@ -719,21 +693,23 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// left from before the tips were derived, and a receipt for each file in
     /// `quarantine/`, which stands in for the missing parent it would be.
     pub fn verify(&self) -> Vec<Finding> {
-        let Listing {
-            objects,
-            mut garbage,
-        } = match self.listing() {
+        let Listing { objects, garbage } = match self.listing() {
             Ok(listing) => listing,
             Err(error) => return vec![Finding::Io(error)],
         };
         let mut objects: Vec<Hash> = objects.into_iter().map(|(name, _)| name).collect();
         objects.sort();
+        let mut garbage: Vec<String> = garbage
+            .into_iter()
+            .map(|file| format!("objects/{file}"))
+            .collect();
         garbage.sort();
         let (mut findings, graph): (Vec<Finding>, Vec<Finding>) = self
             .read(&objects)
             .verify(&self.policy)
             .into_iter()
             .partition(|finding| matches!(finding, Finding::Unread { .. }));
+        garbage.extend(self.temps());
         findings.extend(garbage.into_iter().map(Finding::Garbage));
         findings.extend(
             ["HEAD", "refs/"]
@@ -748,12 +724,27 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         findings
     }
 
+    /// The temps an interrupted write left in the root, where the store's
+    /// own `.gitattributes` is written: each by name, sorted. Any other file
+    /// in the root is the host's.
+    fn temps(&self) -> Vec<String> {
+        let mut temps: Vec<String> = fs::read_dir(&self.root)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|file| is_temp(file))
+            .collect();
+        temps.sort();
+        temps
+    }
+
     fn quarantined(&self) -> Vec<Finding> {
         let dir = self.quarantine_dir();
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(error) => return vec![Finding::Io(Self::io(&dir, error))],
+            Err(error) => return vec![Finding::Io(io(&dir, error))],
         };
         let mut files: Vec<String> = entries
             .filter_map(Result::ok)
@@ -808,12 +799,100 @@ fn stat(entry: &fs::DirEntry) -> Option<fs::Metadata> {
     }
 }
 
+/// What a store writes as its own `.gitattributes`: its objects, and what
+/// it set aside, are bytes named by their hash, never text to convert,
+/// diff or merge (SPEC §3).
+const GITATTRIBUTES: &str = "\
+# A prodrome store (SPEC §3): each file is named by the sha256 of its bytes,
+# so git must never rewrite one: no line-ending conversion, no text merge.
+objects/** -text -diff
+quarantine/** -text -diff
+";
+
+/// THE ONE DURABLE WRITE: `bytes` at `path`, through a temp file in the same
+/// directory ([`stage`]), synced, renamed over `path`, and the directory
+/// synced. Every file the store writes is written so, or is a batch of
+/// these sharing the last sync ([`EventStore::place`]).
+///
+/// The file is synced BEFORE its rename, which is the order that matters: a
+/// rename can reach the disk before the bytes it names, and a power loss
+/// between the two would leave a zero-length file under a name that
+/// promises content. Synced first, a crash anywhere leaves either nothing at
+/// `path` or the whole file, and at worst a temp that `verify` reports.
+fn put_durably(path: &Path, bytes: &[u8]) -> Result<(), ProdromeError> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    make_dir(dir)?;
+    rename_into(&stage(dir, bytes)?, path)?;
+    sync_dir(dir)
+}
+
+/// Bytes into a fresh temp file in `dir`, synced to disk: the first half of
+/// a durable write, and all a crash before the rename leaves behind.
+///
+/// The name is RANDOM and the file is created EXCLUSIVELY, never a fixed
+/// `<name>.tmp`: two writers placing the same object would otherwise write
+/// into one temp together, and one of them rename the other's half. A temp
+/// is not named like an object, so no read takes it for one.
+fn stage(dir: &Path, bytes: &[u8]) -> Result<PathBuf, ProdromeError> {
+    loop {
+        let temp = dir.join(temp_name());
+        match File::options().write(true).create_new(true).open(&temp) {
+            Ok(mut file) => {
+                file.write_all(bytes)
+                    .and_then(|()| file.sync_all())
+                    .map_err(|e| io(&temp, e))?;
+                return Ok(temp);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(io(&temp, error)),
+        }
+    }
+}
+
+/// `from` renamed to `to`, and `to`'s directory synced when it is not
+/// `from`'s, whose sync the caller owes (one per batch).
+fn rename_into(from: &Path, to: &Path) -> Result<(), ProdromeError> {
+    fs::rename(from, to).map_err(|e| io(from, e))?;
+    match to.parent() {
+        Some(dir) if Some(dir) != from.parent() => sync_dir(dir),
+        _ => Ok(()),
+    }
+}
+
+/// `dir`, made if it is missing, DURABLY: each directory made is synced
+/// into its parent, so a crash after a write into it cannot lose the
+/// directory, and so the write, while the file's own sync held.
+fn make_dir(dir: &Path) -> Result<(), ProdromeError> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    let mut made = Vec::new();
+    let mut missing = Some(dir);
+    while let Some(at) = missing.filter(|at| !at.as_os_str().is_empty() && !at.exists()) {
+        made.push(at);
+        missing = at.parent();
+    }
+    fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+    for at in made.into_iter().rev() {
+        if let Some(parent) = at.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            sync_dir(parent)?;
+        }
+    }
+    Ok(())
+}
+
 /// A temp file's name: sixteen random hex digits and `.tmp`, which is never
 /// `<name>.py`. The randomness is the standard library's per-process hash
 /// keys, advanced on every draw, so no dependency is taken for it; the
-/// exclusive create in [`EventStore::stage`] is what makes a clash harmless.
+/// exclusive create in [`stage`] is what makes a clash harmless.
 fn temp_name() -> String {
     format!("{:016x}.tmp", random())
+}
+
+/// Is `file` a name [`temp_name`] draws?
+fn is_temp(file: &str) -> bool {
+    file.strip_suffix(".tmp")
+        .is_some_and(|stem| stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 fn random() -> u64 {
@@ -825,10 +904,14 @@ fn random() -> u64 {
 fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
     File::open(dir)
         .and_then(|handle| handle.sync_all())
-        .map_err(|error| ProdromeError::Io {
-            path: dir.display().to_string(),
-            message: error.to_string(),
-        })
+        .map_err(|error| io(dir, error))
+}
+
+fn io(path: &Path, error: std::io::Error) -> ProdromeError {
+    ProdromeError::Io {
+        path: path.display().to_string(),
+        message: error.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -936,9 +1019,16 @@ mod tests {
                 .filter_map(Result::ok)
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .filter(|name| name != ".lock")
-                .collect::<Vec<_>>(),
-            vec!["objects".to_owned()],
+                .collect::<BTreeSet<_>>(),
+            [".gitattributes".to_owned(), "objects".to_owned()]
+                .into_iter()
+                .collect(),
             "the objects are the whole store: no file names a head"
+        );
+        assert_eq!(
+            fs::read_to_string(store.root().join(".gitattributes")).expect("written"),
+            GITATTRIBUTES,
+            "the store says, wherever it lies in a repository, that git may not rewrite it"
         );
         assert_eq!(findings(&store), Vec::<String>::new());
         assert_eq!(store.events().expect("reads").len(), 3);
@@ -1377,16 +1467,25 @@ mod tests {
                 mk_reopened("alpha", at(day), "bassel", "").expect("valid"),
             );
             fs::create_dir_all(store.objects_dir()).expect("creates objects/");
-            let temp = store
-                .stage(crate::event::canonical_envelope(&next).as_bytes())
-                .expect("stages");
+            let before = Store::new(store.root(), roster()).dag().map(|dag| (*dag).clone());
+            let temp = stage(
+                &store.objects_dir(),
+                crate::event::canonical_envelope(&next).as_bytes(),
+            )
+            .expect("stages");
             let file = temp.file_name().expect("a name").to_string_lossy().into_owned();
 
             let fresh = Store::new(store.root(), roster());
             let tips = fresh.tips();
+            let after = fresh.dag().map(|dag| (*dag).clone());
             let landed = store.object_path(&seal_hash(&next)).exists();
             let found = findings(&store);
             let _ = fs::remove_dir_all(store.root());
+            prop_assert_eq!(
+                after.expect("the store reads"),
+                before.expect("the store read"),
+                "the store reads as it did before the interrupted write"
+            );
             prop_assert_eq!(
                 tips.expect("the tips derive"),
                 written.last().cloned().into_iter().collect::<BTreeSet<_>>()
@@ -1400,6 +1499,76 @@ mod tests {
                 )]
             );
         }
+    }
+
+    /// THE STORE'S OWN `.gitattributes` IS WRITTEN AS AN OBJECT IS. A crash
+    /// between its temp and its rename leaves the root's temp, which
+    /// `verify` names, and nothing else changed: the store reads as before,
+    /// and the next write puts the file in place. One a host already wrote
+    /// is the host's, and no write rewrites it.
+    #[test]
+    fn the_gitattributes_is_written_durably_and_never_rewritten() {
+        let store = Store::new(scratch("gitattributes"), roster());
+        store.init("attributes").expect("begins");
+        let path = store.root().join(".gitattributes");
+        fs::remove_file(&path).expect("removes it, to write it again");
+        let before = store.dag().expect("reads");
+        let temp = stage(store.root(), GITATTRIBUTES.as_bytes()).expect("stages");
+        let file = temp
+            .file_name()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(is_temp(&file));
+        assert_eq!(
+            Store::new(store.root(), roster()).dag().expect("reads"),
+            before
+        );
+        assert_eq!(
+            findings(&store),
+            vec![format!(
+                "{file} is not an object: a temp an interrupted write left, or a stray (SPEC §3); \
+                 delete it"
+            )]
+        );
+        fs::remove_file(&temp).expect("deletes the temp");
+        store
+            .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"))
+            .expect("appends");
+        assert_eq!(fs::read_to_string(&path).expect("written"), GITATTRIBUTES);
+        fs::write(&path, "* -text\n").expect("the host's own");
+        store
+            .append(mk_reopened("alpha", at(3), "bassel", "").expect("valid"))
+            .expect("appends");
+        assert_eq!(fs::read_to_string(&path).expect("kept"), "* -text\n");
+        assert_eq!(findings(&store), Vec::<String>::new());
+        let _ = fs::remove_dir_all(store.root());
+    }
+
+    /// A DIRECTORY THE STORE MAKES IS MADE DURABLY, every missing ancestor
+    /// synced into its parent, and one that exists is left as it is.
+    #[test]
+    fn a_directory_is_made_with_its_ancestors() {
+        let root = scratch("dirs");
+        let deep = root.join("a").join("b").join("objects");
+        make_dir(&deep).expect("makes it");
+        assert!(deep.is_dir());
+        make_dir(&deep).expect("a second make is nothing");
+        put_durably(&root.join("a").join("file"), b"bytes").expect("writes");
+        assert_eq!(
+            fs::read(root.join("a").join("file")).expect("reads"),
+            b"bytes"
+        );
+        assert_eq!(
+            fs::read_dir(root.join("a"))
+                .expect("lists")
+                .filter_map(Result::ok)
+                .filter(|entry| is_temp(&entry.file_name().to_string_lossy()))
+                .count(),
+            0,
+            "no temp is left behind a finished write"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// An entry of `objects/` that could be taken for an object and is not

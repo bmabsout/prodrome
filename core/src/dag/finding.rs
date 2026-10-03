@@ -12,7 +12,8 @@ pub enum Finding {
         name: Hash,
         why: Unread,
     },
-    /// An entry of `objects/` not named like an object.
+    /// An entry of `objects/` not named like an object, or a temp in the
+    /// root: its path within the store.
     Garbage(String),
     /// `HEAD` or `refs/`, from before the tips were derived.
     Leftover(&'static str),
@@ -93,8 +94,8 @@ impl fmt::Display for Finding {
             },
             Finding::Garbage(file) => write!(
                 f,
-                "objects/{file} is not an object: a temp an interrupted write left, or a stray \
-                 (SPEC §3); delete it"
+                "{file} is not an object: a temp an interrupted write left, or a stray (SPEC §3); \
+                 delete it"
             ),
             Finding::Leftover(file) => write!(
                 f,
