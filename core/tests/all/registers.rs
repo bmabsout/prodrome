@@ -377,19 +377,19 @@ fn deps_name_one_todo() {
 fn a_mixed_store_folds_a_todo_as_one_stream() {
     let root = mk_sealed(
         None,
-        mk_created("alpha", at(1), "bassel", "", "").expect("valid"),
+        mk_created("alpha", at(1), "writer", "", "").expect("valid"),
     );
     let root_name = seal_hash(&root);
     let done = mk_sealed(
         Some(root_name.clone()),
-        mk_completed("alpha", at(2), "bassel", "").expect("valid"),
+        mk_completed("alpha", at(2), "writer", "").expect("valid"),
     );
     let done_name = seal_hash(&done);
     let reopened = Envelope::Change(
         mk_change(
             root_name.clone(),
             vec![done_name.clone()],
-            mk_reopened("alpha", at(3), "bassel", "").expect("valid"),
+            mk_reopened("alpha", at(3), "writer", "").expect("valid"),
         )
         .expect("a change"),
     );
