@@ -71,6 +71,7 @@ impl<E> Dag<E> {
     /// interior operator on sets of objects: never more than the set,
     /// idempotent and monotone, so a function of the objects alone (law 40).
     /// A cycle, which only a hash collision makes, is in no down-set.
+    #[must_use]
     pub fn interior(&self) -> Dag<E>
     where
         E: Clone,

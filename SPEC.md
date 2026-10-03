@@ -225,9 +225,10 @@ since this grammar has tuples and no mapping.
   another.
 - **`fsck`** is `verify` after QUARANTINE: every file of `objects/` whose
   bytes do not hash to its name is moved, under the lock and durably, to
-  `quarantine/<name>.py`, or `quarantine/<name>.<random>.py` where a file
-  already lies there, so no set-aside bytes are ever overwritten or
-  deleted, and the report names each (the receipt). A file that hashes to
+  `quarantine/<name>.py`, or, where other bytes already lie there,
+  `quarantine/<name>.<sha256 of its bytes>.py`, so no set-aside bytes are
+  ever overwritten or deleted and the same bytes set aside twice are one
+  file; the report names each (the receipt). A file that hashes to
   its name stays (it is the object, even one this reader cannot parse), and
   a stray is reported, never moved. A read refuses a file failing its hash
   rather than guess what it held — `tips()` among them, and so every
@@ -868,7 +869,9 @@ take no environment because a compiled term cannot consult one, and
 an unwritten register, and its candidates; `Order`, a partial order on a
 register's values (`Discrete` by default, `Total`, inclusion on a set), and
 `Inflationary`, a register type's declaration that a write only grows its
-reading; `Folded`; `Replica`, what every store is (§3), and `sync`, generic over
+reading; `Node`, an object at the place its DAG gives it, which only a
+DAG makes, since an object's prodrome is a function of the set it is in;
+`Folded`; `Replica`, what every store is (§3), and `sync`, generic over
 two of them; `Decision`, the store of record locked, the only value a
 coordinated decision is asked of and one only a store on disk makes;
 `Breaks`; `Entry`
@@ -1172,12 +1175,16 @@ two writers' changes and over legacy chains, with any objects removed.
 
 40. **A store reads the largest down-set it holds.** The interior of a set
     of objects is exactly the objects no removed object is beneath; it is
-    never more than the set, idempotent, monotone, and the whole of a
-    history. A store holding any subset of a history, read cold or by a
-    handle that held more, reads its objects, its fold and its tips as a
-    store given only that subset's interior.
+    never more than the set, idempotent, monotone, meet-preserving and the
+    whole of a history. A store holding any subset of a history, read cold
+    or by a handle that held more, reads its objects, its fold and its tips
+    as a store given only that subset's interior. And quarantine is that
+    reading: an object damaged on disk is set aside by `fsck`, named in its
+    report and kept byte for byte, and the store reads the history without
+    it and everything resting on it.
     `down_set.rs::the_interior_is_the_largest_down_set`,
-    `down_set.rs::a_store_reads_its_largest_down_set`.
+    `down_set.rs::a_store_reads_its_largest_down_set`,
+    `down_set.rs::quarantine_is_the_down_set_without_what_rests_on_it`.
 
 Laws 36 and 37 are §3's deps and §6.6's supersession, on two writers whose
 replicas in memory sync in between and whose events are dated anywhere.

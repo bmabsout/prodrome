@@ -144,23 +144,28 @@ impl<E: Clone> Node<E> {
 }
 
 impl<E> Node<E> {
+    #[must_use]
     pub fn name(&self) -> &Hash {
         &self.name
     }
 
+    #[must_use]
     pub fn parents(&self) -> &[Hash] {
         &self.parents
     }
 
+    #[must_use]
     pub fn event(&self) -> Option<&E> {
         self.event.as_ref()
     }
 
     /// The prodrome the object is in: `None` for the legacy one.
+    #[must_use]
     pub fn genesis(&self) -> &Genesis {
         &self.genesis
     }
 
+    #[must_use]
     pub fn into_event(self) -> Option<E> {
         self.event
     }
