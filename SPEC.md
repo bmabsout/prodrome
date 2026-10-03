@@ -78,7 +78,7 @@ since this grammar has tuples and no mapping.
 
 ## 3. Objects and the DAG
 
-- An **object** is one of five constructors.
+- An **object** is one of eight constructors.
   - `Genesis(label, nonce)` begins a prodrome. `label` is the host's name for
     it and `nonce` is 32 lowercase hex characters drawn once, so two
     prodromes a host labels alike are two. It has no parents and no event,
@@ -95,18 +95,41 @@ since this grammar has tuples and no mapping.
     `Woven` only over a legacy store's tips. A `Sealed` has one parent,
     `prev == ""` at a legacy root; a `Woven` has two or more, sorted and
     distinct, and its `event` may be `None`: a merge is structure.
+  - `Signed(object, key, signature)` is a DETACHED signature: `key`, an
+    Ed25519 public key as 64 lowercase hex (a point of the curve), signs the
+    object named `object`, and `signature` is the signature's 64 bytes as
+    128 lowercase hex. What is signed is the UTF-8 bytes `prodrome object `
+    followed by `object`, so a signature covers an object's name and through
+    it every byte of the object, its genesis and deps included, and the
+    signed object's bytes and name never change: an object gains signatures
+    at any time, from any number of keys. A signature VERIFIES when Ed25519's
+    strict verification (no small-order key, a canonical scalar) accepts it.
+    Signing is deterministic, so one key signing one object writes one
+    `Signed`, byte for byte, however often it signs. Its prodrome is its
+    object's, which is why it names no genesis.
+  - `KeyAdded(genesis, actor, key)` registers `key` for `actor` in the
+    prodrome `genesis`. It has no parents, so registering a key twice is one
+    object and a key may sign before it is registered (a device signs what
+    it wrote offline and is registered when next seen).
+  - `KeyRevoked(genesis, deps, actor, key)` revokes `key` for `actor` in
+    `genesis`, except for the signatures beneath it: `deps` are object
+    names, sorted, distinct and possibly empty, and name what its writer
+    stands behind, as a change's deps name what its writer saw (§5 reads
+    it).
 
   `parents_of` is a `Change`'s `deps`, a `Snapshot`'s `tips` plus a non-empty
-  `previous`, a `Sealed`'s `prev` (none at a root), a `Woven`'s `parents`,
-  and nothing for a `Genesis`. Every rule below that reads parents reads
+  `previous`, a `Sealed`'s `prev` (none at a root), a `Woven`'s `parents`, a
+  `Signed`'s `object`, a `KeyRevoked`'s `deps`, and nothing for a `Genesis`
+  or a `KeyAdded`. Every rule below that reads parents reads
   these.
 - An object's **name** is `sha256(utf8(print(object)))` in lowercase hex.
   The file `objects/<name>.py` holds exactly that print, and a loader
   re-hashes the bytes before parsing them. `event_id(e) =
   sha256(utf8(print(e)))` names an EVENT apart from where it was written; it
   is never stored.
-- **Every object has exactly one genesis.** A `Change` or a `Snapshot` names
-  it; a `Genesis` is its own; a legacy object's is the `Sealed("", …)` root
+- **Every object has exactly one genesis.** A `Change`, a `Snapshot`, a
+  `KeyAdded` or a `KeyRevoked` names it; a `Genesis` is its own; a `Signed`'s
+  is its object's; a legacy object's is the `Sealed("", …)` root
   it rests on, or, where a legacy store already joined two roots, the least
   such root by name, whose one prodrome every legacy object is in. No `deps`
   or snapshot edge crosses geneses. So a store may hold several prodromes, a

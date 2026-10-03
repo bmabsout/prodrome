@@ -161,6 +161,9 @@ fn a_name_outside_spec_4_is_refused_at_the_envelope() {
         "Genesis(label='x')",
         "Change(genesis='', deps=(), event=None)",
         "Snapshot(genesis='', tips=(), previous='')",
+        "Signed(object='', key='', signature='')",
+        "KeyAdded(genesis='', actor='bassel', key='')",
+        "KeyRevoked(genesis='', deps=(), actor='Bassel', key='')",
     ] {
         assert!(
             parse_envelope::<TodoEvent<Todo>>(&Default::default(), text).is_err(),
@@ -204,6 +207,8 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Gate",
             "Genesis",
             "Importance",
+            "KeyAdded",
+            "KeyRevoked",
             "Least",
             "Note",
             "Offset",
@@ -216,6 +221,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Reopened",
             "Sealed",
             "Shift",
+            "Signed",
             "Snapshot",
             "Source",
             "SpecRevised",

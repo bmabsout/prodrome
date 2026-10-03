@@ -32,6 +32,10 @@ path = "tests/all/main.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# SPEC §3's `Signed`: Ed25519, pure Rust, so the browser's build needs no C
+# toolchain, and over the same `sha2` the names are. No `rand_core`: a key
+# is a seed the host draws and keeps (design §6.4), never one drawn here.
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 sha2 = "0.10"
 thiserror = "2"
 # `str.isprintable`'s Unicode categories, which the string printer needs to
