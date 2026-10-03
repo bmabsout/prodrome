@@ -98,6 +98,7 @@
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `genesis`, `change`, `snapshot` — §3: a prodrome, a change, an attestation
+//! - `sign`     — §3, §5: detached signatures, keys as objects, and their proof
 //! - `dag`      — §3: the DAG as a value: tips, closure, linearisation, verify
 //! - `store`    — §3: the files around a `Dag` (the lock, placement, quarantine),
 //!   and replicas: one in memory, an overlay, `sync` and a `Decision`
@@ -141,6 +142,7 @@ pub mod reference;
 pub mod registers;
 pub mod schedule;
 pub mod schema;
+pub mod sign;
 pub mod snapshot;
 pub mod store;
 pub mod term;

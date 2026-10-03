@@ -265,10 +265,15 @@ impl<E> Dag<E> {
         (!self.is_root(genesis)).then(|| genesis.clone())
     }
 
-    fn prodrome(&self, name: &Hash, object: &Envelope<E>) -> Genesis {
+    /// The prodrome `object` is in: a signature's is what it signs'.
+    pub(crate) fn prodrome(&self, name: &Hash, object: &Envelope<E>) -> Genesis {
         match object {
             Envelope::Sealed { .. } | Envelope::Woven { .. } => None,
             Envelope::Genesis(_) => self.key(name),
+            Envelope::Signed(signed) => self
+                .objects
+                .get_key_value(&signed.object)
+                .and_then(|(name, object)| self.prodrome(name, object)),
             other => other.genesis().and_then(|genesis| self.key(genesis)),
         }
     }
