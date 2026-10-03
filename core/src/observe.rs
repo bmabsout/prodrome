@@ -6,16 +6,17 @@
 //! the unit interval cut into equal steps with a stated rounding, composed
 //! with a behaviour rather than a constant inside one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
 use chrono::{Duration, Timelike};
 
 use crate::breaks::{breakpoints, Breaks};
 use crate::fpl::{
-    div_delta, eval, last_tended, offset, phase, power_mean, Closed, Delta, Env, Instant, Outcome,
+    div_delta, eval, offset, phase, power_mean, Closed, Delta, Env, Instant, Outcome,
     WITHIN_SAMPLES,
 };
+use crate::schedule::Schedule;
 use crate::term::{normalize, Term, TermF};
 
 /// How a value between two steps is read.
@@ -77,6 +78,25 @@ impl Observation {
         self.rounding
     }
 
+    /// The value at which a value observed as `step` starts to be observed
+    /// as the next step up (`rising`) or down, `None` past either end: a
+    /// guess for a search, never a reading.
+    fn boundary(self, step: u32, rising: bool) -> Option<f64> {
+        let levels = f64::from(self.levels.get());
+        let offset = match self.rounding {
+            Rounding::Down => 1.0,
+            Rounding::Nearest => 0.5,
+            Rounding::Up => 0.0,
+        };
+        let step = f64::from(step);
+        let edge = if rising {
+            step + offset
+        } else {
+            step - 1.0 + offset
+        };
+        (0.0..=levels).contains(&edge).then_some(edge / levels)
+    }
+
     /// The step `value` is observed as, `None` for `∅`. A number outside
     /// `[0, 1]` (no term reads one) is read as the nearer end.
     #[must_use]
@@ -119,7 +139,8 @@ pub struct NextChange {
 ///
 /// EXACT on the exact fragment (§7 breakpoints: `Flat`, `Decay`, `Curve`,
 /// `Absent`, and `Piecewise`, `Offset`, `Shift` and `Least` over them, and
-/// constant composites). There the term is affine between its breakpoints,
+/// constant composites): there it is [`Schedule::next_change`] of the
+/// [`observed`] schedule. The term is affine between its breakpoints,
 /// read off each atom's closed form (a `Decay`'s window, a `Curve`'s points,
 /// a `Piecewise`'s knots, two lines' crossing), so its observation is
 /// monotone between them, and the step inside one is found by bisection
@@ -147,10 +168,9 @@ pub struct NextChange {
 /// on every platform this builds for, though IEEE does not promise it.
 #[must_use]
 pub fn next_change(term: &Closed, now: Instant, env: &Env, observation: Observation) -> NextChange {
-    let breaks = breakpoints(term.normalize().term());
-    if breaks.exact {
+    if let Some(observed) = observed(term, now, env, observation) {
         NextChange {
-            at: next_step(term.term(), now, env, observation, &breaks),
+            at: observed.next_change(now),
             exact: true,
         }
     } else {
@@ -162,6 +182,29 @@ pub fn next_change(term: &Closed, now: Instant, env: &Env, observation: Observat
             exact: at.is_none(),
         }
     }
+}
+
+/// The observed value of `term` from `from` on, as the step function it is:
+/// `observation ∘ ⟦term⟧(·, env)` on `[from, ∞)`, its head the value at
+/// `from` and a knot at every later microsecond where the value changes.
+/// `None` off the exact fragment, where the steps are not known exactly and
+/// only [`next_change`]'s conservative bound is.
+///
+/// Between two breakpoints the term is affine, so its observation is
+/// monotone there and each step inside the stretch is found by bisection
+/// against the evaluator; a breakpoint is read on its own, since a jump or a
+/// crossing lands on it; past the last the term is constant.
+#[must_use]
+pub fn observed(
+    term: &Closed,
+    from: Instant,
+    env: &Env,
+    observation: Observation,
+) -> Option<Schedule<Option<u32>>> {
+    let breaks = breakpoints(term.normalize().term());
+    breaks
+        .exact
+        .then(|| steps(term.term(), from, env, observation, &breaks))
 }
 
 /// How far ahead, in powers of two of a microsecond, the conservative search
@@ -240,22 +283,17 @@ impl Span {
         }
     }
 
-    /// The stretch cut where each of `changes` comes into force, each part
-    /// with what is in force over it: `first` until the first change.
-    fn parts<T: Copy>(
-        self,
-        first: T,
-        changes: impl IntoIterator<Item = (Instant, T)>,
-    ) -> Vec<(T, Span)> {
+    /// The stretch cut where `schedule` changes, each part with the value
+    /// in force over it.
+    fn parts<T>(self, schedule: &Schedule<T>) -> Vec<(&T, Span)> {
         let mut parts = vec![];
-        let (mut current, mut rest) = (first, Some(self));
-        for (at, next) in changes {
+        let (mut current, mut rest) = (schedule.at(self.from), Some(self));
+        for (at, next) in schedule.knots() {
             let Some(span) = rest else { break };
-            if at <= span.from {
-                current = next;
+            if *at <= span.from {
                 continue;
             }
-            let (before, after) = span.split(at);
+            let (before, after) = span.split(*at);
             parts.extend(before.map(|before| (current, before)));
             (current, rest) = (next, after);
         }
@@ -391,17 +429,16 @@ fn range(term: &Term, span: Span, env: &Env) -> Range {
             term,
             pending,
         } => {
+            // The last tending, a step function: none, then each from its instant.
             let tendings = env.tended.get(todo).into_iter().flatten();
+            let last = Schedule::of(None, tendings.map(|at| (*at, Some(*at))).collect());
             hull_of(
-                span.parts(
-                    last_tended(env, todo, span.from),
-                    tendings.map(|at| (*at, Some(*at))),
-                )
-                .into_iter()
-                .map(|(tended, part)| match tended {
-                    None => range(pending, part, env),
-                    Some(tended) => range(term, part.shifted(*anchor - tended), env),
-                }),
+                span.parts(&last)
+                    .into_iter()
+                    .map(|(tended, part)| match tended {
+                        None => range(pending, part, env),
+                        Some(tended) => range(term, part.shifted(*anchor - *tended), env),
+                    }),
             )
         }
         TermF::Periodic {
@@ -413,17 +450,11 @@ fn range(term: &Term, span: Span, env: &Env) -> Range {
                 .into_iter()
                 .map(|part| range(term, part, env)),
         ),
-        TermF::Piecewise(schedule) => {
-            let first = schedule.at(span.from);
-            hull_of(
-                span.parts(
-                    first,
-                    schedule.knots().iter().map(|(at, piece)| (*at, piece)),
-                )
+        TermF::Piecewise(schedule) => hull_of(
+            span.parts(schedule)
                 .into_iter()
                 .map(|(piece, part)| range(piece, part, env)),
-            )
-        }
+        ),
         // Exact, and taken above.
         TermF::Flat { .. } | TermF::Decay { .. } | TermF::Curve { .. } | TermF::Absent => {
             exact_range(term, span, env, &breaks)
@@ -465,13 +496,16 @@ fn after_range(
             return range(pending, span, env);
         };
         hull_of(
-            span.parts(None, [(outcome.at(), Some(*outcome))])
-                .into_iter()
-                .map(|(binding, part)| match binding {
-                    None => range(pending, part, env),
-                    Some(Outcome::Completed(done)) => range(term, part.shifted(anchor - done), env),
-                    Some(Outcome::Cancelled(_)) => Range::point(Some(1.0)),
-                }),
+            span.parts(&Schedule::of(
+                None,
+                BTreeMap::from([(outcome.at(), Some(*outcome))]),
+            ))
+            .into_iter()
+            .map(|(binding, part)| match binding {
+                None => range(pending, part, env),
+                Some(Outcome::Completed(done)) => range(term, part.shifted(anchor - *done), env),
+                Some(Outcome::Cancelled(_)) => Range::point(Some(1.0)),
+            }),
         )
     }))
 }
@@ -566,56 +600,100 @@ fn least_range(members: impl Iterator<Item = Range>) -> Range {
     }
 }
 
-/// The exact answer: segment by segment between the breakpoints after `now`.
-fn next_step(
+/// [`observed`] on the exact fragment: stretch by stretch between the
+/// breakpoints after `from`, every step in each.
+fn steps(
     term: &Term,
-    now: Instant,
+    from: Instant,
     env: &Env,
     observation: Observation,
     breaks: &Breaks,
-) -> Option<Instant> {
-    let here = observation.observe(eval(term, now, env));
-    let base = grain(now);
+) -> Schedule<Option<u32>> {
+    let head = observation.observe(eval(term, from, env));
+    let base = grain(from);
     let at = |us: i64| base + Duration::microseconds(us);
-    let differs = |us: i64| observation.observe(eval(term, at(us), env)) != here;
+    let read = |us: i64| observation.observe(eval(term, at(us), env));
     let cuts: BTreeSet<Instant> = breaks
         .slopes
         .iter()
         .chain(&breaks.jumps)
         .copied()
-        .filter(|cut| *cut > now)
+        .filter(|cut| *cut > from)
         .collect();
+    let mut knots = BTreeMap::new();
+    let mut current = head;
     let mut start = 0;
+    let mut step = |us: i64, current: &mut Option<u32>| {
+        *current = read(us);
+        knots.insert(at(us), *current);
+    };
     for cut in cuts {
         let end = microseconds(cut - base);
-        // Between two breakpoints the term is affine, so its observation is
-        // monotone there; a breakpoint itself is read on its own, since a
-        // jump or a crossing lands on it.
-        if let Some(us) = first_in(start + 1, end - 1, differs) {
-            return Some(at(us));
+        // The stretch's line, read at its two ends: where it crosses the
+        // next step's boundary is where that step's search starts.
+        let (low, high) = (start + 1, end - 1);
+        let line = eval(term, at(low), env).zip(eval(term, at(high), env));
+        let guess = |current: Option<u32>| {
+            let ((from, to), step) = line.zip(current)?;
+            let boundary = observation.boundary(step, to > from)?;
+            let fraction = (boundary - from) / (to - from);
+            // Rounded to the grid; `first_in` clamps it into the stretch.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            let us = low + (fraction * (high - low) as f64).round() as i64;
+            fraction.is_finite().then_some(us)
+        };
+        while let Some(us) = first_in(start + 1, high, guess(current), |us| read(us) != current) {
+            step(us, &mut current);
+            start = us;
         }
-        if differs(end) {
-            return Some(at(end));
+        if read(end) != current {
+            step(end, &mut current);
         }
         start = end;
     }
-    // Constant past the last breakpoint.
-    differs(start + 1).then(|| at(start + 1))
+    if read(start + 1) != current {
+        step(start + 1, &mut current);
+    }
+    Schedule::of(head, knots)
 }
 
 /// The first `us` in `[low, high]` where `differs`, which is false and then
-/// true across the range.
-fn first_in(low: i64, high: i64, differs: impl Fn(i64) -> bool) -> Option<i64> {
-    if low > high {
+/// true across the range. The search starts at `guess` (or `low`) and
+/// gallops outward to bracket the change before bisecting it, so a good
+/// guess costs a few readings and a bad one costs twice a bisection.
+fn first_in(low: i64, high: i64, guess: Option<i64>, differs: impl Fn(i64) -> bool) -> Option<i64> {
+    if low > high || !differs(high) {
         return None;
     }
-    if differs(low) {
-        return Some(low);
+    let guess = guess.unwrap_or(low).clamp(low, high);
+    // `same` does not differ, or is `low - 1` and never read; `changed` does.
+    let (mut same, mut changed) = if differs(guess) {
+        (low - 1, guess)
+    } else {
+        (guess, high)
+    };
+    let mut stride = 1;
+    if changed == guess {
+        while changed > low {
+            let probe = (guess - stride).max(low);
+            if !differs(probe) {
+                same = probe;
+                break;
+            }
+            changed = probe;
+            stride *= 2;
+        }
+    } else {
+        while changed - same > stride {
+            let probe = guess + stride;
+            if differs(probe) {
+                changed = probe;
+                break;
+            }
+            same = probe;
+            stride *= 2;
+        }
     }
-    if !differs(high) {
-        return None;
-    }
-    let (mut same, mut changed) = (low, high);
     while changed - same > 1 {
         let middle = same + (changed - same) / 2;
         if differs(middle) {
