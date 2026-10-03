@@ -160,6 +160,11 @@ field.
   `fpl::Stores`; `view::entries` prices through `fold::member`. Laws in
   `core/tests/all/sets.rs`: disjointness, a set of sets is associative, and
   the set's reading is the product of its members'.
+- **The inbox, priced by what it serves (design §0, §6.3.1):** a test
+  schema, `core/tests/schemas/inbox.rs`, whose proposal's `Price` is a
+  qualified reference to the todo it serves; read through a set of it and
+  two todo prodromes, its price is that todo's and moves exactly when that
+  todo's history does (`sets.rs`).
 
 - **A schema as data (design §5, §6.0, stage 10, SPEC law 40):** `declared`.
   `declared::Form`, a schema in the schema language, the objects' own §2
