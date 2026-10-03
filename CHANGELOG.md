@@ -710,9 +710,10 @@ and every vector and export reads as it did.
 ### Changed
 
 - **CI: the pull request loop is about a minute (README, Testing).** A
-  pull request's `cargo` job runs fmt, clippy and the workspace's tests
-  with the flake's toolchain, in a `target/` restored from main's last
-  run, and recompiles only the crates whose sources it changed: freshness
+  pull request's `cargo` job runs fmt, clippy and the doctests (`lint`)
+  beside the workspace's other tests (`test`), with the flake's toolchain,
+  each in a `target/` restored from its run on main, and recompiles only
+  the crates whose sources it changed: freshness
   is decided by the git blob names of what an artefact was built from
   (`.github/scripts/target-sources.sh`), not by checkout times. Each
   property law runs at most `PRODROME_MAX_CASES` cases, 32 on a pull
