@@ -377,7 +377,8 @@ fn object_of(envelope: &Object) -> Result<String, JsError> {
 fn event_of(event: Option<String>) -> Result<Option<Event>, JsError> {
     event
         .map(|print| {
-            prodrome::event::parse_event(&print).map_err(|e| refused(format!("event: {e}")))
+            prodrome::event::parse_event(&Default::default(), &print)
+                .map_err(|e| refused(format!("event: {e}")))
         })
         .transpose()
 }

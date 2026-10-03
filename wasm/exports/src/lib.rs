@@ -288,6 +288,8 @@ struct Sent {
 /// [`Dag`]; nothing here holds them twice until the first [`append`], when
 /// the replica becomes a [`MemoryStore`] holding them with their prints.
 pub struct Replica<E: Schema> {
+    /// The schema the objects are read at.
+    schema: E::Vocabulary,
     sent: Vec<Sent>,
     dag: Arc<Dag<E>>,
     /// The objects in causal order, or why this set has no honest reading.
@@ -300,7 +302,16 @@ impl<E: Schema> Replica<E> {
     /// `objects` is `[{hash, text}]`: every object's claimed name beside the
     /// exact canonical print that name is a hash of. Refused only where it is
     /// not that shape; what the objects are is [`verify`]'s to say.
-    pub fn of(objects: &str) -> Result<Replica<E>, Refusal> {
+    pub fn of(objects: &str) -> Result<Replica<E>, Refusal>
+    where
+        E::Vocabulary: Default,
+    {
+        Replica::at(E::Vocabulary::default(), objects)
+    }
+
+    /// [`Replica::of`], read at the schema `schema`, a value: a declared
+    /// schema admitted at run time, or a Rust schema's unit.
+    pub fn at(schema: E::Vocabulary, objects: &str) -> Result<Replica<E>, Refusal> {
         let mut seen = BTreeSet::new();
         let mut sent = Vec::new();
         let mut prints = Vec::new();
@@ -323,9 +334,10 @@ impl<E: Schema> Replica<E> {
                 twice,
             });
         }
-        let dag = Dag::from_prints(prints);
+        let dag = Dag::from_prints(&schema, prints);
         let nodes = Replica::order(&sent, &dag);
         Ok(Replica {
+            schema,
             sent,
             dag: Arc::new(dag),
             nodes,
@@ -393,12 +405,12 @@ pub fn append<E: Schema>(
     genesis: Option<String>,
 ) -> Result<String, Refusal> {
     replica.read()?;
-    let event: E = parse_event(event).map_err(|e| format!("event: {e}"))?;
+    let event: E = parse_event(&replica.schema, event).map_err(|e| format!("event: {e}"))?;
     let mut store = if let Some(store) = replica.store.take() {
         store
     } else {
         let dag = &replica.dag;
-        let store = MemoryStore::default();
+        let store = MemoryStore::at(replica.schema.clone());
         store
             .receive(dag.tips(), &|name| {
                 dag.get(name)
@@ -723,7 +735,7 @@ pub fn since<E: Schema>(replica: &Replica<E>, tips: &str) -> Result<String, Refu
 
 // --- §6: the registers, read ---------------------------------------------------
 
-/// Every entity's registers, read: each register [`Schema::REGISTERS`] names,
+/// Every entity's registers, read: each register [`Schema::registers`] names,
 /// as its READING (design §3), the writes whose values are maximal under its
 /// type's order, each `{hash, value}`. One is a value; more is a conflict;
 /// none is unwritten. A schema with no valuation is read whole by this.
@@ -745,20 +757,20 @@ pub fn readings<E: Json>(
     for (genesis, prodrome) in state.prodromes() {
         for (key, stream) in prodrome {
             let registers = prodrome::fold::read(stream, at, &policy);
-            let readings = E::REGISTERS
-                .iter()
+            let readings = E::registers(&replica.schema)
+                .into_iter()
                 .map(|register| {
                     let reading = registers
-                        .reading(*register)
+                        .reading(register)
                         .into_iter()
                         .map(|stamp| {
                             json!({
                                 "hash": stamp.name.as_str(),
-                                "value": stamp.event.value(*register),
+                                "value": stamp.event.value(register),
                             })
                         })
                         .collect();
-                    (E::register(*register).to_owned(), Value::Array(reading))
+                    (E::register(register).to_owned(), Value::Array(reading))
                 })
                 .collect();
             rows.push(object(vec![

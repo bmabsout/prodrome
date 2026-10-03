@@ -128,8 +128,8 @@ fn chain_of(log: &Value) -> Vec<Chain> {
     let mut nodes = Vec::new();
     for item in each(log, "events") {
         let object = format!("Sealed(prev='{prev}', event={})", text(item));
-        let envelope: Envelope<TodoEvent<Todo>> =
-            parse_envelope(&object).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        let envelope: Envelope<TodoEvent<Todo>> = parse_envelope(&Default::default(), &object)
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         let name = seal_hash(&envelope);
         prev = name.as_str().to_owned();
         nodes.push(Node::of(name, &envelope));

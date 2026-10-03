@@ -69,6 +69,8 @@ pub use replica::{accept, sync, Held, Replica};
 pub struct EventStore<E: Schema, Pol = Untrusted> {
     root: PathBuf,
     policy: Pol,
+    /// The schema the store is opened at: every print is parsed at it.
+    schema: E::Vocabulary,
     /// WHAT THIS HANDLE (OR A CLONE OF IT) HAS READ: every object, verified
     /// once, and their fold. A read or an append looks at `objects/` and
     /// reads only what the memory does not hold, so it costs the objects
@@ -96,10 +98,22 @@ struct Listing {
 }
 
 impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
-    pub fn new(root: impl Into<PathBuf>, policy: Pol) -> EventStore<E, Pol> {
+    /// A store at a schema whose type says everything of it (a Rust
+    /// schema's unit vocabulary).
+    pub fn new(root: impl Into<PathBuf>, policy: Pol) -> EventStore<E, Pol>
+    where
+        E::Vocabulary: Default,
+    {
+        EventStore::at(root, policy, E::Vocabulary::default())
+    }
+
+    /// A store opened at the schema `schema`, a value: a declared schema
+    /// admitted at run time ([`crate::declared`]), or a Rust schema's unit.
+    pub fn at(root: impl Into<PathBuf>, policy: Pol, schema: E::Vocabulary) -> EventStore<E, Pol> {
         EventStore {
             root: root.into(),
             policy,
+            schema,
             memory: Arc::new(Mutex::new(Memory::empty())),
             genesis: None,
         }
@@ -172,7 +186,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             match self
                 .raw(&name)
                 .map_err(Unread::Io)
-                .and_then(|bytes| Verified::read(&name, &bytes))
+                .and_then(|bytes| Verified::read(&self.schema, &name, &bytes))
             {
                 Err(why) => {
                     unread.insert(name, why);
@@ -277,7 +291,10 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     }
 
     fn read(&self, names: &[Hash]) -> Dag<E> {
-        Dag::from_prints(names.iter().map(|name| (name.clone(), self.raw(name))))
+        Dag::from_prints(
+            &self.schema,
+            names.iter().map(|name| (name.clone(), self.raw(name))),
+        )
     }
 
     fn lock_file(&self) -> PathBuf {
@@ -495,7 +512,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     ) -> Result<Vec<Hash>, ProdromeError> {
         let mut decision = self.decision()?;
         let memory = &mut decision.memory;
-        let taken = memory::receive(|name| memory.holds(name), seeds, print_of)?;
+        let taken = memory::receive(&self.schema, |name| memory.holds(name), seeds, print_of)?;
         let objects = self.objects_dir();
         fs::create_dir_all(&objects).map_err(|e| Self::io(&objects, e))?;
         self.place(
@@ -603,7 +620,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// hashes bytes and not semantics, so that a future printer change cannot
     /// false-alarm the whole store as tampered.
     pub fn load(&self, digest: &Hash) -> Result<Envelope<E>, ProdromeError> {
-        decode(digest, &self.raw(digest)?).map_err(|why| why.refusal(digest))
+        decode(&self.schema, digest, &self.raw(digest)?).map_err(|why| why.refusal(digest))
     }
 
     /// The print held under `name`, unchecked: what an adoption from this
@@ -767,6 +784,10 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
 /// The store on disk as a replica: what it holds is `objects/`, and what it
 /// receives is placed there, durably, under its lock.
 impl<E: Schema, Pol: Policy<E>> Replica<E> for EventStore<E, Pol> {
+    fn schema(&self) -> &E::Vocabulary {
+        &self.schema
+    }
+
     fn held(&self) -> Result<Held<E>, ProdromeError> {
         let mut memory = self.memory();
         self.look(&mut memory)?;

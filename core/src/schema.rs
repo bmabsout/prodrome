@@ -35,6 +35,11 @@ use crate::term::Term;
 ///   what a smart constructor would. None of the vocabulary's names may be an
 ///   envelope's (`Sealed`, `Woven`, `Genesis`, `Change`, `Snapshot`), which are
 ///   looked up first.
+/// - The vocabulary is a VALUE, the schema as data: what a parse reads and
+///   what a boundary names registers by. A Rust schema's is a unit its type
+///   already says everything of (`Default`); a declared one's is the
+///   declaration a host admitted at run time ([`crate::declared`]). A store
+///   is opened at one, and no object carries it.
 /// - [`Schema::key`], [`Schema::at`] and [`Schema::actor`] are what every
 ///   event says: about what, when its writer thought it was (data, never an
 ///   order), and who.
@@ -48,8 +53,9 @@ use crate::term::Term;
 /// - [`Schema::asks`] is the policy's question: an event it answers `false`
 ///   for binds whoever wrote it (§5).
 pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
-    /// §2's whitelist for this schema's events.
-    type Vocabulary: Vocabulary + Default;
+    /// §2's whitelist for this schema's events, as a value: the schema as
+    /// data, what a store is opened at.
+    type Vocabulary: Vocabulary + Clone + Debug + Send + Sync;
 
     /// What an event is about: a todo, a review.
     type Key: Clone + Ord + Debug + Send + Sync;
@@ -58,8 +64,8 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     type Register: Copy + Ord + Debug + Send + Sync + 'static;
 
     /// Every register a write supersedes in, in the order a reading lists
-    /// them.
-    const REGISTERS: &'static [Self::Register];
+    /// them, at the schema `vocabulary`.
+    fn registers(vocabulary: &Self::Vocabulary) -> Vec<Self::Register>;
 
     /// An entity's registers: a product of semilattices.
     type Registers<'a>: Product<'a, Schema = Self>;
@@ -67,13 +73,14 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     /// The event as a literal: every field, in declared order.
     fn to_value(&self) -> Value;
 
-    /// The parse: a literal into an event, through every smart constructor.
+    /// The parse at the schema `vocabulary`: a literal into an event,
+    /// through every smart constructor.
     ///
     /// # Errors
     ///
     /// A constructor the vocabulary does not name, or a field a smart
     /// constructor refuses.
-    fn from_value(value: &Value) -> Result<Self, ProdromeError>;
+    fn from_value(vocabulary: &Self::Vocabulary, value: &Value) -> Result<Self, ProdromeError>;
 
     fn key(&self) -> &Self::Key;
 

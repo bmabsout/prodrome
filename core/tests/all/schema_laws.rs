@@ -86,12 +86,13 @@ fn reading<E: Schema>(state: &Folded<E>) -> Reading<E> {
     for (genesis, prodrome) in state.prodromes() {
         for (key, stream) in prodrome {
             let registers = read(stream, None, &Everything);
-            let frontiers = E::REGISTERS
-                .iter()
+            let frontiers = registers
+                .registers()
+                .into_iter()
                 .map(|register| {
-                    let read = registers.reading(*register);
+                    let read = registers.reading(register);
                     let names = read.iter().map(|stamp| stamp.name.clone()).collect();
-                    (registers.frontier(*register).names(), names)
+                    (registers.frontier(register).names(), names)
                 })
                 .collect();
             out.insert((genesis.clone(), key.clone()), frontiers);
@@ -234,10 +235,10 @@ fn routed<E: Schema>(event: &E) -> Result<(), TestCaseError> {
     let state = fold(&dag.nodes().expect("a DAG"));
     let (_, stream) = state.entities().next().expect("one entity");
     let registers = read(stream, None, &Everything);
-    for register in E::REGISTERS {
+    for register in registers.registers() {
         prop_assert_eq!(
-            registers.frontier(*register).writes().len(),
-            usize::from(event.writes().any(|written| written == *register)),
+            registers.frontier(register).writes().len(),
+            usize::from(event.writes().any(|written| written == register)),
             "{:?}",
             register
         );

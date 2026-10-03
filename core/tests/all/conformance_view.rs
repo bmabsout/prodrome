@@ -65,7 +65,7 @@ fn cases(name: &str) -> (Vec<Case>, Untrusted) {
                 .iter()
                 .enumerate()
                 .map(|(i, item)| {
-                    parse_event(text(item))
+                    parse_event(&Default::default(), text(item))
                         .unwrap_or_else(|e| panic!("seed {seed}: event {i}: {e}"))
                 })
                 .collect();

@@ -566,25 +566,18 @@ pub const ENVELOPE_SIGNATURES: &[(&str, &[&str])] = &[
 ///
 /// STILL A WHITELIST, and the envelopes win: a schema that named a kind
 /// `Change` would not shadow §3's, it would be unreachable.
-pub struct EventVocabulary<E: Schema> {
-    schema: E::Vocabulary,
+pub struct EventVocabulary<'v, E: Schema> {
+    schema: &'v E::Vocabulary,
 }
 
-impl<E: Schema> EventVocabulary<E> {
-    pub fn new() -> EventVocabulary<E> {
-        EventVocabulary {
-            schema: E::Vocabulary::default(),
-        }
+impl<'v, E: Schema> EventVocabulary<'v, E> {
+    /// The envelopes' vocabulary, then the schema `schema`'s.
+    pub fn new(schema: &'v E::Vocabulary) -> EventVocabulary<'v, E> {
+        EventVocabulary { schema }
     }
 }
 
-impl<E: Schema> Default for EventVocabulary<E> {
-    fn default() -> EventVocabulary<E> {
-        EventVocabulary::new()
-    }
-}
-
-impl<E: Schema> Vocabulary for EventVocabulary<E> {
+impl<E: Schema> Vocabulary for EventVocabulary<'_, E> {
     fn signature(&self, name: &str) -> Option<Signature<'_>> {
         Table(ENVELOPE_SIGNATURES)
             .find(name)
@@ -716,25 +709,26 @@ impl<E: Schema> Envelope<E> {
         }
     }
 
-    /// A literal in, an envelope out, through every `mk_*` rule.
-    pub fn from_value(value: &Value) -> Result<Envelope<E>, ProdromeError> {
+    /// A literal in, an envelope out, through every `mk_*` rule, its event
+    /// parsed at the schema `schema`.
+    pub fn from_value(schema: &E::Vocabulary, value: &Value) -> Result<Envelope<E>, ProdromeError> {
         let call = value
             .as_call()
             .ok_or_else(|| ProdromeError::invalid("an object must be a Sealed or a Woven"))?;
         match call.name.as_str() {
             "Sealed" => Ok(mk_sealed(
                 optional_hash(call, "prev")?,
-                E::from_value(required(call, "event")?)?,
+                E::from_value(schema, required(call, "event")?)?,
             )),
             "Woven" => {
                 let event = match call.field("event") {
                     None | Some(Value::None) => None,
-                    Some(other) => Some(E::from_value(other)?),
+                    Some(other) => Some(E::from_value(schema, other)?),
                 };
                 mk_woven(hashes(call, "parents")?, event)
             }
             "Genesis" => Ok(Envelope::Genesis(Genesis::from_call(call)?)),
-            "Change" => Ok(Envelope::Change(Change::from_call(call)?)),
+            "Change" => Ok(Envelope::Change(Change::from_call(schema, call)?)),
             "Snapshot" => Ok(Envelope::Snapshot(Snapshot::from_call(call)?)),
             other => Err(ProdromeError::invalid(format!(
                 "object is not a chain envelope: {other}"
@@ -809,10 +803,14 @@ pub fn seal_hash<E: Schema>(envelope: &Envelope<E>) -> Hash {
 }
 
 /// Read one stored object's text into an envelope, through the closed
-/// vocabulary — the envelopes and the schema's — and every `mk_*` rule.
-pub fn parse_envelope<E: Schema>(text: &str) -> Result<Envelope<E>, ProdromeError> {
-    let vocabulary = EventVocabulary::<E>::new();
-    Envelope::from_value(&parse_literal(text, &vocabulary)?)
+/// vocabulary — the envelopes and the schema `schema`'s — and every `mk_*`
+/// rule.
+pub fn parse_envelope<E: Schema>(
+    schema: &E::Vocabulary,
+    text: &str,
+) -> Result<Envelope<E>, ProdromeError> {
+    let vocabulary = EventVocabulary::<E>::new(schema);
+    Envelope::from_value(schema, &parse_literal(text, &vocabulary)?)
 }
 
 /// Read ONE event's canonical print back — [`canonical`]'s inverse, through the
@@ -821,9 +819,9 @@ pub fn parse_envelope<E: Schema>(text: &str) -> Result<Envelope<E>, ProdromeErro
 /// print instead (a fold's input, a binding's argument), and it exists here
 /// rather than at those call sites because the vocabulary and the smart
 /// constructors are this module's, not theirs.
-pub fn parse_event<E: Schema>(text: &str) -> Result<E, ProdromeError> {
-    let vocabulary = EventVocabulary::<E>::new();
-    E::from_value(&parse_literal(text, &vocabulary)?)
+pub fn parse_event<E: Schema>(schema: &E::Vocabulary, text: &str) -> Result<E, ProdromeError> {
+    let vocabulary = EventVocabulary::<E>::new(schema);
+    E::from_value(schema, &parse_literal(text, &vocabulary)?)
 }
 
 #[cfg(test)]
@@ -870,7 +868,8 @@ mod tests {
 
     #[test]
     fn a_spec_must_be_one_of_the_terms() {
-        let vocabulary = EventVocabulary::<TodoEvent<Todo>>::new();
+        let schema = crate::todo::TodoVocabulary::default();
+        let vocabulary = EventVocabulary::<TodoEvent<Todo>>::new(&schema);
         let flat = parse_literal("Flat(value=0.5)", &vocabulary).expect("parses");
         assert!(Term::from_value(&flat).is_ok());
         let not_a_term =

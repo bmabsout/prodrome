@@ -35,6 +35,7 @@ pub const TODO_SIGNATURES: &[(&str, &[&str])] = &[
 /// are `todo, at, actor` and then `P::FIELDS`, with the constructors those
 /// fields nest. The core's names win: a payload that named its record
 /// `Created` would be unreachable, not in force.
+#[derive(Debug, Clone)]
 pub struct TodoVocabulary<P> {
     /// `todo, at, actor` then `P::FIELDS`, owned: the one signature that is
     /// not a compile-time table.
@@ -71,7 +72,9 @@ impl<P: Payload> Schema for TodoEvent<P> {
     type Key = TodoId;
     type Register = Kind;
 
-    const REGISTERS: &'static [Kind] = &[Kind::State, Kind::Spec, Kind::Content];
+    fn registers(_: &TodoVocabulary<P>) -> Vec<Kind> {
+        Kind::ALL.to_vec()
+    }
 
     type Registers<'a> = Registers<'a, P>;
 
@@ -79,7 +82,7 @@ impl<P: Payload> Schema for TodoEvent<P> {
         TodoEvent::to_value(self)
     }
 
-    fn from_value(value: &Value) -> Result<Self, ProdromeError> {
+    fn from_value(_: &TodoVocabulary<P>, value: &Value) -> Result<Self, ProdromeError> {
         event_from_value(value)
     }
 
@@ -268,7 +271,10 @@ mod tests {
         );
         assert!(done.asks() && !record.asks());
         assert_eq!(
-            <TodoEvent<Todo> as Schema>::from_value(&Schema::to_value(&record)),
+            <TodoEvent<Todo> as Schema>::from_value(
+                &TodoVocabulary::default(),
+                &Schema::to_value(&record)
+            ),
             Ok(record)
         );
     }

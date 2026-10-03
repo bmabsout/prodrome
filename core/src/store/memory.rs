@@ -77,9 +77,9 @@ impl<E: Schema> Verified<E> {
         &self.object
     }
 
-    /// `bytes` under `name`, rehashed and parsed.
-    pub fn read(name: &Hash, bytes: &[u8]) -> Result<Verified<E>, Unread> {
-        decode(name, bytes).map(|object| Verified {
+    /// `bytes` under `name`, rehashed and parsed at the schema `schema`.
+    pub fn read(schema: &E::Vocabulary, name: &Hash, bytes: &[u8]) -> Result<Verified<E>, Unread> {
+        decode(schema, name, bytes).map(|object| Verified {
             name: name.clone(),
             object,
         })
@@ -413,9 +413,10 @@ impl<E: Schema> Memory<E> {
 /// # Errors
 ///
 /// A name `print_of` has no print for ("missing object …, named as a
-/// parent"), and a print that does not hash to its name or does not parse.
-/// Nothing is answered unless everything verified.
+/// parent"), and a print that does not hash to its name or does not parse
+/// at the schema `schema`. Nothing is answered unless everything verified.
 pub fn receive<E: Schema>(
+    schema: &E::Vocabulary,
     held: impl Fn(&Hash) -> bool,
     seeds: impl IntoIterator<Item = Hash>,
     print_of: impl Fn(&Hash) -> Option<Vec<u8>>,
@@ -445,7 +446,7 @@ pub fn receive<E: Schema>(
                 name.as_str()
             )));
         };
-        let verified = Verified::read(&name, &print).map_err(|why| why.refusal(&name))?;
+        let verified = Verified::read(schema, &name, &print).map_err(|why| why.refusal(&name))?;
         let names = named(verified.object());
         pending.push(Visit::Leave(verified, print));
         pending.extend(names.into_iter().map(Visit::Enter));

@@ -84,7 +84,8 @@ fn every_case_writes_its_objects_and_reads_its_prices() {
             let held = names(&store).len();
             let answer = match text_at(step, "op") {
                 "append" => {
-                    let event = parse_event(text_at(step, "event")).expect("an event");
+                    let event =
+                        parse_event(&Default::default(), text_at(step, "event")).expect("an event");
                     handle.append(event)
                 }
                 "snapshot" => handle.snapshot(),

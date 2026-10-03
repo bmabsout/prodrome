@@ -79,6 +79,10 @@ impl<P: Payload> Default for Registers<'_, P> {
 impl<'a, P: Payload> Product<'a> for Registers<'a, P> {
     type Schema = TodoEvent<P>;
 
+    fn registers(&self) -> Vec<Kind> {
+        Kind::ALL.to_vec()
+    }
+
     fn join(&mut self, stamp: &'a Stamp<TodoEvent<P>>) {
         for write in Write::of(&stamp.event) {
             self.route(stamp, write);
