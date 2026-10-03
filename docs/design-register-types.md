@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 and 7 to 11 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 to 12 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
