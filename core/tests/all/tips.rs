@@ -161,7 +161,7 @@ fn write<'a>(root: &Path, objects: impl IntoIterator<Item = (&'a Hash, &'a Objec
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(crate::common::cases::cases(64))]
 
     /// §9.17 a — THE TIPS OF A UNION ARE THE UNION'S TIPS, and they compose: the tips
     /// of either side that the union does not name as a parent. On disk, two

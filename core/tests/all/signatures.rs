@@ -251,7 +251,7 @@ fn proofs(dag: &Dag<Event>) -> (Proof, Proof) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(crate::common::cases::cases(128))]
 
     /// A signature's validity is a function of the object set: a replica
     /// that received the objects one at a time in any order, and one that

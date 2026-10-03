@@ -1518,7 +1518,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(crate::cases::cases(32))]
 
         /// A CRASH BETWEEN WRITE AND RENAME LEAVES NO OBJECT, only a temp that
         /// `verify` reports. A chain of `crash` events is written, and the
@@ -1669,7 +1669,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        #![proptest_config(crate::cases::cases(64))]
 
         /// VERIFY NAMES EVERY STRAY, and the reads pass over them. Whatever
         /// lands in `objects/` beside a healthy store's objects, `verify`

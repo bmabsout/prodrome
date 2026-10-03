@@ -174,7 +174,7 @@ fn reads_its_interior(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::cases::cases(32))]
 
     /// Law 40, the operator: over two writers' changes and over a legacy
     /// chain, the interior of any subset is exactly the objects nothing
@@ -301,7 +301,7 @@ fn quarantine_reads_without_it(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::cases::cases(32))]
 
     /// Law 40, quarantine: over two writers' changes and over a legacy
     /// chain, an object damaged on disk is set aside by `fsck`, named in its

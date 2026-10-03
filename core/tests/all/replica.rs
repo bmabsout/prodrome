@@ -136,7 +136,7 @@ fn join(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// SYNC IS THE JOIN, whatever each replica is held in. From disk to
     /// disk, disk to memory, memory to disk and memory to memory: an
@@ -187,7 +187,7 @@ fn a_step() -> impl Strategy<Value = Step> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// A STORE IN MEMORY WRITES WHAT A STORE ON DISK WRITES. Over any
     /// history of appends (twins and conflicts among them) and of another
@@ -251,7 +251,7 @@ fn a_layered_step() -> impl Strategy<Value = Layered> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// AN OVERLAY READS AS ITS UNION, AND ITS FLUSH LEAVES THE STORE READING
     /// IT. Beside the overlay a store on disk is given everything the overlay
@@ -313,7 +313,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// A RESTRICTED JOIN READS AS THE PARENT PLUS EXACTLY THE CHOSEN
     /// OBJECTS (design §6.3, law 10). An overlay holds a batch of its own

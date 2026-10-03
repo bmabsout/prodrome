@@ -94,7 +94,7 @@ fn superseded_per_register(stream: &[Stamp<Event>], register: Kind) -> Vec<Hash>
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::cases::cases(48))]
 
     /// Law 36 — A CHANGE RESTS ON WHAT ITS WRITER SAW. Each append descends
     /// from every write to its entity the writer held, in any register, and
