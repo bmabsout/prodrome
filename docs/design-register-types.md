@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 and 7 to 10 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 to 11 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -144,7 +144,7 @@ implement, none of them required of a `Price` (§5):
 - `History: Price`, a price that changes with the entity's history:
   `moment(now, first, head)`, the terms of one moment, a register unwritten
   yet read as first written and a world that prices nothing priced as the
-  head. `fold::flatten` makes each moment a piece of §6.4's function, and a
+  head. `fold::flatten` makes each moment a piece of SPEC §6.4's function, and a
   moment with nothing first written and no head is the reading's `terms`.
 - `Bind`, what FPL's `Ref`s read of an entity in this store
   (`fold::env`), its key a string. A `Ref` to an entity in ANOTHER store is
@@ -513,7 +513,7 @@ form is `map opened . join . normal` (splicing was the join), and
 `normalize` lifts a pointwise layer by `sequence` and a `Shift` by
 `shift`. An entity's registers as a function of time are
 `fold::readings`, ONE fold over time: `fold::read` is its value at an
-instant (the scan keeping only its end), §6.4's function maps it to
+instant (the scan keeping only its end), SPEC §6.4's function maps it to
 prices, and §6.5's history maps it to outcomes; the wire's `History` holds
 each todo's bindings as one. The observed value of an exact term is
 `observe::observed`, a `Schedule<Option<u32>>` from `now` on, and on the
@@ -661,6 +661,104 @@ message plumbing.
   `memo::name` over its keyed objects and their children's names. The join
   is `memo::fold` of one algebra, and nothing was added to `memo`.
 
+### 6.4 Who wrote an object is a reading
+
+An object's `actor` is a field its writer chose, attested by nothing but
+custody of the box. Once replicas write from phones and agents, custody is
+not one place, and who wrote an object should be provable. Nothing above
+needs to change for it to be: a signature is one more object, a key's owner
+one more reading, and requiring a signature one more policy.
+
+**A signature is an element, not an edit.** `Signed(object, key,
+signature)` names what it signs by its content name and rests on it, its
+one parent. The signed object's bytes and name never change, so signing is
+adding an element to the free semilattice (§1), never rewriting one: an
+object gains signatures at any time, from any number of keys, a device
+signing what it wrote offline when it next comes online. Ed25519 is
+deterministic, so one key signing one object writes one object byte for
+byte, and signing twice is signing once, by identity. The signature covers
+the object's NAME, so its deps and genesis too: a signature proves this
+placement of an event, not the event wherever it is placed, since an
+attacker re-placing a signed event over deps its writer never saw would
+make it supersede what its writer never superseded. So twins, one event
+over two placements, may differ in standing, which is the point.
+
+**Keys are history.** `KeyAdded(genesis, actor, key)` says, in a prodrome,
+that `key` speaks for `actor`; it has no parents, so registering a key is
+idempotent and a key may sign before its registration arrives.
+`KeyRevoked(genesis, deps, actor, key)` says it no longer does, EXCEPT for
+the signatures beneath its deps, which name what its writer stands behind
+as a change's deps name what its writer saw.
+
+**The proof is a reading, and its meaning is a set.** Denotationally,
+
+    proof(H) = { o ∈ H : ∃ s = Signed(o, k, σ) ∈ H.
+                   σ verifies,
+                   KeyAdded(g(o), actor(o), k) counts in H,
+                   ∀ r = KeyRevoked(g(o), _, actor(o), k) counting in H.
+                     s ∈ past(r) }
+
+every clause a question about which objects exist and what each rests on,
+so `proof` is a function of the object set (law 12). A revocation's effect
+is the set of signatures it keeps, `past(r)`, and several revocations keep
+the INTERSECTION of theirs: commutative, associative and idempotent, so
+revocations commute with one another and with everything else, and no
+order but the objects' own decides anything. A signature concurrent with a
+revocation (made after, beside, or before it and never seen by its writer)
+is not beneath it and does not prove: the conservative answer, and the one
+the revoker can always widen by revoking again over what it trusts, or
+narrow to nothing by revoking with no deps.
+
+`proof` is not monotone: a revocation arriving takes proof away. That is
+CALM's line (§6) again, not a defect: "is this object proven, so I may act
+on it?" is a non-monotone question, asked under the store of record's
+decision like every other (§6.1). The readings that fold it stay functions
+of the object set, so replicas still agree once they hold the same objects.
+
+**Who registers a key is the host's, as who is believed is.** A key object
+COUNTS for a reader as its registrar says: every one, for `verify` (the
+structural reading, as deps are read, §3), or, under a policy that requires
+signatures, those a signature by one of the host's ROOT keys covers. A key
+does not register keys. If it could, a revocation could revoke the key that
+registered the key that revokes it, and what counts would depend on which
+of two revocations is read first: a least fixed point through a negation,
+which a set does not determine. Roots are outside the history for the same
+reason a policy is: the database does not decide whom to believe.
+
+**Requiring a signature is a meet.** A policy is now a function of an
+object and of a reading of its history, `standing(H)(o)`, and a policy that
+reads nothing of the history is the same at every one (§5's policies are).
+`Proven<P>` is `proof ⊓ P` in the two-element lattice `Claims < Binds`:
+one combinator over any policy, never a special case beside the others. An
+unproven object CLAIMS whatever its kind, stored and shown as every claim
+is; so under `Proven<P>` the reading is `P`'s with exactly the unproven
+objects claims, and under a `P` that does not read the proof, signatures
+change no reading at all. A `Proven` is a policy AT a history, made at one
+and moved to another by `at`, so no reader holds one that read nothing.
+
+**Where a key lives is the host's.** A device key is a seed the host keeps
+(a phone in its own storage, a box in a file) and hands to the call that
+signs; neither the core nor the wasm module holds one, and the core has no
+source of randomness to draw one, as it has no clock.
+
+**What a proof costs.** `Proof::of` verifies every signature it reads,
+each time it is asked, so a reading under `Proven` costs a verification
+per signature held. A signature's validity is a pure function of its
+object's bytes, so it is a tabulation by §6.2 waiting to be kept: keyed by
+the `Signed`'s name, never stale, droppable at will. Not built: no host
+yet holds enough signatures to need it.
+
+**What landed.** `prodrome::sign` (stage 11, §8): the three objects;
+`Secret`, a device key from its seed; `Signed::verifies`, strict
+verification; `Proof::of(dag, registrar)` with `Registrar::{Anyone,
+Roots}`. `policy::Proven<P>` and `Standing::and`; `Policy::standing` and
+`confirms` take the object's name, and `Policy::at` moves a policy to a
+history (`None` for one that reads nothing of it). `verify` reports a
+signature that does not verify and an object whose actor has a key and
+which no key of its actor's proves. The wasm exports: `sign(secret,
+object)` on every schema's class, sharing `append`'s write path; `proven`;
+`public_key`; and `{untrusted, roots}` wherever a reading takes a policy.
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -705,6 +803,15 @@ Each is a property test over generated histories, in the core's `tests/`:
     admission admits a lawful schema in its canonical print and refuses a
     generated broken one under the law it breaks. BUILT: SPEC law 40,
     `core/tests/all/declared.rs`.
+12. **Signatures.** Over generated histories of writes, keys added and
+    revoked by a root or by nobody, and honest, unregistered and forged
+    signatures of any object: the proof is a function of the object set,
+    through replicas that received the objects in any order or in two
+    halves joined by sync; signatures change no reading under a policy that
+    does not require them; under one that does, an unproven object claims
+    and every other is as the wrapped policy says, in any arrival order;
+    and a history signed throughout reads as the wrapped policy reads it.
+    BUILT: SPEC law 41, `core/tests/all/signatures.rs`.
 
 ## 8. Stages
 
@@ -881,6 +988,19 @@ In this repository, after stage 3:
     `nest_histories.rs` nests declared proposals under the shelf schema.
     The wasm: `schema!(Name, declared)`, `new Name(schema, objects)`, and
     the reference module's `Declared`.
+
+11. **Signatures** (§6.4). A detached signature as an object, keys
+    registered and revoked by objects, the proof a reading of them, and a
+    policy that requires it, composed with any other; the wasm exports
+    sign with a key the host holds and read what is proven. Law 12.
+
+    BUILT: `prodrome::sign` and `policy::Proven` (§6.4's "What landed").
+    Laws, `core/tests/all/signatures.rs` (SPEC law 41), and unit tests in
+    `sign.rs` for each clause of the proof: a key proves for its actor only,
+    a forged signature proves nothing and `verify` says so, a revocation
+    keeps exactly what it rests on, and under roots a key counts only where
+    a root signed it. `wasm/exports/src/review.rs`: a device signs what it
+    wrote through the exports, and a policy requiring signatures reads it.
 
 ## 9. Non-goals
 
