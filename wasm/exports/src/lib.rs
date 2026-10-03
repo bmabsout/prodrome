@@ -448,7 +448,7 @@ impl<E: Schema> Read<'_, E> {
     /// The events, in the linearisation's order — merges dropped, since a
     /// merge is structure and carries no event to fold.
     pub fn events(&self) -> impl Iterator<Item = &E> {
-        self.nodes.iter().filter_map(|node| node.event.as_ref())
+        self.nodes.iter().filter_map(Node::event)
     }
 
     /// The moment to fold at. `None` means "everything the chain holds", which
@@ -716,7 +716,7 @@ pub fn since<E: Schema>(replica: &Replica<E>, tips: &str) -> Result<String, Refu
     let since = read
         .nodes
         .iter()
-        .map(|node| &node.name)
+        .map(Node::name)
         .filter(|name| !held.contains(*name));
     printed(&object(vec![("since", names(since))]))
 }

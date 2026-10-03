@@ -383,26 +383,28 @@ pub fn link_specs<'a, K: AsRef<str> + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag::Dag;
     use crate::event::{mk_completed, mk_reopened, mk_sealed, seal_hash, Actor};
     use crate::fpl::{fulfillment, mk_flat, print_term};
     use crate::literal::Datetime;
     use crate::policy::Untrusted;
     use crate::reference::{mk_authored, mk_subtodo, Todo};
-    use crate::registers::{fold, Node};
+    use crate::registers::fold;
 
     type Event = TodoEvent<Todo>;
 
     /// A log as its writer's chain, folded to its one prodrome.
     fn prodrome(log: &[Event]) -> Prodrome<Event> {
         let mut prev = None;
-        let mut nodes = Vec::new();
+        let mut objects = Vec::new();
         for event in log {
             let envelope = mk_sealed(prev, event.clone());
             let name = seal_hash(&envelope);
-            nodes.push(Node::of(name.clone(), &envelope));
-            prev = Some(name);
+            prev = Some(name.clone());
+            objects.push((name, envelope));
         }
-        fold(&nodes).prodromes()[&None].clone()
+        let dag: Dag<Event> = objects.into_iter().collect();
+        fold(&dag.nodes().expect("a chain")).prodromes()[&None].clone()
     }
 
     fn env_at(log: &[Event], t: Datetime, policy: &impl Policy<Event>) -> Env {
