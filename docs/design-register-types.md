@@ -721,6 +721,10 @@ moves, and at no other time.
   entry through `fold::member`, so the two cannot disagree.
 - **The qualified reference.** `fpl::mk_ref_in` and `fpl::link_in`, of
   which `link` is the case with no other stores.
+- **The motivating use**, as a test: `core/tests/schemas/inbox.rs`, an
+  inbox whose proposal's `Price` is a `RefIn` to the todo it serves, read
+  through a set of it and two todo prodromes (`sets.rs`). A proposal that
+  serves nothing has no price, which is not `Absent` (§4).
 
 ## 7. Laws
 
@@ -773,8 +777,9 @@ Each is a property test over generated histories, in the core's `tests/`:
     holds is the union of the sets synced into it, associatively; a
     qualified reference reads, through the set, what its member alone
     prices its entity at, by genesis or by a declared name; one to a store
-    or an entity the set lacks reads `∅`; and an unqualified term links
-    alike under any set. BUILT: SPEC law 41,
+    or an entity the set lacks reads `∅`; an unqualified term links alike
+    under any set; and a proposal priced by the todo it serves moves
+    exactly when that todo's history does. BUILT: SPEC law 41,
     `core/tests/all/sets.rs`.
 
 ## 8. Stages

@@ -365,3 +365,123 @@ proptest! {
         }
     }
 }
+
+// --- The motivating use: a proposal priced by the todo it serves --------------
+
+#[path = "../schemas/inbox.rs"]
+mod inbox;
+
+use inbox::{Id, Inbox, InboxVocabulary, Says};
+
+/// One thing that happens to the set of an inbox and two todo prodromes.
+#[derive(Debug, Clone)]
+enum Step {
+    /// An event of the served todo, `alpha`, in its own prodrome.
+    Served(common::Draft),
+    /// An event of any todo in the other todo prodrome.
+    Other(common::Draft),
+    /// An inbox event about another proposal, or the served one's text.
+    Inbox(u8),
+}
+
+fn steps() -> impl Strategy<Value = Vec<Step>> {
+    prop::collection::vec(
+        prop_oneof![
+            2 => common::a_draft().prop_map(|mut draft| {
+                draft.todo = "alpha";
+                Step::Served(draft)
+            }),
+            2 => common::a_draft().prop_map(Step::Other),
+            1 => any::<u8>().prop_map(Step::Inbox),
+        ],
+        1..20,
+    )
+}
+
+fn proposal(proposal: &str, n: i64, says: Says) -> Inbox {
+    Inbox {
+        proposal: Id(proposal.to_owned()),
+        at: common::moment(n * 3600),
+        actor: prodrome::event::Actor::new("bassel").expect("an actor"),
+        says,
+    }
+}
+
+/// The proposal `p`'s price, read through `stores`: its reading priced
+/// ([`fold::price`]), linked in the set and read across the window. A
+/// proposal that serves nothing has no price, which is not `∅`.
+fn price_of(inbox: &Sub<Inbox>, p: &str, stores: &Stores) -> Option<Vec<Option<f64>>> {
+    let held = inbox.store.held().expect("reads");
+    let stream = held
+        .folded
+        .entities()
+        .find(|(key, _)| key.0 == p)
+        .map(|(_, stream)| stream)?;
+    let registers = fold::read(stream, Some(instant_of(far())), &Everything);
+    let term = fold::price::<Inbox>(&registers).expect("prices")?;
+    let linked = link_in(&term, &BTreeMap::new(), stores).expect("links");
+    Some(sampled(&linked, &Env::new()))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// THE MOTIVATING USE. A proposal in an inbox serves `alpha` in the
+    /// todo store the host names `todos`, a member of the set beside
+    /// another todo prodrome. Read through the set, its price is `alpha`'s
+    /// as its own store's view prices it, at every step; it moves when
+    /// `alpha`'s history moves, and an event anywhere else (another todo
+    /// prodrome, another proposal, the proposal's own text) never moves it.
+    #[test]
+    fn a_proposal_prices_as_the_todo_it_serves(steps in steps()) {
+        let served = sub::<Event>(TodoVocabulary::default(), "served");
+        let other = sub::<Event>(TodoVocabulary::default(), "other");
+        let inbox = sub::<Inbox>(InboxVocabulary, "inbox");
+        let serves = Says::Serves { store: "todos".to_owned(), todo: "alpha".to_owned() };
+        inbox.store.append(proposal("p1", 0, serves)).expect("appends");
+        let named = genesis(&served);
+        let read = |served: &Sub<Event>, other: &Sub<Event>| {
+            let todos = union(&[served, other]);
+            fold::stores(&dag(&todos), instant_of(far()), &Everything)
+                .expect("reads")
+                .named("todos", named.clone())
+        };
+        let mut before = price_of(&inbox, "p1", &read(&served, &other)).expect("p1 serves");
+        for (n, step) in (1..).zip(&steps) {
+            let at = common::moment(n * 3600);
+            match step {
+                Step::Served(draft) => drop(served.store.append(draft.at(at)).expect("appends")),
+                Step::Other(draft) => drop(other.store.append(draft.at(at)).expect("appends")),
+                Step::Inbox(pick) => {
+                    let event = match pick % 3 {
+                        0 => proposal("p1", n, Says::Proposed(format!("text {pick}"))),
+                        1 => proposal("p2", n, Says::Proposed(format!("text {pick}"))),
+                        _ => proposal("p2", n, Says::Serves {
+                            store: "todos".to_owned(),
+                            todo: "beta".to_owned(),
+                        }),
+                    };
+                    inbox.store.append(event).expect("appends");
+                }
+            }
+            let now = price_of(&inbox, "p1", &read(&served, &other)).expect("p1 serves");
+            let entries = view::entries(
+                &dag(&served.store).nodes().expect("whole"),
+                far(),
+                &Everything,
+            )
+            .expect("a view");
+            match entries.iter().find(|entry| entry.key.as_str() == "alpha") {
+                Some(entry) => {
+                    let value = entry.price.value.clone().expect("the generator's specs link");
+                    prop_assert!(agree(&[now[9]], &[value]), "{:?} vs {value:?}", now[9]);
+                }
+                None => prop_assert!(now.iter().all(Option::is_none)),
+            }
+            if !matches!(step, Step::Served(_)) {
+                prop_assert_eq!(&now, &before, "{:?} moved the price", step);
+            }
+            before = now;
+        }
+    }
+}
