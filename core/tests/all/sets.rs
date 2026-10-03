@@ -118,7 +118,7 @@ fn a_loop_across_prodromes_is_a_cycle() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(crate::common::cases::cases(128))]
 
     /// EVERY UNQUALIFIED REF KEEPS MEANING WHAT IT MEANS: a term that holds
     /// no qualified reference links alike under any set of stores.
@@ -285,7 +285,7 @@ fn through(stores: &Stores, store: &str, todo: &str) -> Vec<Option<f64>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::cases::cases(48))]
 
     /// DISJOINTNESS. A set is a nest keyed by genesis: its join holds every
     /// object once, and reads at each member's genesis exactly as that
@@ -381,7 +381,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::cases::cases(48))]
 
     /// A VIEW READS ITS REPLICA AS A SET. In a replica holding two todo
     /// prodromes, a todo of one whose spec is a qualified reference to a
@@ -483,7 +483,7 @@ fn price_of(inbox: &Sub<Inbox>, p: &str, stores: &Stores) -> Option<Vec<Option<f
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(crate::common::cases::cases(48))]
 
     /// THE MOTIVATING USE. A proposal in an inbox serves `alpha` in the
     /// todo store the host names `todos`, a member of the set beside

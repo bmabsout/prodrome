@@ -345,7 +345,37 @@ push to `main` and after every verified push to `roadmap-data`.
 ```console
 $ nix flake check              # fmt, tests and clippy, in the sandbox
 $ nix develop -c cargo test    # the same with a toolchain in hand
+$ PRODROME_MAX_CASES=32 nix develop -c cargo test   # each law at most 32 cases
 ```
+
+EVERY PROPERTY LAW STATES ITS FULL CASE COUNT, and `PRODROME_MAX_CASES`
+caps every law at that many: the same laws, each over fewer draws, and none
+skipped. The rule is one function, `core/tests/common/cases.rs`, that every
+law's configuration goes through.
+
+**CI** (`.github/workflows/ci.yml`) is two jobs on the flake's toolchain:
+
+- `cargo`, the loop, through `nix develop` as two checks in parallel:
+  `lint` (fmt, clippy at `-D warnings`, the doctests) and `test` (every
+  other test in the workspace, then `prodrome verify` and `list` over the
+  `roadmap-data` branch with the binary the tests built). Each check's
+  `target/` is restored from its own run on main, and a file counts as unchanged when its
+  git blob name is the one that `target/` was built from
+  (`.github/scripts/target-sources.sh`), so a pull request recompiles only
+  the crates it changed. A pull request runs each law at 32 cases at most;
+  main and the nightly run (fresh seeds) run the full counts.
+- `nix`, the gate: `nix flake check`, everything above at the full counts in
+  the sandbox, plus the wasm, the viewer, Typst and the release binaries. It
+  runs on pull requests and main, and its store paths go to the public
+  `bmabsout` Cachix cache.
+
+The cap of 32 was measured: run law by law at caps from 2 to 128 against
+two runs at the full counts, the laws together cover 98.7% of the core's
+lines the full runs cover at 32; beside the fuzz laws, 16 leaves eight
+laws short of what one full run reaches and 32 leaves three, the furthest
+at 90%. The four laws in
+`core/tests/all/fuzz.rs` are the exception at any cap: they search 4096
+random inputs for rare ones, and main and the nightly run carry them.
 
 `conformance/` holds vectors an implementation must reproduce; the laws in
 SPEC §9 are property tests over generated logs and two-replica stores.

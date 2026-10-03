@@ -166,7 +166,7 @@ fn a_conjunction_of_schedules_lifts_to_the_root() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// `mk_piecewise` IS the normal form: it emits nothing but well-formed
     /// schedules, at every depth, on any term the constructors admit.
@@ -258,7 +258,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// §9.13: COMPILATION PRESERVES EVERY READING. The compiled term, read
     /// against the EMPTY environment, answers what the interpreted one
@@ -363,7 +363,7 @@ fn a_ref_names_a_todo_or_is_refused() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// §2: `parse ∘ print` is the identity on terms, `Ref` included.
     #[test]
@@ -447,7 +447,7 @@ fn a_linked_schedule_is_spliced_into_the_one_it_lands_in() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// Unit: a closed term links to itself, whatever the specs say.
     #[test]
@@ -540,7 +540,7 @@ proptest! {
 // --- tendings: the grow-only set, read as of now -----------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// `last_tended` reads AS OF `now`: the latest tending at or before it, none
     /// before the first, and a tending dated later changes nothing.
@@ -638,7 +638,7 @@ fn a_recurrence_explains_its_last_tending() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// RECUR RE-ANCHORS: with the last tending at `s`, `Recur` at `s + d` is
     /// its body at `anchor + d` — `After`'s slide, from the last pass.
@@ -771,7 +771,7 @@ fn absent_is_exact_with_no_breakpoints() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// `∅` IS THE IDENTITY OF COMPOSITION: `Conj(ts ++ [Absent], p) =
     /// Conj(ts, p)` whenever some member of `ts` has a value — bit for bit,
@@ -952,7 +952,7 @@ fn the_least_of_two_lines_has_a_knot_where_they_cross() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// Law 26: commutative, associative, idempotent, `Least([t]) = t`, and
     /// `Absent` is the identity.

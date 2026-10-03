@@ -53,7 +53,7 @@ fn joined(a: &Cache<u8>, b: &Cache<u8>) -> Cache<u8> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// Union is the join: commutative, associative, idempotent, and the
     /// pairs of a join are the union of the pairs.

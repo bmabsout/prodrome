@@ -17,6 +17,9 @@ pub mod vectors;
 #[path = "terms.rs"]
 pub mod terms;
 
+#[path = "cases.rs"]
+pub mod cases;
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -178,7 +178,7 @@ fn inserted(nodes: &[Node<Event>], order: &[Node<Event>], split: usize) -> Folde
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::cases::cases(32))]
 
     /// THE FOLD IS AN ACTION OF THE SET. Over two writers' changes and over
     /// the same logs as legacy objects, a down-set folded cold and the rest
@@ -306,7 +306,7 @@ fn names_in(root: &Path) -> Vec<Hash> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(crate::common::cases::cases(32))]
 
     /// INCREMENTAL EQUALS COLD. Whatever happens to a store, in whatever
     /// order, the handle that saw it happen reads exactly what a fresh
@@ -574,7 +574,7 @@ fn writers_at_once_write_each_event_once() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(crate::common::cases::cases(16))]
 
     /// THE GENESES ARE KEPT, NOT SCANNED FOR. Two unrelated legacy replicas,
     /// one's files arriving in the other's directory one at a time while a

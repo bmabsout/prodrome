@@ -25,7 +25,7 @@ fn an_observation() -> impl Strategy<Value = Observation> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
+    #![proptest_config(crate::common::cases::cases(512))]
 
     /// A larger value is never observed as a smaller step, so each step
     /// observes an interval of values.
@@ -145,7 +145,7 @@ fn steps(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// Law 9 over the exact fragment: `t₁` is the observed value's next step.
     #[test]

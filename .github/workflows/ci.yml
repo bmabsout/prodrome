@@ -1,19 +1,126 @@
-# One gate, and it is the same command a developer runs: the checks live in
-# flake.nix, so CI needs no Rust toolchain of its own and no network during the
-# build. Every store path a run builds goes to the public bmabsout.cachix.org
-# cache, which this CI, cloud sessions and the box all read, so a run rebuilds
-# only what its commit changed. (Magic Nix Cache stopped uploading a minute
-# into a run, so pull requests found almost nothing of main's.) A pull request runs
-# once, as a pull request; main runs on push.
+# TWO JOBS, ONE TOOLCHAIN. Both take Rust from flake.nix, so the loop and
+# the gate agree on every lint and every test.
+#
+# - `cargo`: the loop, about a minute on a pull request. fmt, clippy and the
+#   workspace's tests through `nix develop`, as two checks in parallel
+#   (`lint`, `test`), each in a target/ cached from main's
+#   last run, so a pull request recompiles only the crates whose sources it
+#   changed (.github/scripts/target-sources.sh says how a cached artefact is
+#   known fresh: by the git blob names of what it was built from). On a pull
+#   request every property law runs at most PRODROME_MAX_CASES cases; on
+#   main and in the nightly run each runs its full count, the nightly with
+#   fresh seeds. Then the binary those tests ran reads the roadmap.
+# - `nix`: the gate, `nix flake check`, in the sandbox: the same suites at
+#   their full counts, the wasm, the viewer, Typst and the release binaries.
+#   It runs on pull requests too, slower and beside the loop, so a change
+#   that breaks only the wasm or the viewer is seen before the merge, and its
+#   store paths reach the public bmabsout.cachix.org cache, so main's run of
+#   the merged tree finds them built. Not in the nightly run: a check is a
+#   function of its sources, and main's run already holds the verdict.
+#
+# A pull request runs once, as a pull request; main runs on push.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+# A newer push to a pull request makes its older run moot.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  cargo:
+    # TWO CHECKS OF ONE BUILD'S SOURCES, IN PARALLEL, each in its own
+    # target/: `lint` (fmt, clippy, the doctests) and `test` (every other
+    # test). Each records and saves only what its own commands built, so a
+    # cached artefact is always one its own check brought up to date.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: lint
+            run: |
+              cargo fmt --all --check
+              cargo clippy --locked --workspace --all-targets -- -D warnings
+              cargo test --locked --workspace --doc
+          - check: test
+            run: cargo test --locked --workspace --lib --bins --tests
+    name: cargo (${{ matrix.check }})
+    runs-on: ubuntu-latest
+    env:
+      # The workspace check's settings (flake.nix `common`): no debuginfo.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      # No Cachix here: the dev shell is nixpkgs' toolchain, and
+      # cache.nixos.org holds it.
+      - uses: DeterminateSystems/nix-installer-action@v23
+      # The toolchain downloads while target/ is restored; the first
+      # `nix develop` below waits for whatever it has not finished.
+      - name: Toolchain, in the background
+        run: nohup nix develop --command true > "$RUNNER_TEMP/toolchain.log" 2>&1 &
+      # Main's last target/ for this check and toolchain: keyed by the
+      # commit, found by the prefix, so a pull request reads its base's
+      # (caches are scoped to a branch and its base) and main reads its
+      # previous run.
+      - id: target
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-${{ matrix.check }}-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ github.sha }}
+          restore-keys: cargo-${{ matrix.check }}-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+      - run: .github/scripts/target-sources.sh restore
+      - name: ${{ matrix.check }}
+        env:
+          RUN: ${{ matrix.run }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            export PRODROME_MAX_CASES=32
+          fi
+          nix develop --command cargo --version
+          nix develop --command bash -euo pipefail -c "$RUN"
+      # THE ROADMAP IS DATA, ON ITS OWN BRANCH, AND THIS IS THE CHECK THAT THE
+      # CODE STILL READS IT. The binary is built from this commit and pointed
+      # at the `roadmap-data` branch: `verify` says every object rehashes to
+      # its name and rests on a parent that exists, and `list` says the whole
+      # store still folds under this code.
+      - if: matrix.check == 'test'
+        uses: actions/checkout@v4
+        with:
+          ref: roadmap-data
+          path: roadmap-data
+      # `cargo test` built the binary already: the CLI's integration tests
+      # run it.
+      - name: Read the roadmap
+        if: matrix.check == 'test'
+        run: |
+          ./target/debug/prodrome verify --store roadmap-data/roadmap
+          ./target/debug/prodrome list --store roadmap-data/roadmap
+      # Only a run that built everything above records and saves, and never
+      # a pull request's: a cache main reads is one main wrote.
+      - if: github.event_name != 'pull_request' && steps.target.outputs.cache-hit != 'true'
+        run: .github/scripts/target-sources.sh record
+      - if: github.event_name != 'pull_request' && steps.target.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: ${{ steps.target.outputs.cache-primary-key }}
+
   nix:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,17 +131,5 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       # `cargo test` over the workspace and clippy at -D warnings, both in the
       # sandbox (checks.prodrome-workspace), and every package built as a
-      # check: the wasm, and the binary the roadmap steps below link.
+      # check: the wasm, the viewer, Typst, and the two release binaries.
       - run: nix flake check --print-build-logs
-      # THE ROADMAP IS DATA, ON ITS OWN BRANCH, AND THIS IS THE CHECK THAT THE
-      # CODE STILL READS IT. The binary is built from this commit and pointed at
-      # the `roadmap-data` branch: `verify` says every object rehashes to its
-      # name and rests on a parent that exists, and `list` says the whole store
-      # still folds under this code.
-      - uses: actions/checkout@v4
-        with:
-          ref: roadmap-data
-          path: roadmap-data
-      - run: nix build .#prodrome-cli -o result-cli --print-build-logs
-      - run: ./result-cli/bin/prodrome verify --store roadmap-data/roadmap
-      - run: ./result-cli/bin/prodrome list --store roadmap-data/roadmap
