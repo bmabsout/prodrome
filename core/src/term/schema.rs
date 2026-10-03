@@ -2,8 +2,8 @@ use std::sync::OnceLock;
 
 use crate::fpl::{
     mk_absent, mk_after, mk_conj, mk_curve, mk_decay, mk_flat, mk_gate, mk_importance, mk_least,
-    mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref, mk_shift, mk_within,
-    Delta, FplError, Instant, PRIORITY_POWER,
+    mk_offset, mk_offset_by, mk_periodic, mk_piecewise, mk_recur, mk_ref, mk_ref_in, mk_shift,
+    mk_within, Delta, FplError, Instant, PRIORITY_POWER,
 };
 use crate::literal::{Signature, Vocabulary};
 
@@ -165,7 +165,20 @@ pub fn fields<A>(layer: &TermF<A>) -> (&'static str, Fields<&A>) {
             "OffsetBy",
             vec![("delta", Child(delta)), ("term", Child(term))],
         ),
-        TermF::Ref { todo } => ("Ref", vec![("todo", Text(todo.clone()))]),
+        TermF::Ref {
+            store: None,
+            entity,
+        } => ("Ref", vec![("todo", Text(entity.clone()))]),
+        TermF::Ref {
+            store: Some(store),
+            entity,
+        } => (
+            "RefIn",
+            vec![
+                ("store", Text(store.clone())),
+                ("entity", Text(entity.clone())),
+            ],
+        ),
         TermF::Absent => ("Absent", vec![]),
     }
 }
@@ -228,7 +241,7 @@ type Builder<S> = fn(&mut S) -> Result<Term, FplError>;
 
 /// Each constructor read in declared order; the defaults are what a hand-written
 /// literal may leave out.
-fn builders<S: FieldSource>() -> [(&'static str, Builder<S>); 17] {
+fn builders<S: FieldSource>() -> [(&'static str, Builder<S>); 18] {
     [
         ("Flat", |s| mk_flat(s.real("value").need()?)),
         ("Decay", |s| {
@@ -312,6 +325,12 @@ fn builders<S: FieldSource>() -> [(&'static str, Builder<S>); 17] {
             mk_offset_by(s.child("delta").need()?, s.child("term").need()?)
         }),
         ("Ref", |s| mk_ref(s.text("todo").or_default()?)),
+        ("RefIn", |s| {
+            mk_ref_in(
+                s.text("store").or_default()?,
+                s.text("entity").or_default()?,
+            )
+        }),
         ("Absent", |_| Ok(mk_absent())),
     ]
 }
@@ -440,7 +459,8 @@ mod tests {
              Recur(todo='a', anchor={at}, term=Absent(), pending=Absent()), \
              Periodic(period=timedelta(days=7), anchor={at}, term=Absent()), \
              Piecewise(head=Absent(), pieces=(Piece(at={at}, term=Flat(value=0.5)),)), \
-             OffsetBy(delta=Absent(), term=Absent()), Least(terms=(Absent(),))), p=-4.0)"
+             OffsetBy(delta=Absent(), term=Absent()), Least(terms=(Absent(),)), \
+             RefIn(store='todos', entity='a')), p=-4.0)"
         ))
         .expect("a term");
         let mut seen = Vec::new();
@@ -460,6 +480,6 @@ mod tests {
                 "{kind}"
             );
         }
-        assert_eq!(signatures().0.len(), 19);
+        assert_eq!(signatures().0.len(), 20);
     }
 }

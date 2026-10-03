@@ -401,7 +401,7 @@ pub(crate) fn eval(term: &Term, now: Instant, env: &Env) -> Option<f64> {
             let x = eval(term, now, env)?;
             Some(eval(delta, now, env).map_or(x, |delta| offset(x, delta)))
         }
-        TermF::Ref { todo } => unreachable!("Ref({todo:?}) inside a Closed term"),
+        TermF::Ref { entity, .. } => unreachable!("Ref({entity:?}) inside a Closed term"),
     }
 }
 
@@ -738,7 +738,10 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
             );
             TermF::Piecewise(Schedule::constant(explain(in_f, now, env)))
         }
-        TermF::Ref { todo } => TermF::Ref { todo: todo.clone() },
+        TermF::Ref { store, entity } => TermF::Ref {
+            store: store.clone(),
+            entity: entity.clone(),
+        },
         TermF::Absent => TermF::Absent,
     };
     Explanation {
@@ -938,7 +941,25 @@ pub fn mk_periodic(period: Delta, anchor: Instant, term: Term) -> Result<Term, F
 /// [`crate::event::TodoId`] does, checked by that type's own constructor.
 pub fn mk_ref(todo: String) -> Result<Term, FplError> {
     crate::event::TodoId::new(todo.as_str()).map_err(|e| FplError(format!("Ref.todo: {e}")))?;
-    Ok(Term::new(TermF::Ref { todo }))
+    Ok(Term::new(TermF::Ref {
+        store: None,
+        entity: todo,
+    }))
+}
+
+/// A QUALIFIED reference: the fulfillment of `entity` in the prodrome
+/// `store` names, a genesis's name or a name the host declares for one
+/// ([`Stores::named`]); both obey [`crate::event::TodoId`]'s rule, which a
+/// genesis's 64 lowercase hex does. `entity` is a key as a nest's path
+/// holds it ([`crate::nest::Segment`]): not empty, no `/`.
+pub fn mk_ref_in(store: String, entity: String) -> Result<Term, FplError> {
+    crate::event::TodoId::new(store.as_str()).map_err(|e| FplError(format!("RefIn.store: {e}")))?;
+    crate::nest::Segment::new(entity.as_str())
+        .map_err(|e| FplError(format!("RefIn.entity: {e}")))?;
+    Ok(Term::new(TermF::Ref {
+        store: Some(store),
+        entity,
+    }))
 }
 
 /// No temporal value. It has no field, so there is nothing to refuse.
@@ -1020,39 +1041,169 @@ fn opened(term: Term) -> Schedule<Term> {
 pub enum LinkError {
     /// A `Ref` names a todo `specs` does not hold — for a store, one it has
     /// never seen, since a known todo with no function is `Absent` there.
+    /// Inside another prodrome, reached through a qualified reference, the
+    /// todo is named `genesis/todo`.
     #[error("Ref({0:?}) names no known todo")]
     Unknown(String),
     /// The references loop. The path names the cycle, its first todo repeated
-    /// at the end.
+    /// at the end; an entity of another prodrome as `genesis/entity`.
     #[error("the references loop: {}", .0.join(" → "))]
     Cycle(Vec<String>),
 }
 
+/// One prodrome as a qualified reference reads it (§7.2): each entity's
+/// own function, under the key an unqualified `Ref` inside the prodrome
+/// gives it, and the environment its `After`s and `Recur`s read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Member {
+    pub specs: BTreeMap<String, Term>,
+    pub env: Env,
+}
+
+/// THE SET OF PRODROMES a term's qualified references read (§7.2), each
+/// member by its genesis, and the names a host declares for some of them.
+/// A host's environment, passed in: a schema never reads another store
+/// (design §4, `Bind`). Its reading is the product of its members'
+/// readings, so a reference into one member reads that member and nothing
+/// else (the disjointness law).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Stores {
+    members: BTreeMap<String, Member>,
+    names: BTreeMap<String, String>,
+}
+
+impl Stores {
+    /// The empty set: every qualified reference reads `∅`.
+    pub fn new() -> Stores {
+        Stores::default()
+    }
+
+    /// These stores with `member`, the prodrome `genesis` begins.
+    #[must_use]
+    pub fn with(mut self, genesis: impl Into<String>, member: Member) -> Stores {
+        self.members.insert(genesis.into(), member);
+        self
+    }
+
+    /// These stores with `name` declared for the prodrome `genesis`.
+    #[must_use]
+    pub fn named(mut self, name: impl Into<String>, genesis: impl Into<String>) -> Stores {
+        self.names.insert(name.into(), genesis.into());
+        self
+    }
+
+    /// The member a qualifier names, by its genesis: a declared name's,
+    /// else the qualifier read as a genesis.
+    fn member<'a>(&'a self, store: &'a str) -> Option<(&'a str, &'a Member)> {
+        let genesis = self.names.get(store).map_or(store, String::as_str);
+        self.members
+            .get_key_value(genesis)
+            .map(|(genesis, member)| (genesis.as_str(), member))
+    }
+}
+
+impl FromIterator<(String, Member)> for Stores {
+    fn from_iter<I: IntoIterator<Item = (String, Member)>>(members: I) -> Stores {
+        Stores {
+            members: members.into_iter().collect(),
+            names: BTreeMap::new(),
+        }
+    }
+}
+
 /// §7.2: every `Ref(x)` bound to `specs[x]`, linked in turn, and refused as a
 /// cycle where it is reached again on its own expansion. A closed term is its
-/// own link, untouched.
+/// own link, untouched. A qualified reference reads `∅`: no other prodrome
+/// is given ([`link_in`] with no stores).
 pub fn link(term: &Term, specs: &BTreeMap<String, Term>) -> Result<Closed, LinkError> {
+    link_in(term, specs, &Stores::new())
+}
+
+/// [`link`], with `stores` the set its qualified references read. A
+/// `RefIn(s, x)` is `x`'s function in the member `s` names, linked there
+/// (an unqualified `Ref` inside it names that member's own entity) and
+/// compiled against that member's environment (§7.1), so the term it lands
+/// in reads it as the member does and no `After` or `Recur` of it reads the
+/// wrong history. A store the set does not hold, or an entity its member
+/// does not, reads `∅`: the documented absence, no claim on attention.
+/// Cycles are refused across members as within one.
+pub fn link_in(
+    term: &Term,
+    specs: &BTreeMap<String, Term>,
+    stores: &Stores,
+) -> Result<Closed, LinkError> {
     if let Some(closed) = Closed::of(term.clone()) {
         return Ok(closed);
     }
-    linked(term, specs, &mut Topo::default()).map(Closed)
+    linked(term, None, specs, stores, &mut Topo::default()).map(Closed)
 }
 
+/// A variable as the linker keys it: the member it lives in, by genesis,
+/// none for the term's own prodrome, and its entity.
+type Variable = (Option<String>, String);
+
+/// A variable as a refusal names it: `entity` at home, `genesis/entity`
+/// elsewhere.
+fn shown((genesis, entity): &Variable) -> String {
+    genesis
+        .as_ref()
+        .map_or_else(|| entity.clone(), |genesis| format!("{genesis}/{entity}"))
+}
+
+/// `term`, read in the member `home` (none for the term's own prodrome,
+/// whose functions are `specs`), every reference bound.
 fn linked(
     term: &Term,
+    home: Option<&str>,
     specs: &BTreeMap<String, Term>,
-    topo: &mut Topo<String, Term>,
+    stores: &Stores,
+    topo: &mut Topo<Variable, Term>,
 ) -> Result<Term, LinkError> {
     term.try_cata(|layer| match layer {
-        TermF::Ref { todo } => topo.settle(&todo, LinkError::Cycle, |topo| {
-            let spec = specs
-                .get(&todo)
-                .ok_or_else(|| LinkError::Unknown(todo.clone()))?;
-            linked(spec, specs, topo)
-        }),
+        TermF::Ref {
+            store: None,
+            entity,
+        } => resolved(home, specs, entity, stores, topo),
+        TermF::Ref {
+            store: Some(store),
+            entity,
+        } => match stores.member(&store) {
+            Some((genesis, member)) if member.specs.contains_key(&entity) => {
+                resolved(Some(genesis), &member.specs, entity, stores, topo)
+            }
+            _ => Ok(mk_absent()),
+        },
         TermF::Piecewise(schedule) => Ok(piecewise(schedule)),
         layer => Ok(Term::new(layer)),
     })
+}
+
+/// The variable `entity` of the member `home`, whose functions are `specs`:
+/// its function linked there, and closed against that member's history.
+fn resolved(
+    home: Option<&str>,
+    specs: &BTreeMap<String, Term>,
+    entity: String,
+    stores: &Stores,
+    topo: &mut Topo<Variable, Term>,
+) -> Result<Term, LinkError> {
+    let variable = (home.map(str::to_owned), entity);
+    topo.settle(
+        &variable,
+        |path| LinkError::Cycle(path.iter().map(shown).collect()),
+        |topo| {
+            let spec = specs
+                .get(&variable.1)
+                .ok_or_else(|| LinkError::Unknown(shown(&variable)))?;
+            let term = linked(spec, home, specs, stores, topo)?;
+            Ok(match home.and_then(|genesis| stores.members.get(genesis)) {
+                Some(member) => crate::chain::compile(&Closed(term), &member.env)
+                    .into_term()
+                    .into_term(),
+                None => term,
+            })
+        },
+    )
 }
 
 // --- ISO instants: the one instant SPELLING every boundary shares ------------

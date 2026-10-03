@@ -51,13 +51,26 @@ pub fn a_term() -> impl Strategy<Value = Term> {
     grown(a_closed_leaf())
 }
 
-/// A term whose leaves may be `Ref`s onto `TODOS`: what `link` takes.
+/// A term whose leaves may be `Ref`s onto `TODOS`, or qualified ones onto
+/// them in another store: what `link` takes.
 pub fn an_open_term() -> impl Strategy<Value = Term> {
     grown(prop_oneof![3 => a_closed_leaf(), 1 => a_ref()].boxed())
 }
 
 pub fn a_ref() -> BoxedStrategy<Term> {
-    refs_onto(TODOS.to_vec())
+    prop_oneof![
+        3 => refs_onto(TODOS.to_vec()),
+        1 => refs_in(vec!["todos", "elsewhere"], TODOS.to_vec()),
+    ]
+    .boxed()
+}
+
+/// `RefIn(store, entity)`, `store` one of `stores` and `entity` one of
+/// `todos`.
+pub fn refs_in(stores: Vec<&'static str>, todos: Vec<&'static str>) -> BoxedStrategy<Term> {
+    (prop::sample::select(stores), prop::sample::select(todos))
+        .prop_map(|(store, todo)| ok(fpl::mk_ref_in(store.to_owned(), todo.to_owned())))
+        .boxed()
 }
 
 pub fn refs_onto(todos: Vec<&'static str>) -> BoxedStrategy<Term> {

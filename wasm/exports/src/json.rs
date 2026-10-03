@@ -295,6 +295,23 @@ mod tests {
         assert_eq!(tree["terms"][0]["value"], 0.25);
     }
 
+    /// A qualified reference crosses as `refIn`, beside `ref`.
+    #[test]
+    fn a_qualified_ref_crosses_as_its_kind() {
+        let term =
+            parse_term("Conj(terms=(Ref(todo='a'), RefIn(store='todos', entity='b')), p=-4.0)")
+                .expect("a term");
+        let json = to_json(&term);
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "conj", "p": -4.0, "terms": [
+                {"kind": "ref", "todo": "a"},
+                {"kind": "refIn", "store": "todos", "entity": "b"}
+            ]})
+        );
+        assert_eq!(from_json(&json).expect("a term"), term);
+    }
+
     #[test]
     fn every_term_has_the_json_and_explain_shape_the_vectors_froze() {
         let doc: Value = serde_json::from_str(VECTORS).expect("the fixture is JSON");
