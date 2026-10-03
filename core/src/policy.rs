@@ -19,11 +19,22 @@
 //! held only the filtered reading could not show a claim at all, and showing
 //! one is the whole point of storing it. [`Everything`] is the policy the
 //! claimed reading is taken under.
+//!
+//! WHO WROTE AN OBJECT IS A READING TOO. An event's `actor` is a field its
+//! writer chose; a history can prove it (§3's signatures, [`Proof`]). A
+//! policy may ask for that proof, and [`Proven`] is the one combinator that
+//! does, over any policy: an object binds under it where the history proves
+//! its actor AND the policy it wraps binds it. So standing is a function of
+//! the object and of a reading of the history it is in, and the history's
+//! only through that reading, which is a function of its object set (law
+//! 41): never of the log's order or the moment.
 
 use std::collections::BTreeSet;
 
-use crate::event::Actor;
+use crate::dag::Dag;
+use crate::event::{Actor, Hash};
 use crate::schema::Schema;
+use crate::sign::{Proof, PublicKey, Registrar};
 
 /// What a [`Policy`] says about one event: the two readings, as a sum.
 ///
@@ -41,10 +52,22 @@ pub enum Standing {
 }
 
 impl Standing {
+    /// Both bind: the meet of two answers, `Claims` the bottom.
+    #[must_use]
+    pub fn and(self, other: Standing) -> Standing {
+        if self.binds() && other.binds() {
+            Standing::Binds
+        } else {
+            Standing::Claims
+        }
+    }
+
+    #[must_use]
     pub fn binds(self) -> bool {
         matches!(self, Standing::Binds)
     }
 
+    #[must_use]
     pub fn claims(self) -> bool {
         matches!(self, Standing::Claims)
     }
@@ -52,11 +75,17 @@ impl Standing {
 
 /// A deployment's answer to §5, as a type.
 ///
-/// One required method: the standing of an event, which is a function of THAT
-/// EVENT and nothing else — not of the log, not of the order, not of the
-/// moment. §9.12 is that fact as a law: because standing selects events rather
-/// than positions, folding under a policy is folding the sub-log of its
-/// binding events, whatever order the log arrives in.
+/// One required method: the standing of an OBJECT, named, carrying its
+/// event, which is a function of that object and of what the policy has read
+/// of the history ([`Policy::at`]) — not of the log's order, not of the
+/// position, not of the moment. §9.12 is that fact as a law: because standing
+/// selects objects rather than positions, folding under a policy is folding
+/// the sub-log of its binding events, whatever order the log arrives in.
+///
+/// Asked of EVERY object that carries an event. The schema says which events
+/// are about standing ([`Schema::asks`]); a policy that holds writers to a
+/// roster, as [`Untrusted`] does, binds every other one whoever wrote it, and
+/// a policy that asks who wrote it, as [`Proven`] does, asks of every one.
 ///
 /// NOT SEALED. A host implements this; it is the seam the decision leaves the
 /// core through. [`Untrusted`] is the reference implementation and
@@ -66,9 +95,9 @@ impl Standing {
 /// own standing can read it. A policy that does not care — the two here do
 /// not — implements it for every schema in one blanket impl.
 pub trait Policy<E: Schema> {
-    /// Does this event write, or does it only claim? Asked only of an event
-    /// the schema [`Schema::asks`] about: any other binds.
-    fn standing(&self, event: &E) -> Standing;
+    /// Does the object named `object`, carrying `event`, write, or does it
+    /// only claim?
+    fn standing(&self, object: &Hash, event: &E) -> Standing;
 
     /// Is this event the host's OWN word?
     ///
@@ -85,10 +114,24 @@ pub trait Policy<E: Schema> {
     /// because a content record from an untrusted actor binds (writing content
     /// is what such a writer is for) and is still shown as its author's.
     ///
-    /// `standing(e) == Claims` implies `!confirms(e)`; every implementation
-    /// here keeps that, and §9's laws are stated over policies that do.
-    fn confirms(&self, event: &E) -> bool {
-        self.standing(event).binds()
+    /// `standing(o, e) == Claims` implies `!confirms(o, e)`; every
+    /// implementation here keeps that, and §9's laws are stated over
+    /// policies that do.
+    fn confirms(&self, object: &Hash, event: &E) -> bool {
+        self.standing(object, event).binds()
+    }
+
+    /// This policy at the history `history`, what it reads of a history read
+    /// of this one; `None` where it reads nothing of a history and so is
+    /// itself at every one, as both policies here are. [`Proven`] reads its
+    /// [`Proof`]. A reader of a history asks the policy at that history,
+    /// and the store asks its own at every `verify`.
+    fn at(&self, history: &Dag<E>) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = history;
+        None
     }
 }
 
@@ -102,7 +145,7 @@ pub trait Policy<E: Schema> {
 pub struct Everything;
 
 impl<E: Schema> Policy<E> for Everything {
-    fn standing(&self, _event: &E) -> Standing {
+    fn standing(&self, _object: &Hash, _event: &E) -> Standing {
         Standing::Binds
     }
 }
@@ -149,7 +192,7 @@ impl Untrusted {
 }
 
 impl<E: Schema> Policy<E> for Untrusted {
-    fn standing(&self, event: &E) -> Standing {
+    fn standing(&self, _object: &Hash, event: &E) -> Standing {
         if !event.asks() || !self.0.contains(event.actor()) {
             Standing::Binds
         } else {
@@ -160,9 +203,99 @@ impl<E: Schema> Policy<E> for Untrusted {
     /// The roster, whatever the kind — the override the doc on
     /// [`Policy::confirms`] describes. An untrusted actor's content record
     /// binds and is still that actor's.
-    fn confirms(&self, event: &E) -> bool {
+    fn confirms(&self, _object: &Hash, event: &E) -> bool {
         !self.0.contains(event.actor())
     }
+}
+
+/// THE POLICY THAT REQUIRES SIGNATURES, over any policy `P`: an object by
+/// actor A binds only where a signature by a key registered to A proves it
+/// (SPEC §5's proof), and then as `P` says. A key counts where one of the
+/// ROOT keys signed its `KeyAdded`, and a revocation where a root signed its
+/// `KeyRevoked`; the roots are the host's, as `P` is.
+///
+/// The meet of two policies, so it composes: `Proven<Untrusted>` holds a
+/// roster's writers to the roster and every writer to its keys. An object
+/// it does not prove CLAIMS, whatever its kind, a content record included:
+/// a record whose author is unproven is not its author's word. It is still
+/// stored and shown, as every claim is, and the claimed reading folds it.
+///
+/// A POLICY AT A HISTORY: it is made at one, and read only there; a reader
+/// of another history asks it [`Policy::at`] that one, as the store's
+/// `verify` does of what it read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proven<P> {
+    policy: P,
+    roots: BTreeSet<PublicKey>,
+    proof: Proof,
+}
+
+impl<P> Proven<P> {
+    /// `policy`, with every object held to its actor's keys, registered by
+    /// `roots`, at the history `history`.
+    #[must_use]
+    pub fn new<E: Schema>(
+        policy: P,
+        roots: impl IntoIterator<Item = PublicKey>,
+        history: &Dag<E>,
+    ) -> Proven<P> {
+        let roots: BTreeSet<PublicKey> = roots.into_iter().collect();
+        Proven {
+            policy,
+            proof: Proof::of(history, &Registrar::Roots(roots.clone())),
+            roots,
+        }
+    }
+
+    #[must_use]
+    pub fn policy(&self) -> &P {
+        &self.policy
+    }
+
+    #[must_use]
+    pub fn roots(&self) -> &BTreeSet<PublicKey> {
+        &self.roots
+    }
+
+    /// What it has read of the history it is at.
+    #[must_use]
+    pub fn proof(&self) -> &Proof {
+        &self.proof
+    }
+}
+
+impl<E: Schema, P: Policy<E> + Clone> Policy<E> for Proven<P> {
+    fn standing(&self, object: &Hash, event: &E) -> Standing {
+        let proven = if self.proof.proves(object) {
+            Standing::Binds
+        } else {
+            Standing::Claims
+        };
+        proven.and(self.policy.standing(object, event))
+    }
+
+    fn confirms(&self, object: &Hash, event: &E) -> bool {
+        self.proof.proves(object) && self.policy.confirms(object, event)
+    }
+
+    fn at(&self, history: &Dag<E>) -> Option<Self> {
+        Some(Proven::new(
+            at(&self.policy, history).into_owned(),
+            self.roots.iter().cloned(),
+            history,
+        ))
+    }
+}
+
+/// `policy` at the history `history` ([`Policy::at`]): itself, borrowed,
+/// where it reads nothing of a history.
+fn at<'p, E: Schema, P: Policy<E> + Clone>(
+    policy: &'p P,
+    history: &Dag<E>,
+) -> std::borrow::Cow<'p, P> {
+    policy
+        .at(history)
+        .map_or(std::borrow::Cow::Borrowed(policy), std::borrow::Cow::Owned)
 }
 
 #[cfg(test)]
@@ -199,6 +332,11 @@ mod tests {
         .expect("valid")
     }
 
+    /// Neither policy here reads the object's name.
+    fn object() -> Hash {
+        Hash::new("0".repeat(64)).expect("a name")
+    }
+
     fn roster() -> Untrusted {
         Untrusted::of([Actor::new("triage").expect("valid")])
     }
@@ -207,10 +345,16 @@ mod tests {
     fn a_named_actors_lifecycle_event_claims_and_its_record_binds() {
         let policy = roster();
         let claimed: Event = mk_completed("alpha", at(), "triage", "").expect("valid");
-        assert_eq!(policy.standing(&claimed), Standing::Claims);
-        assert_eq!(policy.standing(&record("triage")), Standing::Binds);
+        assert_eq!(policy.standing(&object(), &claimed), Standing::Claims);
         assert_eq!(
-            policy.standing(&mk_completed::<Todo>("alpha", at(), "bassel", "").expect("valid")),
+            policy.standing(&object(), &record("triage")),
+            Standing::Binds
+        );
+        assert_eq!(
+            policy.standing(
+                &object(),
+                &mk_completed::<Todo>("alpha", at(), "bassel", "").expect("valid")
+            ),
             Standing::Binds
         );
     }
@@ -218,12 +362,12 @@ mod tests {
     #[test]
     fn a_record_that_binds_can_still_not_be_the_hosts_own_word() {
         let policy = roster();
-        assert!(policy.standing(&record("triage")).binds());
+        assert!(policy.standing(&object(), &record("triage")).binds());
         assert!(
-            !policy.confirms(&record("triage")),
+            !policy.confirms(&object(), &record("triage")),
             "it binds, and it is still the agent's"
         );
-        assert!(policy.confirms(&record("bassel")));
+        assert!(policy.confirms(&object(), &record("bassel")));
     }
 
     #[test]
@@ -234,8 +378,14 @@ mod tests {
             mk_completed("alpha", at(), "triage", "").expect("valid"),
             mk_created("alpha", at(), "triage", "", "").expect("valid"),
         ] {
-            assert_eq!(none.standing(&event), Everything.standing(&event));
-            assert_eq!(none.confirms(&event), Everything.confirms(&event));
+            assert_eq!(
+                none.standing(&object(), &event),
+                Everything.standing(&object(), &event)
+            );
+            assert_eq!(
+                none.confirms(&object(), &event),
+                Everything.confirms(&object(), &event)
+            );
         }
     }
 
@@ -243,6 +393,8 @@ mod tests {
     fn a_claiming_event_is_never_the_hosts_own_word() {
         let policy = roster();
         let claimed: Event = mk_completed("alpha", at(), "triage", "").expect("valid");
-        assert!(policy.standing(&claimed).claims() && !policy.confirms(&claimed));
+        assert!(
+            policy.standing(&object(), &claimed).claims() && !policy.confirms(&object(), &claimed)
+        );
     }
 }

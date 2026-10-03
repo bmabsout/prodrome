@@ -29,13 +29,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
+use prodrome::dag::Dag;
 use prodrome::event::{Authored, Hash, TodoEvent, TodoId};
 use prodrome::fpl::{self, Candidates, Closed, Env, Instant, Outcome};
 use prodrome::literal;
 use prodrome::observe::{NextChange, Observation, Rounding};
 use prodrome::payload::Payload;
-use prodrome::policy::Untrusted;
+use prodrome::policy::{Policy, Proven, Standing, Untrusted};
 use prodrome::schedule::Schedule;
+use prodrome::schema::Schema;
+use prodrome::sign::PublicKey;
 use prodrome::term::Term;
 use prodrome::view::Entry;
 use serde::Deserialize;
@@ -77,6 +80,75 @@ pub fn parse_untrusted(json_text: &str) -> Result<Untrusted, Refusal> {
         actors.push(prodrome::event::Actor::new(name).map_err(|e| format!("untrusted: {e}"))?);
     }
     Ok(Untrusted::of(actors))
+}
+
+/// A policy as the browser was told it: the reference policy alone (a JSON
+/// array of actor names, the wire as it always was), or, as `{untrusted,
+/// roots}`, that policy held to the actors' keys, registered by the root
+/// keys `roots` (§5's policy that requires signatures).
+#[derive(Debug, Clone)]
+pub enum WirePolicy {
+    Roster(Untrusted),
+    Proven(Proven<Untrusted>),
+}
+
+impl<E: Schema> Policy<E> for WirePolicy {
+    fn standing(&self, object: &Hash, event: &E) -> Standing {
+        match self {
+            WirePolicy::Roster(policy) => policy.standing(object, event),
+            WirePolicy::Proven(policy) => policy.standing(object, event),
+        }
+    }
+
+    fn confirms(&self, object: &Hash, event: &E) -> bool {
+        match self {
+            WirePolicy::Roster(policy) => policy.confirms(object, event),
+            WirePolicy::Proven(policy) => policy.confirms(object, event),
+        }
+    }
+
+    fn at(&self, history: &Dag<E>) -> Option<Self> {
+        match self {
+            WirePolicy::Roster(_) => None,
+            WirePolicy::Proven(policy) => policy.at(history).map(WirePolicy::Proven),
+        }
+    }
+}
+
+/// [`WirePolicy`] from its JSON, at the history `history`.
+///
+/// # Errors
+///
+/// Neither shape, or an actor or a key that is not one.
+pub fn parse_policy<E: Schema>(json_text: &str, history: &Dag<E>) -> Result<WirePolicy, Refusal> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Held {
+        untrusted: Value,
+        roots: Value,
+    }
+    let policy = match serde_json::from_str::<Held>(json_text) {
+        Ok(Held { untrusted, roots }) => WirePolicy::Proven(Proven::new(
+            parse_untrusted(&untrusted.to_string())?,
+            parse_keys("roots", &roots.to_string())?,
+            history,
+        )),
+        Err(_) => WirePolicy::Roster(parse_untrusted(json_text)?),
+    };
+    Ok(policy)
+}
+
+/// A JSON array of public keys, each checked as one.
+///
+/// # Errors
+///
+/// Not an array of strings, or a string that is not a key.
+pub fn parse_keys(field: &str, json_text: &str) -> Result<Vec<PublicKey>, Refusal> {
+    let keys: Vec<String> = serde_json::from_str(json_text)
+        .map_err(|e| format!("{field}: expected a list of public keys ({e})"))?;
+    keys.into_iter()
+        .map(|key| PublicKey::new(key).map_err(|e| format!("{field}: {e}")))
+        .collect()
 }
 
 /// A JSON array of object names, each checked as one.

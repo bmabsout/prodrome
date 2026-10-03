@@ -38,6 +38,7 @@ use crate::payload::{
     as_string, datetime_field, required, string_field, string_or_empty, tuple_field, Payload,
 };
 use crate::schema::Schema;
+use crate::sign::{KeyAdded, KeyRevoked, Signed};
 use crate::snapshot::Snapshot;
 use crate::term::Term;
 
@@ -357,6 +358,10 @@ pub enum Envelope<E> {
     Genesis(Genesis),
     Change(Change<E>),
     Snapshot(Snapshot),
+    /// A detached signature of another object ([`crate::sign`]).
+    Signed(Signed),
+    KeyAdded(KeyAdded),
+    KeyRevoked(KeyRevoked),
 }
 
 impl<E> Envelope<E> {
@@ -365,7 +370,11 @@ impl<E> Envelope<E> {
             Envelope::Sealed { event, .. } => Some(event),
             Envelope::Woven { event, .. } => event.as_ref(),
             Envelope::Change(change) => Some(&change.event),
-            Envelope::Genesis(_) | Envelope::Snapshot(_) => None,
+            Envelope::Genesis(_)
+            | Envelope::Snapshot(_)
+            | Envelope::Signed(_)
+            | Envelope::KeyAdded(_)
+            | Envelope::KeyRevoked(_) => None,
         }
     }
 
@@ -374,16 +383,26 @@ impl<E> Envelope<E> {
             Envelope::Sealed { event, .. } => Some(event),
             Envelope::Woven { event, .. } => event,
             Envelope::Change(change) => Some(change.event),
-            Envelope::Genesis(_) | Envelope::Snapshot(_) => None,
+            Envelope::Genesis(_)
+            | Envelope::Snapshot(_)
+            | Envelope::Signed(_)
+            | Envelope::KeyAdded(_)
+            | Envelope::KeyRevoked(_) => None,
         }
     }
 
-    /// The genesis a change or a snapshot names.
+    /// The genesis a change, a snapshot or a key names. A signature names
+    /// none: its prodrome is its object's.
     pub fn genesis(&self) -> Option<&Hash> {
         match self {
             Envelope::Change(change) => Some(&change.genesis),
             Envelope::Snapshot(snapshot) => Some(&snapshot.genesis),
-            Envelope::Sealed { .. } | Envelope::Woven { .. } | Envelope::Genesis(_) => None,
+            Envelope::KeyAdded(added) => Some(&added.genesis),
+            Envelope::KeyRevoked(revoked) => Some(&revoked.genesis),
+            Envelope::Sealed { .. }
+            | Envelope::Woven { .. }
+            | Envelope::Genesis(_)
+            | Envelope::Signed(_) => None,
         }
     }
 
@@ -394,6 +413,9 @@ impl<E> Envelope<E> {
             Envelope::Genesis(_) => "Genesis",
             Envelope::Change(_) => "Change",
             Envelope::Snapshot(_) => "Snapshot",
+            Envelope::Signed(_) => "Signed",
+            Envelope::KeyAdded(_) => "KeyAdded",
+            Envelope::KeyRevoked(_) => "KeyRevoked",
         }
     }
 }
@@ -402,9 +424,11 @@ pub fn parents_of<E>(envelope: &Envelope<E>) -> Vec<Hash> {
     match envelope {
         Envelope::Sealed { prev, .. } => prev.iter().cloned().collect(),
         Envelope::Woven { parents, .. } => parents.clone(),
-        Envelope::Genesis(_) => Vec::new(),
+        Envelope::Genesis(_) | Envelope::KeyAdded(_) => Vec::new(),
         Envelope::Change(change) => change.deps.clone(),
         Envelope::Snapshot(snapshot) => snapshot.parents(),
+        Envelope::Signed(signed) => vec![signed.object.clone()],
+        Envelope::KeyRevoked(revoked) => revoked.deps.clone(),
     }
 }
 
@@ -558,6 +582,9 @@ pub const ENVELOPE_SIGNATURES: &[(&str, &[&str])] = &[
     ("Genesis", &["label", "nonce"]),
     ("Change", &["genesis", "deps", "event"]),
     ("Snapshot", &["genesis", "tips", "previous"]),
+    ("Signed", &["object", "key", "signature"]),
+    ("KeyAdded", &["genesis", "actor", "key"]),
+    ("KeyRevoked", &["genesis", "deps", "actor", "key"]),
 ];
 
 /// The whole vocabulary a stored artifact may use: the envelopes, then the
@@ -706,6 +733,9 @@ impl<E: Schema> Envelope<E> {
             Envelope::Genesis(genesis) => genesis.to_value(),
             Envelope::Change(change) => change.to_value(),
             Envelope::Snapshot(snapshot) => snapshot.to_value(),
+            Envelope::Signed(signed) => signed.to_value(),
+            Envelope::KeyAdded(added) => added.to_value(),
+            Envelope::KeyRevoked(revoked) => revoked.to_value(),
         }
     }
 
@@ -730,6 +760,9 @@ impl<E: Schema> Envelope<E> {
             "Genesis" => Ok(Envelope::Genesis(Genesis::from_call(call)?)),
             "Change" => Ok(Envelope::Change(Change::from_call(schema, call)?)),
             "Snapshot" => Ok(Envelope::Snapshot(Snapshot::from_call(call)?)),
+            "Signed" => Ok(Envelope::Signed(Signed::from_call(call)?)),
+            "KeyAdded" => Ok(Envelope::KeyAdded(KeyAdded::from_call(call)?)),
+            "KeyRevoked" => Ok(Envelope::KeyRevoked(KeyRevoked::from_call(call)?)),
             other => Err(ProdromeError::invalid(format!(
                 "object is not a chain envelope: {other}"
             ))),

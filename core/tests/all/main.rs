@@ -38,5 +38,6 @@ mod schedule;
 mod schema_laws;
 mod series_vectors;
 mod sets;
+mod signatures;
 mod tips;
 mod verify_findings;

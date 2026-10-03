@@ -94,18 +94,18 @@ fn the_corpus_uses_the_closed_vocabulary_and_every_spec_it_carries_evaluates() {
     let policy = roster();
     let mut kinds: BTreeSet<&str> = BTreeSet::new();
     let (mut provisional, mut priced) = (0, 0);
-    for (_, envelope) in common::corpus() {
+    for (name, envelope) in common::corpus() {
         let Some(event) = envelope.event() else {
             continue;
         };
         kinds.insert(event.kind_name());
-        if policy.standing(event).claims() {
+        if policy.standing(&name, event).claims() {
             provisional += 1;
         }
         if let TodoEvent::Authored(authored) = event {
             // A content record binds whoever wrote it (§5) — and is still shown
             // as its writer's, which is what `confirms` is for.
-            assert!(policy.standing(event).binds());
+            assert!(policy.standing(&name, event).binds());
             if let Some(spec) = &authored.payload.spec {
                 let now = prodrome::fpl::instant_of(authored.at);
                 let spec = prodrome::fpl::Closed::of(spec.clone()).expect("no Ref");
@@ -161,6 +161,9 @@ fn a_name_outside_spec_4_is_refused_at_the_envelope() {
         "Genesis(label='x')",
         "Change(genesis='', deps=(), event=None)",
         "Snapshot(genesis='', tips=(), previous='')",
+        "Signed(object='', key='', signature='')",
+        "KeyAdded(genesis='', actor='bassel', key='')",
+        "KeyRevoked(genesis='', deps=(), actor='Bassel', key='')",
     ] {
         assert!(
             parse_envelope::<TodoEvent<Todo>>(&Default::default(), text).is_err(),
@@ -204,6 +207,8 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Gate",
             "Genesis",
             "Importance",
+            "KeyAdded",
+            "KeyRevoked",
             "Least",
             "Note",
             "Offset",
@@ -217,6 +222,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Reopened",
             "Sealed",
             "Shift",
+            "Signed",
             "Snapshot",
             "Source",
             "SpecRevised",

@@ -241,3 +241,64 @@ fn a_page_seals_into_its_replica() {
         "not an event"
     );
 }
+
+/// A DEVICE SIGNS WHAT IT WROTE. With a key registered to `ana` by the
+/// root, her writes are unproven until her device signs them: `verify`
+/// says so, `proven` names none, and a policy that requires signatures
+/// reads every write a claim (`bo` has no key at all). Signing each of
+/// ana's writes through the export seals a `Signed` into the replica and
+/// hands it back to send, once; then they are proven, and the phase reads
+/// her merge alone, bo's close still a claim.
+#[test]
+fn a_device_signs_what_it_wrote() {
+    use prodrome::event::Actor;
+    use prodrome::sign::{KeyAdded, Secret};
+
+    let (device, root) = ("1".repeat(64), "9".repeat(64));
+    let key = Reviews::public_key(&device).unwrap_or_else(|_| panic!("a seed"));
+    let root_key = crate::public_key(&root).expect("a seed");
+    let (mut objects, names) = store();
+    let added = Envelope::KeyAdded(KeyAdded {
+        genesis: names[0].clone(),
+        actor: Actor::new("ana").expect("an actor"),
+        key: prodrome::sign::PublicKey::new(key).expect("a key"),
+    });
+    let registered = Secret::new(&root).expect("a seed").sign(&seal_hash(&added));
+    objects.extend([added, Envelope::Signed(registered)]);
+    let sent = Value::Array(objects.iter().map(sent).collect()).to_string();
+    let mut replica = Reviews::new(&sent).unwrap_or_else(|_| panic!("the objects are read"));
+    let required = json!({ "untrusted": [], "roots": [root_key] }).to_string();
+    let roots = Some(json!([root_key]).to_string());
+
+    let verified = answer(replica.verify());
+    assert_eq!(verified["ok"], json!(false), "ana's writes are unsigned");
+    assert_eq!(answer(replica.proven(roots.clone()))["proven"], json!([]));
+    let phases = |replica: &Reviews| answer(replica.readings(None, &required))["readings"].clone();
+    assert_eq!(phases(&replica)[0]["registers"]["phase"], json!([]));
+
+    for at in [1, 2, 3] {
+        let signed = answer(replica.sign(&device, names[at].as_str()));
+        let objects = signed["objects"].as_array().expect("objects");
+        assert_eq!(objects.len(), 1, "the signature, to send");
+        assert_eq!(objects[0]["hash"], signed["hash"]);
+        let again = answer(replica.sign(&device, names[at].as_str()));
+        assert_eq!(again["hash"], signed["hash"], "deterministic");
+        assert_eq!(again["objects"], json!([]), "sent once");
+    }
+    let mut ana: Vec<&str> = [1, 2, 3].iter().map(|at| names[*at].as_str()).collect();
+    ana.sort_unstable();
+    let mut proven: Vec<String> =
+        serde_json::from_value(answer(replica.proven(roots))["proven"].clone()).expect("names");
+    proven.sort_unstable();
+    assert_eq!(proven, ana);
+    assert_eq!(answer(replica.verify())["ok"], json!(true));
+    assert_eq!(
+        phases(&replica)[0]["registers"]["phase"],
+        json!([{ "hash": names[3].as_str(), "value": "merged" }])
+    );
+    assert!(
+        crate::sign(&mut replica.0, &device, &"0".repeat(64)).is_err(),
+        "not held"
+    );
+    assert!(crate::sign(&mut replica.0, "not a seed", names[1].as_str()).is_err());
+}

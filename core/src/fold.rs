@@ -89,12 +89,14 @@ fn scan<'a, E: Schema>(
     registers
 }
 
-/// Does `stamp` join its registers at `at` (`None`: ever) under `policy`? An
-/// event the schema does not ask about joins whoever wrote it (a todo's
-/// record, §6.2, §6.3); every other only where the policy binds it.
+/// Does `stamp` join its registers at `at` (`None`: ever) under `policy`?
+/// Where it is dated by then and the policy binds it: the reference policy
+/// binds an event the schema does not ask about whoever wrote it (a todo's
+/// record, §6.2, §6.3), and a policy that requires signatures binds only
+/// what the history proves (§5).
 fn admits<E: Schema>(stamp: &Stamp<E>, at: Option<Instant>, policy: &impl Policy<E>) -> bool {
     at.is_none_or(|at| fpl::instant_of(stamp.event.at()) <= at)
-        && (!stamp.event.asks() || policy.standing(&stamp.event).binds())
+        && policy.standing(&stamp.name, &stamp.event).binds()
 }
 
 /// One todo's registers at a moment: the todo schema's product. The state,

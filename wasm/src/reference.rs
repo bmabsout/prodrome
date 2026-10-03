@@ -143,7 +143,10 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
     let mut bindings = serde_json::Map::new();
     let mut tended = BTreeMap::new();
     for (todo, stream) in state.entities() {
-        for stamp in stream.iter().filter(|s| policy.standing(&*s.event).binds()) {
+        for stamp in stream
+            .iter()
+            .filter(|s| policy.standing(&s.name, &*s.event).binds())
+        {
             for write in fold::Write::of(&stamp.event) {
                 if let fold::Write::Tend(at) = write {
                     tended

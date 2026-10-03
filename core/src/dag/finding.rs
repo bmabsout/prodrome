@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::event::Hash;
+use crate::event::{Actor, Hash};
 use crate::literal::{Datetime, ProdromeError};
 
 /// One thing `verify` says about a store, in §3's words.
@@ -52,6 +52,16 @@ pub enum Finding {
     Incomplete {
         snapshot: Hash,
         missing: Hash,
+    },
+    /// A `Signed` whose signature does not verify.
+    Forged {
+        signed: Hash,
+    },
+    /// An object whose actor has a key, and which no signature by a key of
+    /// that actor's proves (§5).
+    Unsigned {
+        object: Hash,
+        actor: Actor,
     },
 }
 
@@ -144,6 +154,15 @@ impl fmt::Display for Finding {
                 f,
                 "snapshot {snapshot} attests {missing}, which the store does not hold \
                  (SPEC §3)"
+            ),
+            Finding::Forged { signed } => write!(
+                f,
+                "signature {signed} does not verify under its key (SPEC §3)"
+            ),
+            Finding::Unsigned { object, actor } => write!(
+                f,
+                "object {object} is {actor}'s, who has a key, and no signature by a key of \
+                 {actor}'s proves it (SPEC §5)"
             ),
         }
     }
