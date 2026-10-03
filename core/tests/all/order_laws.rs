@@ -48,6 +48,8 @@ fn a_set() -> impl Strategy<Value = BTreeSet<u8>> {
 }
 
 proptest! {
+    #![proptest_config(crate::common::cases::cases(256))]
+
     /// Law 2: every order is a partial order.
     #[test]
     fn every_order_is_a_partial_order(
@@ -180,6 +182,8 @@ fn is_completion<V: Order + std::fmt::Debug>(
 }
 
 proptest! {
+    #![proptest_config(crate::common::cases::cases(256))]
+
     /// Law 3: a reading is the set of maximal values of its frontier's
     /// values, under every order.
     #[test]
@@ -241,6 +245,8 @@ fn acts() -> impl Strategy<Value = Vec<Act>> {
 }
 
 proptest! {
+    #![proptest_config(crate::common::cases::cases(256))]
+
     /// Law 4: an append whose value is not `≥` the reading it supersedes is
     /// refused before any object carries it; every other is written over
     /// the frontier it supersedes. Over every history so written, the

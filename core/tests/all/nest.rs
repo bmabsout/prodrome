@@ -55,7 +55,7 @@ fn a_prefix_free_nest() -> impl Strategy<Value = Vec<(Path, History<u8>)>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// `join ∘ unit = id` and `join ∘ fmap unit = id`: a history held at
     /// the root, or each of its values as a history of one, flattens to

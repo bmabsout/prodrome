@@ -42,7 +42,7 @@ fn meaning<A>(schedule: &Schedule<A>, t: Instant) -> &A {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     #[test]
     fn at_is_the_last_knot_at_or_before(s in a_schedule()) {

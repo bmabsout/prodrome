@@ -115,7 +115,7 @@ fn a_write() -> impl Strategy<Value = Event> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// Law 19 — A NAME IS ITS GENESIS, EVENT AND VIEW. Two writers diverge
     /// on everything but `event`'s entity, and write it as one object.

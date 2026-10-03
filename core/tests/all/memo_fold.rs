@@ -266,7 +266,7 @@ fn expected(tree: &Node, changed: &BTreeSet<Hash>) -> BTreeSet<(Hash, usize, Out
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(crate::common::cases::cases(128))]
 
     /// `memoCata alg = cata alg`: over a run of edits, two algebras sharing
     /// one cache, entries dropped at random between folds, and again under

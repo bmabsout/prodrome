@@ -347,6 +347,8 @@ fn a_new_object() -> impl Strategy<Value = Envelope<TodoEvent<Todo>>> {
 }
 
 proptest! {
+    #![proptest_config(crate::common::cases::cases(256))]
+
     /// Law 1 over §3's new objects.
     #[test]
     fn a_new_object_prints_and_parses_back(object in a_new_object()) {

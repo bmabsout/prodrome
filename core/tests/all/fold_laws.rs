@@ -123,7 +123,7 @@ fn folds(log: &[Event], t: Datetime, policy: &impl Policy<TodoEvent<Todo>>) -> F
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(crate::common::cases::cases(128))]
 
     /// §9.2, THE PREFIX LAW — nothing rewrites history. Append an event later
     /// than the log's last, and at every earlier moment every todo's function
@@ -405,7 +405,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(crate::common::cases::cases(128))]
 
     /// A TENDING LEAVES STATE ALONE. Append a binding `Tended` about any todo
     /// at any instant, and at every moment every outcome, spec, content record
@@ -783,7 +783,7 @@ fn relinearised(nodes: &[Chain], keys: &[u32]) -> Vec<Chain> {
 proptest! {
     // Each case builds two stores on disk and imports one into the other, so
     // the budget buys graphs rather than repetitions.
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// §6.6 — CONFLICTS ARE EXACTLY THE REGISTERS BOTH BRANCHES WROTE (the
     /// shared prefix's writes are ancestors of both and never conflict); A
@@ -1047,7 +1047,7 @@ fn a_tending() -> impl Strategy<Value = (&'static str, i64)> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// TENDINGS MERGE BY UNION. Two replicas tend concurrently; the merged
     /// store's tendings are the union of what each side folds to, before the
@@ -1120,7 +1120,7 @@ fn clones(shared: &[Event], mine: &[Event], theirs: &[Event]) -> (Replicas, Stor
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// §9.17 b — A GIT MERGE IS THE PRODROME'S MERGE. Two writers append to
     /// clones of one store; their object directories, unioned as files, read
@@ -1172,7 +1172,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(crate::common::cases::cases(256))]
 
     /// §9.18: `link(Ref(x))` against a store's specs is `Absent` exactly when
     /// the store knows `x` and it has no function, `x`'s own function linked

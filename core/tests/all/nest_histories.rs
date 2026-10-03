@@ -412,7 +412,7 @@ impl Three {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// Two levels, a shelf of reviews.
     #[test]
@@ -584,7 +584,7 @@ fn names(nest: &Nest, into: &mut BTreeSet<Hash>) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// THE MEMOISED FOLD FOLDS A NEST (law 8 on law 10's trees). The
     /// memoised fold of the join's algebra is the join, cold and warm; and

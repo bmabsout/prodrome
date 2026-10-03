@@ -29,7 +29,7 @@ const OBJECTS: [&str; 3] = [
 ];
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(4096))]
+    #![proptest_config(crate::common::cases::cases(4096))]
 
     #[test]
     fn arbitrary_text_never_panics(text in ".{0,200}") {

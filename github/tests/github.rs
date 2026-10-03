@@ -5,6 +5,10 @@
 //! mirror reads, in the shape the webhook documentation gives it, and a few it
 //! does not read, so a test also shows what is ignored.
 
+// The property tests' case counts: the core's rule, read from its file.
+#[path = "../../core/tests/common/cases.rs"]
+mod cases;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -483,7 +487,7 @@ fn replay(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(cases::cases(64))]
 
     /// Replaying what was applied changes nothing: applying the deliveries a
     /// store accepted once more appends nothing, and a fresh store given them
