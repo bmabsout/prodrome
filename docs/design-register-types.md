@@ -717,7 +717,9 @@ moves, and at no other time.
 - **The set as a reading.** `fpl::Stores`, the product of members' readings
   as references read them (`fpl::Member`: functions and environment), with
   a host's names (`Stores::named`); `fold::member` reads one prodrome so,
-  `fold::stores` a replica's prodromes, and `view::entries` prices each
+  `fold::stores` the prodromes of the fold a replica holds (the legacy
+  prodrome, which no `Genesis` begins, is no member), and `view::entries`
+  prices each
   entry through `fold::member`, so the two cannot disagree, and links it
   through the set of its DAG's prodromes, so a replica of several reads as
   the set it is.

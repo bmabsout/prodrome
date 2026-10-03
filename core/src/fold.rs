@@ -21,13 +21,12 @@ pub use product::Product;
 pub use register::{GrowSet, Register, RegisterType};
 pub use write::{Kind, Write};
 
-use crate::dag::Dag;
 use crate::event::{Authored, TodoEvent, TodoId};
 use crate::fpl::{self, Candidates, Env, FplError, Instant};
 use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
-use crate::registers::{self, Prodrome, Stamp};
+use crate::registers::{Folded, Prodrome, Stamp};
 use crate::schedule::Schedule;
 use crate::schema::{Bind, History, Price, Schema};
 use crate::term::Term;
@@ -445,28 +444,25 @@ pub fn member<E: History + Bind>(
     })
 }
 
-/// A REPLICA'S PRODROMES AS A SET (design §6.3.1, SPEC §7.2): each a
-/// [`member`] by its genesis. The product of its members' readings, each
-/// read from its own prodrome alone, so what one member holds never moves
-/// another's reading (the disjointness law, §3). A genesis with no entity
-/// yet is a member with none.
+/// A REPLICA'S PRODROMES AS A SET (design §6.3.1, SPEC §7.2): each
+/// prodrome a `Genesis` begins, a [`member`] by its genesis. The product of
+/// its members' readings, each read from its own prodrome alone, so what
+/// one member holds never moves another's reading (the disjointness law,
+/// §3). The legacy prodrome, which no `Genesis` begins, is no member.
 ///
 /// # Errors
 ///
-/// A DAG missing a parent, or a function [`flatten`] cannot build.
+/// A function [`flatten`] cannot build.
 pub fn stores<E: History + Bind>(
-    dag: &Dag<E>,
+    folded: &Folded<E>,
     at: Instant,
     policy: &impl Policy<E>,
-) -> Result<fpl::Stores, ProdromeError> {
-    let folded = registers::fold(&dag.nodes()?);
-    let none = Prodrome::new();
-    dag.geneses()
-        .into_iter()
-        .map(|genesis| {
-            let prodrome = folded.prodromes().get(&dag.key(&genesis)).unwrap_or(&none);
-            Ok((genesis, member(prodrome, at, policy)?))
-        })
+) -> Result<fpl::Stores, FplError> {
+    folded
+        .prodromes()
+        .iter()
+        .filter_map(|(genesis, prodrome)| Some((genesis.clone()?, prodrome)))
+        .map(|(genesis, prodrome)| Ok((genesis, member(prodrome, at, policy)?)))
         .collect()
 }
 

@@ -243,16 +243,13 @@ pub fn entries<E: Row + History + Bind>(
 ) -> Result<Vec<Entry<E>>, ProdromeError> {
     let state = registers::fold(nodes);
     let now = fpl::instant_of(t);
-    let mut members = Vec::new();
-    for (genesis, prodrome) in state.prodromes() {
-        members.push((genesis, prodrome, fold::member(prodrome, now, policy)?));
-    }
-    let set: fpl::Stores = members
-        .iter()
-        .filter_map(|(genesis, _, member)| Some(((*genesis).clone()?, member.clone())))
-        .collect();
+    let set = fold::stores(&state, now, policy)?;
     let mut out = Vec::new();
-    for (genesis, prodrome, fpl::Member { specs, env }) in members {
+    for (genesis, prodrome) in state.prodromes() {
+        let fpl::Member { specs, env } = match genesis {
+            Some(genesis) => set.member(genesis).cloned().unwrap_or_default(),
+            None => fold::member(prodrome, now, policy)?,
+        };
         for (key, stream) in prodrome {
             let registers = fold::read(stream, Some(now), policy);
             let reading = E::reading(&registers);
