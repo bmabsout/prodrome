@@ -36,6 +36,7 @@ impl Offsets {
 
     /// The byte offset of a UTF-16 offset, rounded down the same way — a
     /// cursor between the two halves of a surrogate pair is before the pair.
+    #[cfg(any(feature = "ide", test))]
     pub fn byte(&self, unit: usize) -> usize {
         let at = self.marks.partition_point(|(_, u)| *u <= unit);
         self.marks[at.saturating_sub(1)].0
