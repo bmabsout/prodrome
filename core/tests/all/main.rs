@@ -32,6 +32,7 @@ mod recur_vectors;
 mod registers;
 mod replica;
 mod review;
+mod schedule;
 mod schema_laws;
 mod series_vectors;
 mod tips;
