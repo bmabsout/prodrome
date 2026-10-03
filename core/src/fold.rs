@@ -1,5 +1,4 @@
 //! §6 — belief at a moment: each entity's stream folded into its registers
-//! (probe: a second one-line change to the core, timed by CI.)
 //! ([`read`], under any schema), and the todo's readings (§6.1–6.5) each a
 //! projection of its [`Registers`].
 //!
