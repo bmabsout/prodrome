@@ -25,6 +25,7 @@ mod memo_balance;
 mod memo_fold;
 mod memory;
 mod nest;
+mod nest_histories;
 mod observe;
 mod order_laws;
 mod recur_vectors;
