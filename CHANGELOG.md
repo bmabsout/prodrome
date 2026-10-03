@@ -157,7 +157,9 @@ field.
   level, whose join puts every object at `genesis/key`; `Dag::genesis_of`,
   the genesis of an object's prodrome. `fold::member`, one prodrome as a
   term elsewhere reads it, and `fold::stores`, a replica's prodromes as an
-  `fpl::Stores`; `view::entries` prices through `fold::member`. Laws in
+  `fpl::Stores`; `view::entries` prices through `fold::member`, and links
+  each entry through the set of its DAG's prodromes, so a qualified
+  reference to a sibling prodrome prices as that prodrome's view does. Laws in
   `core/tests/all/sets.rs`: disjointness, a set of sets is associative, and
   the set's reading is the product of its members'.
 - **The inbox, priced by what it serves (design §0, §6.3.1):** a test

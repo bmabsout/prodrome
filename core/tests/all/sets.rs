@@ -375,6 +375,51 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// A VIEW READS ITS REPLICA AS A SET. In a replica holding two todo
+    /// prodromes, a todo of one whose spec is a qualified reference to a
+    /// todo of the other prices, in the view, as that todo does in its own
+    /// prodrome's view.
+    #[test]
+    fn a_view_prices_a_qualified_ref_through_its_replicas_set(log in a_log()) {
+        let there = member(0, &log);
+        let elsewhere = genesis(&there);
+        let here = sub::<Event>(TodoVocabulary::default(), &label(1));
+        for (n, todo) in (0..).zip(common::TODOS) {
+            let spec = ok(fpl::mk_ref_in(elsewhere.clone(), todo.to_owned()));
+            let event = common::ok(prodrome::event::mk_spec_revised(
+                todo,
+                common::moment(n),
+                "bassel",
+                spec,
+                "",
+            ));
+            here.store.append(event).expect("appends");
+        }
+        let replica = union(&[&there, &here]);
+        let view = |replica: &MemoryStore<Event>| {
+            view::entries(&dag(replica).nodes().expect("whole"), far(), &Everything)
+                .expect("a view")
+        };
+        let (both, alone) = (view(&replica), view(&there.store));
+        let here_genesis = name(&genesis(&here));
+        for todo in common::TODOS {
+            let value = |entries: &[view::Entry<Event>], genesis: Option<&Hash>| {
+                entries
+                    .iter()
+                    .find(|entry| entry.key.as_str() == todo && entry.genesis.as_ref() == genesis)
+                    .map(|entry| entry.price.value.clone().expect("links"))
+            };
+            let priced = value(&both, Some(&here_genesis)).expect("a spec revised");
+            let at_home = value(&alone, alone.first().and_then(|entry| entry.genesis.as_ref()))
+                .flatten();
+            prop_assert!(agree(&[priced], &[at_home]), "{todo}: {priced:?} vs {at_home:?}");
+        }
+    }
+}
+
 // --- The motivating use: a proposal priced by the todo it serves --------------
 
 #[path = "../schemas/inbox.rs"]
