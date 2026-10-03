@@ -11,7 +11,9 @@
 //! last write saw. And happens-before across levels is exactly what the
 //! pointers say: an inner object's past is its own level's, and an outer
 //! write's past reaches an inner object only through heads it, or a write
-//! beneath it, named.
+//! beneath it, named. A nest is a tree of content-addressed histories, so
+//! the memoised fold folds it, the join is that fold of one algebra, and a
+//! write deep in it recomputes only the spine it moved.
 
 use crate::common;
 
@@ -23,6 +25,7 @@ use prodrome::event::{
     canonical_envelope, mk_created, mk_tended, seal_hash, Envelope, Hash, TodoEvent,
 };
 use prodrome::genesis::mk_genesis;
+use prodrome::memo::{fold, Algebra, Cache, Outcome};
 use prodrome::nest::{pointer, History, Holding, Leaf, Level, Nest, Path, Segment};
 use prodrome::reference::Todo;
 use prodrome::registers::Folded;
@@ -523,4 +526,84 @@ fn a_pointer_to_another_levels_object_is_missing() {
     let leaf = Leaf::new(dag(&inner));
     let refused = leaf.nest(&outer).expect_err("refused");
     assert!(refused.to_string().contains("missing object"), "{refused}");
+}
+
+/// The join as an algebra: a level's own objects, and each child's result
+/// under the path that held it.
+struct Flatten(Hash);
+
+impl Algebra<Nest> for Flatten {
+    type Out = History<Hash>;
+
+    fn name(&self) -> &Hash {
+        &self.0
+    }
+
+    fn apply(&self, node: &Nest, children: Vec<History<Hash>>) -> History<Hash> {
+        std::iter::once((Path::root(), node.own().clone()))
+            .chain(node.held().keys().cloned().zip(children))
+            .collect::<History<History<Hash>>>()
+            .join()
+    }
+}
+
+/// Every nest's name in the tree.
+fn names(nest: &Nest, into: &mut BTreeSet<Hash>) {
+    into.insert(nest.name().clone());
+    for held in nest.held().values() {
+        names(held, into);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// THE MEMOISED FOLD FOLDS A NEST (law 8 on law 10's trees). The
+    /// memoised fold of the join's algebra is the join, cold and warm; and
+    /// after a review is written two shelves deep and the pointers above it
+    /// name it, a fold through the same cache computes exactly the nests
+    /// whose names moved, which are the spine from that review's history to
+    /// the root, one per level, and hits the top of each one beside it.
+    #[test]
+    fn the_memoised_fold_recomputes_only_the_spine_a_write_moved(
+        steps in deep_steps(),
+        o in 0..2usize,
+        m in 0..2usize,
+    ) {
+        let mut three = three(&steps);
+        let before = three.nest();
+        let algebra = Flatten(prodrome::memo::name(b"nest flatten", []));
+        let mut cache: Cache<History<Hash>> = Cache::default();
+        let (value, _) = fold(&algebra, &before, &mut cache);
+        prop_assert_eq!(&value, &before.flatten());
+
+        let n = steps.len() + 10;
+        three.step(n, &Deep::Leaf(o, m, 0));
+        three.step(n + 1, &Deep::Middle(o, m));
+        three.step(n + 2, &Deep::Outer(o));
+        let after = three.nest();
+        let (value, report) = fold(&algebra, &after, &mut cache);
+        prop_assert_eq!(&value, &after.flatten());
+        prop_assert_eq!(&value, &fold(&algebra, &after, &mut Cache::default()).0);
+
+        let (mut old, mut new) = (BTreeSet::new(), BTreeSet::new());
+        names(&before, &mut old);
+        names(&after, &mut new);
+        let moved: BTreeSet<Hash> = new.difference(&old).cloned().collect();
+        let middle = &after.held()[&held(&shelf(o))];
+        let spine: BTreeSet<Hash> = [
+            after.name().clone(),
+            middle.name().clone(),
+            middle.held()[&held(&shelf(m))].name().clone(),
+        ]
+        .into();
+        prop_assert_eq!(&moved, &spine);
+        prop_assert_eq!(report.names(Outcome::Computed).cloned().collect::<BTreeSet<_>>(), spine);
+        let depths: Vec<(usize, usize)> = report
+            .by_depth()
+            .iter()
+            .map(|counts| (counts.computed, counts.hits))
+            .collect();
+        prop_assert_eq!(depths, vec![(1, 0), (1, 1), (1, 1)]);
+    }
 }

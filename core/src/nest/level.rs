@@ -271,3 +271,21 @@ impl Nest {
         Some(past)
     }
 }
+
+/// A NEST IS A TREE OF CONTENT-ADDRESSED HISTORIES, so the memoised fold
+/// (design §6.2) folds it with no further mechanism: a node is one level's
+/// history, its children the nests its pointers hold in path order, and its
+/// name covers both. A write deep in the nest, once the pointers above it
+/// name it, renames exactly the nests from it to the root, and a fold
+/// computes those and hits every other. [`Nest::flatten`] is such a fold,
+/// its algebra a level's own objects joined with its children's results
+/// under their paths.
+impl crate::memo::Tree for Nest {
+    fn name(&self) -> &Hash {
+        &self.name
+    }
+
+    fn children(&self) -> impl Iterator<Item = &Self> {
+        self.held.values()
+    }
+}
