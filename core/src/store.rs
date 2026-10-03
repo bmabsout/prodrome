@@ -1587,12 +1587,12 @@ mod tests {
         );
         fs::remove_file(&temp).expect("deletes the temp");
         store
-            .append(mk_completed("alpha", at(2), "bassel", "").expect("valid"))
+            .append(mk_completed("alpha", at(2), "writer", "").expect("valid"))
             .expect("appends");
         assert_eq!(fs::read_to_string(&path).expect("written"), GITATTRIBUTES);
         fs::write(&path, "* -text\n").expect("the host's own");
         store
-            .append(mk_reopened("alpha", at(3), "bassel", "").expect("valid"))
+            .append(mk_reopened("alpha", at(3), "writer", "").expect("valid"))
             .expect("appends");
         assert_eq!(fs::read_to_string(&path).expect("kept"), "* -text\n");
         assert_eq!(findings(&store), Vec::<String>::new());
