@@ -13,8 +13,8 @@ use chrono::{Duration, Timelike};
 
 use crate::breaks::{breakpoints, Breaks};
 use crate::fpl::{
-    div_delta, eval, in_force, last_tended, offset, phase, power_mean, Closed, Delta, Env, Instant,
-    Outcome, WITHIN_SAMPLES,
+    div_delta, eval, last_tended, offset, phase, power_mean, Closed, Delta, Env, Instant, Outcome,
+    WITHIN_SAMPLES,
 };
 use crate::term::{normalize, Term, TermF};
 
@@ -413,12 +413,15 @@ fn range(term: &Term, span: Span, env: &Env) -> Range {
                 .into_iter()
                 .map(|part| range(term, part, env)),
         ),
-        TermF::Piecewise { head, pieces } => {
-            let first = in_force(head, pieces, span.from).1;
+        TermF::Piecewise(schedule) => {
+            let first = schedule.at(span.from);
             hull_of(
-                span.parts(first, pieces.iter().map(|(at, piece)| (*at, piece)))
-                    .into_iter()
-                    .map(|(piece, part)| range(piece, part, env)),
+                span.parts(
+                    first,
+                    schedule.knots().iter().map(|(at, piece)| (*at, piece)),
+                )
+                .into_iter()
+                .map(|(piece, part)| range(piece, part, env)),
             )
         }
         // Exact, and taken above.

@@ -30,6 +30,7 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use thiserror::Error;
 
 use crate::literal::{self, print_literal, Call, Finite, ProdromeError};
+use crate::schedule::Schedule;
 use crate::term::schema::{self, signatures, Field, FieldSource, Fields, Slot};
 use crate::term::{normalize, CurvePoint, Term, TermF};
 use crate::topo::Topo;
@@ -271,26 +272,6 @@ fn eval_curve(points: &[CurvePoint], now: Instant) -> f64 {
     points[points.len() - 1].value
 }
 
-/// The function governing `now` and since when: the last piece whose instant
-/// is not after `now`, or the head, which has no instant.
-pub fn in_force<'a>(
-    head: &'a Term,
-    pieces: &'a [(Instant, Term)],
-    now: Instant,
-) -> (Option<Instant>, &'a Term) {
-    let mut since = None;
-    let mut term = head;
-    for (at, t) in pieces {
-        if *at <= now {
-            since = Some(*at);
-            term = t;
-        } else {
-            break;
-        }
-    }
-    (since, term)
-}
-
 /// What history says about `event` AS OF `now`, one reading per candidate. A
 /// snapshot taken later may hold a binding dated after `now`; that binding is
 /// not in force yet, and reading it would let a later completion rewrite an
@@ -414,7 +395,7 @@ pub(crate) fn eval(term: &Term, now: Instant, env: &Env) -> Option<f64> {
             anchor,
             term,
         } => eval(term, phase(*period, *anchor, now), env),
-        TermF::Piecewise { head, pieces } => eval(in_force(head, pieces, now).1, now, env),
+        TermF::Piecewise(schedule) => eval(schedule.at(now), now, env),
         // An absent offset is no offset; an absent term is `∅`.
         TermF::OffsetBy { delta, term } => {
             let x = eval(term, now, env)?;
@@ -747,17 +728,15 @@ fn explain(term: &Term, now: Instant, env: &Env) -> Explanation {
                 term: explain(term, at, env),
             }
         }
-        TermF::Piecewise { head, pieces } => {
-            let (since, in_f) = in_force(head, pieces, now);
-            notes.insert("pieces".into(), Note::One(Scalar::Int(pieces.len() as i64)));
+        TermF::Piecewise(schedule) => {
+            let (since, in_f) = schedule.since(now);
+            let pieces = schedule.knots().len();
+            notes.insert("pieces".into(), Note::One(Scalar::Int(pieces as i64)));
             notes.insert(
                 "since".into(),
                 Note::One(Scalar::Text(since.map(iso).unwrap_or_default())),
             );
-            TermF::Piecewise {
-                head: explain(in_f, now, env),
-                pieces: vec![],
-            }
+            TermF::Piecewise(Schedule::constant(explain(in_f, now, env)))
         }
         TermF::Ref { todo } => TermF::Ref { todo: todo.clone() },
         TermF::Absent => TermF::Absent,
@@ -993,80 +972,40 @@ pub fn checklist(own: Option<Term>, items: usize) -> Result<Option<Term>, FplErr
 /// `fulfillment` gives the raw record and its normal form the same reading at
 /// every instant.
 pub fn mk_piecewise(head: Term, pieces: Vec<(Instant, Term)>) -> Result<Term, FplError> {
-    for pair in pieces.windows(2) {
-        if pair[0].0 >= pair[1].0 {
-            return err(format!(
+    Schedule::new(head, pieces)
+        .map(piecewise)
+        .map_err(|unordered| {
+            FplError(format!(
                 "piecewise instants must strictly increase: {} then {}",
-                iso(pair[0].0),
-                iso(pair[1].0)
-            ));
-        }
-    }
-    Ok(piecewise(head, pieces))
-}
-
-/// `mk_piecewise` with the ordering precondition already established — the
-/// internal path, so `normalize` needs no `Result` it could not produce, and
-/// `chain` (§7.1) none either when it puts one link on one instant.
-pub(crate) fn piecewise(head: Term, pieces: Vec<(Instant, Term)>) -> Term {
-    let first = pieces.first().map(|p| p.0);
-    let (start, start_pieces) = opened(head);
-    let mut schedule: Vec<(Instant, Term)> = start_pieces
-        .into_iter()
-        .filter(|(at, _)| first.is_none_or(|f| *at < f))
-        .collect();
-    for (i, piece) in pieces.iter().enumerate() {
-        schedule.extend(spliced(piece, pieces.get(i + 1).map(|p| p.0)));
-    }
-    let mut out: Vec<(Instant, Term)> = vec![];
-    let mut current = start.clone();
-    for (at, term) in schedule {
-        if term != current {
-            current = term.clone();
-            out.push((at, term));
-        }
-    }
-    if out.is_empty() {
-        start
-    } else {
-        Term::new(TermF::Piecewise {
-            head: start,
-            pieces: out,
+                iso(unordered.before),
+                iso(unordered.after)
+            ))
         })
+}
+
+/// A schedule of terms in normal form: each term opened into its own
+/// schedule, the schedule of schedules joined (its diagonal, which is
+/// splicing), and a piece that repeats the one before it dropped. A schedule
+/// with no piece left is its head.
+pub(crate) fn piecewise(schedule: Schedule<Term>) -> Term {
+    let normal = schedule.map(opened).join().normal();
+    if normal.knots().is_empty() {
+        normal.into_parts().0
+    } else {
+        Term::new(TermF::Piecewise(normal))
     }
 }
 
-/// A term as (the function before its first transition, its transitions),
-/// normalised first so the split is one level deep and stays so.
-fn opened(term: Term) -> (Term, Vec<(Instant, Term)>) {
-    match term.out() {
-        TermF::Piecewise { head, pieces } => {
-            let normal = piecewise(head.clone(), pieces.clone());
-            match normal.out() {
-                TermF::Piecewise { head, pieces } => (head.clone(), pieces.clone()),
-                _ => (normal, vec![]),
-            }
-        }
-        _ => (term, vec![]),
+/// A term as the schedule it is: a `Piecewise`'s own, in normal form, and
+/// any other term constant.
+fn opened(term: Term) -> Schedule<Term> {
+    match term.into_out() {
+        TermF::Piecewise(schedule) => match piecewise(schedule).into_out() {
+            TermF::Piecewise(normal) => normal,
+            term => Schedule::constant(Term::new(term)),
+        },
+        term => Schedule::constant(Term::new(term)),
     }
-}
-
-/// One outer piece as a schedule: at its instant, whichever inner function is
-/// in force there; then the inner transitions after it and before the next.
-fn spliced(piece: &(Instant, Term), until: Option<Instant>) -> Vec<(Instant, Term)> {
-    let (inner, inner_pieces) = opened(piece.1.clone());
-    let mut at_instant = inner;
-    let mut later = vec![];
-    for (at, term) in inner_pieces {
-        if at <= piece.0 {
-            at_instant = term;
-        } else if until.is_none_or(|u| at < u) {
-            later.push((at, term));
-        }
-    }
-    let mut out = vec![(piece.0, at_instant)];
-    out.extend(later);
-    out
 }
 
 // --- Linking: every Ref bound to the todo it names --------------------------
@@ -1107,7 +1046,7 @@ fn linked(
                 .ok_or_else(|| LinkError::Unknown(todo.clone()))?;
             linked(spec, specs, topo)
         }),
-        TermF::Piecewise { head, pieces } => Ok(piecewise(head, pieces)),
+        TermF::Piecewise(schedule) => Ok(piecewise(schedule)),
         layer => Ok(Term::new(layer)),
     })
 }
