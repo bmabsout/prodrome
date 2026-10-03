@@ -12,6 +12,7 @@ mod change;
 mod change_vectors;
 mod conformance_view;
 mod dag;
+mod declared;
 mod events;
 mod fold_laws;
 mod folds;
