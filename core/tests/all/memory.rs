@@ -131,7 +131,7 @@ fn sealed(
 /// `nodes` in the topological order `keys` draws: of the objects whose
 /// parents are all placed, the one with the least key, then name.
 fn shuffled(nodes: &[Node<Event>], keys: &[u32]) -> Vec<Node<Event>> {
-    let names: BTreeSet<&Hash> = nodes.iter().map(|node| node.name()).collect();
+    let names: BTreeSet<&Hash> = nodes.iter().map(Node::name).collect();
     let mut placed: BTreeSet<&Hash> = BTreeSet::new();
     let mut left: Vec<(u32, &Node<Event>)> = nodes
         .iter()
@@ -162,7 +162,7 @@ fn shuffled(nodes: &[Node<Event>], keys: &[u32]) -> Vec<Node<Event>> {
 /// order, and the rest inserted in `order`'s.
 fn inserted(nodes: &[Node<Event>], order: &[Node<Event>], split: usize) -> Folded<Event> {
     let split = split.min(order.len());
-    let first: BTreeSet<&Hash> = order[..split].iter().map(|node| node.name()).collect();
+    let first: BTreeSet<&Hash> = order[..split].iter().map(Node::name).collect();
     let prefix: Vec<Node<Event>> = nodes
         .iter()
         .filter(|node| first.contains(node.name()))

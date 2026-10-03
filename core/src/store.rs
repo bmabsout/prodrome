@@ -241,11 +241,11 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Listing::default())
             }
-            Err(error) => return Err(io(&dir, error)),
+            Err(error) => return Err(io(&dir, &error)),
         };
         let mut listing = Listing::default();
         for entry in entries {
-            let entry = entry.map_err(|e| io(&dir, e))?;
+            let entry = entry.map_err(|e| io(&dir, &e))?;
             let file = entry.file_name().to_string_lossy().into_owned();
             match file.strip_suffix(".py").map(Hash::new) {
                 Some(Ok(name)) => listing.objects.push((name, entry)),
@@ -313,9 +313,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         use rustix::fs::{flock, FlockOperation};
         make_dir(&self.root)?;
         let path = self.lock_file();
-        let handle = File::create(&path).map_err(|e| io(&path, e))?;
+        let handle = File::create(&path).map_err(|e| io(&path, &e))?;
         flock(&handle, FlockOperation::LockExclusive)
-            .map_err(|e| io(&path, std::io::Error::from(e)))?;
+            .map_err(|e| io(&path, &std::io::Error::from(e)))?;
         Ok(Some(handle))
     }
 
@@ -562,7 +562,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             return Ok(digest);
         }
         if path.exists() {
-            let existing = fs::read(&path).map_err(|e| io(&path, e))?;
+            let existing = fs::read(&path).map_err(|e| io(&path, &e))?;
             if existing != text {
                 return Err(ProdromeError::Store(format!(
                     "object {} exists with different bytes — sha256 collision or corruption",
@@ -600,27 +600,29 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 digest.as_str()
             )));
         }
-        fs::read(&path).map_err(|e| io(&path, e))
+        fs::read(&path).map_err(|e| io(&path, &e))
     }
 
     fn quarantine_dir(&self) -> PathBuf {
         self.root.join("quarantine")
     }
 
-    /// Where a file failing its hash under `digest` is set aside:
-    /// `<name>.py`, or, where an earlier one already lies there,
-    /// `<name>.<random>.py`, so no set-aside bytes are ever overwritten.
-    fn aside_path(&self, digest: &Hash) -> PathBuf {
+    /// Where a file under `digest` whose bytes hash to `computed` is set
+    /// aside: `<name>.py`, or, where other bytes already lie there,
+    /// `<name>.<computed>.py`, named by its own bytes as everything in the
+    /// store is. So no set-aside bytes are ever overwritten by others, and
+    /// the same bytes set aside twice are one file.
+    fn aside_path(&self, digest: &Hash, computed: &Hash) -> PathBuf {
         let first = self
             .quarantine_dir()
             .join(format!("{}.py", digest.as_str()));
-        let mut path = first;
-        while path.exists() {
-            path = self
-                .quarantine_dir()
-                .join(format!("{}.{:016x}.py", digest.as_str(), random()));
+        match fs::read(&first) {
+            Ok(held) if Hash::of_bytes(&held) != *computed => {
+                self.quarantine_dir()
+                    .join(format!("{}.{}.py", digest.as_str(), computed.as_str()))
+            }
+            _ => first,
         }
-        path
     }
 
     /// FULL FSCK: set aside every object file that fails its hash, then
@@ -629,8 +631,8 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// A file whose bytes are not the hash of its name has no honest reading,
     /// and every read refuses to guess one, so one damaged file would stop
     /// every write. This moves each such file to `quarantine/` (durably,
-    /// under the store's lock, never overwriting a file already there and
-    /// never deleting one), and the store then reads the largest down-set
+    /// under the store's lock, never overwriting other bytes already there
+    /// and never deleting any), and the store then reads the largest down-set
     /// it holds (law 40): the history WITHOUT the object and without
     /// everything resting on it, which a replica that never received the
     /// object holds. The report names each set-aside file
@@ -642,6 +644,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// object, whatever it holds — one this reader cannot parse may be a
     /// newer writer's — and setting it aside would be hiding it: it is
     /// reported, and stays. Strays are reported, never moved or deleted.
+    #[must_use]
     pub fn fsck(&self) -> Vec<Finding> {
         match self.quarantine() {
             Ok(()) => self.verify(),
@@ -663,18 +666,20 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             .map(|(name, _)| name)
             .collect();
         let read = self.read(&names);
-        let tampered: Vec<&Hash> = read
+        let tampered: Vec<(&Hash, &Hash)> = read
             .unread()
             .iter()
-            .filter(|(_, why)| matches!(why, Unread::Tampered(_)))
-            .map(|(name, _)| name)
+            .filter_map(|(name, why)| match why {
+                Unread::Tampered(computed) => Some((name, computed)),
+                _ => None,
+            })
             .collect();
         if tampered.is_empty() {
             return Ok(());
         }
         make_dir(&self.quarantine_dir())?;
-        for name in tampered {
-            rename_into(&self.object_path(name), &self.aside_path(name))?;
+        for (name, computed) in tampered {
+            rename_into(&self.object_path(name), &self.aside_path(name, computed))?;
         }
         sync_dir(&self.objects_dir())
     }
@@ -790,7 +795,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(io(&dir, error)),
+            Err(error) => return Err(io(&dir, &error)),
         };
         let mut files: Vec<String> = entries
             .filter_map(Result::ok)
@@ -886,11 +891,11 @@ fn stage(dir: &Path, bytes: &[u8]) -> Result<PathBuf, ProdromeError> {
             Ok(mut file) => {
                 file.write_all(bytes)
                     .and_then(|()| file.sync_all())
-                    .map_err(|e| io(&temp, e))?;
+                    .map_err(|e| io(&temp, &e))?;
                 return Ok(temp);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(io(&temp, error)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(io(&temp, &error)),
         }
     }
 }
@@ -898,7 +903,7 @@ fn stage(dir: &Path, bytes: &[u8]) -> Result<PathBuf, ProdromeError> {
 /// `from` renamed to `to`, and `to`'s directory synced when it is not
 /// `from`'s, whose sync the caller owes (one per batch).
 fn rename_into(from: &Path, to: &Path) -> Result<(), ProdromeError> {
-    fs::rename(from, to).map_err(|e| io(from, e))?;
+    fs::rename(from, to).map_err(|e| io(from, &e))?;
     match to.parent() {
         Some(dir) if Some(dir) != from.parent() => sync_dir(dir),
         _ => Ok(()),
@@ -918,7 +923,7 @@ fn make_dir(dir: &Path) -> Result<(), ProdromeError> {
         made.push(at);
         missing = at.parent();
     }
-    fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+    fs::create_dir_all(dir).map_err(|e| io(dir, &e))?;
     for at in made.into_iter().rev() {
         if let Some(parent) = at.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             sync_dir(parent)?;
@@ -950,10 +955,10 @@ fn random() -> u64 {
 fn sync_dir(dir: &Path) -> Result<(), ProdromeError> {
     File::open(dir)
         .and_then(|handle| handle.sync_all())
-        .map_err(|error| io(dir, error))
+        .map_err(|error| io(dir, &error))
 }
 
-fn io(path: &Path, error: std::io::Error) -> ProdromeError {
+fn io(path: &Path, error: &std::io::Error) -> ProdromeError {
     ProdromeError::Io {
         path: path.display().to_string(),
         message: error.to_string(),

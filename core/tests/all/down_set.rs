@@ -6,7 +6,8 @@
 //! is the history such a set holds, every object whose ancestors are all
 //! there, and it is an interior operator: never more than the set,
 //! idempotent and monotone, the whole of a set closed under parents, and so
-//! a function of the objects alone. A store whose files are any subset of a
+//! a function of the objects alone. It is the right adjoint of including
+//! histories among sets of objects, so it preserves meets. A store whose files are any subset of a
 //! history reads (its objects, its fold, its tips) exactly as a store holding
 //! only that subset's interior, whichever handle reads it and whatever it
 //! read before.
@@ -28,6 +29,7 @@ use prodrome::reference::Todo;
 use prodrome::registers::fold;
 use prodrome::store::EventStore;
 use proptest::prelude::*;
+use sha2::{Digest, Sha256};
 
 use common::{a_log, seal, two_writers};
 
@@ -60,6 +62,14 @@ fn chosen(dag: &Dag<Event>, mask: u64) -> BTreeSet<Hash> {
         .enumerate()
         .filter(|(i, _)| mask >> (i % 64) & 1 == 1)
         .map(|(_, name)| name.clone())
+        .collect()
+}
+
+/// The name `bytes` would have, computed apart from the crate.
+fn sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
         .collect()
 }
 
@@ -99,6 +109,22 @@ fn is_interior(whole: &Dag<Event>, mask: u64, more: u64) -> Result<(), TestCaseE
     prop_assert!(
         names(&smaller.interior()).is_subset(&names(&interior)),
         "monotone"
+    );
+    // The right adjoint of including down-sets among sets, so it preserves
+    // meets: the history two sets share is the meet of their histories.
+    let other = without(whole, &chosen(whole, more));
+    let apart: BTreeSet<Hash> = names(whole)
+        .into_iter()
+        .filter(|name| !(names(&set).contains(name) && names(&other).contains(name)))
+        .collect();
+    let both = without(whole, &apart);
+    prop_assert_eq!(
+        names(&both.interior()),
+        names(&interior)
+            .intersection(&names(&other.interior()))
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        "meets"
     );
     Ok(())
 }
@@ -231,7 +257,7 @@ fn quarantine_reads_without_it(
     }
 
     // Damaged again under the same name: set aside beside the first, which
-    // is never overwritten.
+    // is never overwritten, under a name that is its bytes' hash.
     let again = b"not an object".to_vec();
     fs::write(&path, &again).expect("damages again");
     let report = store.fsck();
@@ -246,10 +272,18 @@ fn quarantine_reads_without_it(
         .iter()
         .find(|name| **name != file)
         .expect("the second");
-    prop_assert!(second.starts_with(damaged.as_str()) && second.ends_with(".py"));
-    prop_assert_eq!(fs::read(aside.join(second)).expect("kept"), again);
+    prop_assert_eq!(
+        second,
+        &format!("{}.{}.py", damaged.as_str(), sha256(&again))
+    );
+    prop_assert_eq!(fs::read(aside.join(second)).expect("kept"), again.clone());
     prop_assert!(report.contains(&Finding::Quarantined(second.clone())));
     prop_assert_eq!(&*store.dag().expect("reads"), &expected);
+
+    // The same bytes set aside again are the same file: nothing new.
+    fs::write(&path, &again).expect("damages the same way");
+    let _ = store.fsck();
+    prop_assert_eq!(fs::read_dir(&aside).expect("lists").count(), 2);
     Ok(())
 }
 
