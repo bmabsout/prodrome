@@ -169,7 +169,7 @@ impl<P: Payload> Row for TodoEvent<P> {
             .content
             .reading::<Content>()
             .iter()
-            .any(|stamp| !policy.confirms(&stamp.event))
+            .any(|stamp| !policy.confirms(&stamp.name, &stamp.event))
     }
 }
 

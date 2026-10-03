@@ -480,7 +480,7 @@ impl<E: Schema> Dag<E> {
                 .max();
             let event = object.event();
             if let (Some(event), Some(behind)) = (event, behind) {
-                if !policy.confirms(event) && event.at() < behind {
+                if !policy.confirms(name, event) && event.at() < behind {
                     findings.push(Finding::Dated {
                         name: name.clone(),
                         at: event.at(),

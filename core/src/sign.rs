@@ -435,7 +435,8 @@ mod tests {
 
     fn round_trips(object: &Object) {
         let print = print_literal(&object.to_value());
-        let back: Object = parse_envelope(&Default::default(), &print).expect("parses");
+        let back: Object =
+            parse_envelope(&crate::todo::TodoVocabulary::default(), &print).expect("parses");
         assert_eq!(&back, object);
         assert_eq!(seal_hash(&back), Hash::of_bytes(print.as_bytes()));
     }

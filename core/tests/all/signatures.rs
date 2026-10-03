@@ -7,18 +7,28 @@
 //! proof it gives is a function of its objects: replicas that received
 //! them one at a time in any order, or in two halves joined by sync, read
 //! the same proof as the whole.
+//!
+//! And the policy that requires it, `Proven`: under a policy that does not,
+//! signatures and keys change no reading; under one that does, an object
+//! the history does not prove claims and every other is as the wrapped
+//! policy says, whatever order the objects arrived in, and a history whose
+//! every write is signed by its actor's registered key reads as the
+//! wrapped policy reads it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::dag::Dag;
 use prodrome::event::{canonical_envelope, seal_hash, Actor, Envelope, Hash, TodoEvent};
 use prodrome::genesis::mk_genesis;
+use prodrome::policy::{Everything, Policy, Proven, Standing, Untrusted};
 use prodrome::reference::Todo;
 use prodrome::sign::{mk_key_revoked, KeyAdded, Proof, Registrar, Secret, Signed};
 use prodrome::store::{sync, MemoryStore, Replica};
+use prodrome::todo::TodoVocabulary;
+use prodrome::view::{entries, Entry};
 use proptest::prelude::*;
 
-use crate::common::a_log;
+use crate::common::{a_log, far};
 
 type Event = TodoEvent<Todo>;
 type Object = Envelope<Event>;
@@ -90,11 +100,26 @@ pub struct History {
 impl History {
     pub fn dag(&self) -> Dag<Event> {
         Dag::from_prints(
-            &Default::default(),
+            &TodoVocabulary::default(),
             self.prints
                 .iter()
                 .map(|(name, print)| (name.clone(), Ok(print.clone()))),
         )
+    }
+
+    /// The same history without a signature or a key object.
+    pub fn unsigned(&self) -> Dag<Event> {
+        self.dag()
+            .objects()
+            .iter()
+            .filter(|(_, object)| {
+                !matches!(
+                    object,
+                    Envelope::Signed(_) | Envelope::KeyAdded(_) | Envelope::KeyRevoked(_)
+                )
+            })
+            .map(|(name, object)| (name.clone(), object.clone()))
+            .collect()
     }
 
     /// A replica in memory given `names`, one at a time in this order: each
@@ -246,4 +271,116 @@ proptest! {
         let joined = history.joined(&halves);
         prop_assert_eq!(&proofs(&joined.held().expect("reads").dag), &whole);
     }
+
+    /// Signatures and keys change no reading under a policy that does not
+    /// ask for them: every entry, claim, price and confidence of the
+    /// history reads as the history without them.
+    #[test]
+    fn signatures_change_no_reading_under_a_policy_that_does_not_require_them(
+        history in a_signed_history(),
+    ) {
+        let (signed, unsigned) = (history.dag(), history.unsigned());
+        prop_assert_eq!(read(&signed, &Everything), read(&unsigned, &Everything));
+        prop_assert_eq!(read(&signed, &roster()), read(&unsigned, &roster()));
+    }
+
+    /// Under `Proven`, an object the history does not prove claims, and
+    /// every other is the wrapped policy's: the reading is the wrapped
+    /// policy's with exactly the unproven objects' events claims. An object
+    /// no signature that verifies covers is among them, a forged one
+    /// included. And the reading is a function of the object set.
+    #[test]
+    fn under_proven_an_unproven_object_claims_in_any_arrival_order(
+        history in a_signed_history(),
+        draws in prop::collection::vec(any::<prop::sample::Index>(), 1..16),
+        halves in prop::collection::vec(any::<bool>(), 1..16),
+    ) {
+        let dag = history.dag();
+        let proven = required().at(&dag).expect("Proven reads the history");
+        let mut unproven = BTreeSet::new();
+        for (name, object) in dag.objects() {
+            let Some(event) = object.event() else {
+                continue;
+            };
+            let signed = dag.objects().values().any(|object| {
+                matches!(object, Envelope::Signed(s) if s.object == *name && s.verifies())
+            });
+            if proven.proof().proves(name) {
+                prop_assert!(signed, "a proven object carries a signature that verifies");
+                prop_assert_eq!(proven.standing(name, event), roster().standing(name, event));
+                prop_assert_eq!(proven.confirms(name, event), roster().confirms(name, event));
+            } else {
+                prop_assert_eq!(proven.standing(name, event), Standing::Claims);
+                prop_assert!(!proven.confirms(name, event));
+                unproven.insert(name.clone());
+            }
+        }
+        let whole = read(&dag, &proven);
+        prop_assert_eq!(&whole, &read(&dag, &Except { claimed: unproven }));
+
+        let names: Vec<Hash> = history.prints.keys().cloned().collect();
+        for replica in [history.received(shuffled(&names, &draws)), history.joined(&halves)] {
+            let held = replica.held().expect("reads").dag;
+            prop_assert_eq!(&read(&held, &required().at(&held).expect("Proven")), &whole);
+        }
+    }
+
+    /// A history whose every write its actor's registered key signed reads
+    /// under `Proven` as under the policy it wraps.
+    #[test]
+    fn a_history_signed_throughout_reads_as_the_wrapped_policy(log in a_log()) {
+        let mut steps = vec![];
+        for (actor, _) in ACTORS.iter().enumerate() {
+            steps.push(Step::Add { actor, key: actor, rooted: true });
+        }
+        let history = build(&log, &steps);
+        let mut prints = history.prints.clone();
+        let (keys, dag) = (keys(), history.dag());
+        for (name, object) in dag.objects() {
+            if let Some(event) = object.event() {
+                let actor = ACTORS.iter().position(|a| *a == event.actor().as_str());
+                let key = &keys[actor.expect("one of the two")];
+                put(&mut prints, &Envelope::Signed(key.sign(name)));
+            }
+        }
+        let signed = History { prints }.dag();
+        let proven = required().at(&signed).expect("Proven reads the history");
+        prop_assert_eq!(read(&signed, &proven), read(&signed, &roster()));
+        prop_assert!(signed.verify(&proven).is_empty());
+    }
+}
+
+/// The reference policy, with one actor on the roster.
+fn roster() -> Untrusted {
+    Untrusted::of([Actor::new("triage").expect("an actor")])
+}
+
+/// The roster, held to the actors' keys under the root.
+fn required() -> Proven<Untrusted> {
+    Proven::new(roster(), [root().public()])
+}
+
+/// The roster, with exactly `claimed` claims besides.
+#[derive(Debug, Clone)]
+struct Except {
+    claimed: BTreeSet<Hash>,
+}
+
+impl Policy<Event> for Except {
+    fn standing(&self, object: &Hash, event: &Event) -> Standing {
+        if self.claimed.contains(object) {
+            Standing::Claims
+        } else {
+            roster().standing(object, event)
+        }
+    }
+
+    fn confirms(&self, object: &Hash, event: &Event) -> bool {
+        !self.claimed.contains(object) && roster().confirms(object, event)
+    }
+}
+
+/// Every entry of `dag`, as the view composes it, long after everything.
+fn read(dag: &Dag<Event>, policy: &impl Policy<Event>) -> Vec<Entry<Event>> {
+    entries(&dag.nodes().expect("closed"), far(), policy).expect("reads")
 }

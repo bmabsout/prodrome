@@ -50,8 +50,9 @@ use crate::term::Term;
 /// - [`Schema::writes`] is the route's NAMES: the registers whose frontier
 ///   this event joins and whose writes it therefore supersedes (§6). A register
 ///   that only accumulates, such as the todo's tendings, is not among them.
-/// - [`Schema::asks`] is the policy's question: an event it answers `false`
-///   for binds whoever wrote it (§5).
+/// - [`Schema::asks`] is whether an event is about standing: the reference
+///   policy binds one it answers `false` for whoever wrote it, and a policy
+///   that requires signatures asks of every event (§5).
 pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     /// §2's whitelist for this schema's events, as a value: the schema as
     /// data, what a store is opened at.
@@ -91,7 +92,8 @@ pub trait Schema: Clone + PartialEq + Debug + Send + Sync + 'static {
     /// The registers this event writes, each once.
     fn writes(&self) -> impl Iterator<Item = Self::Register>;
 
-    /// Does the policy decide whether this event binds?
+    /// Is this event about standing? The reference policy binds every other
+    /// whoever wrote it (§5).
     fn asks(&self) -> bool {
         true
     }
