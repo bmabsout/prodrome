@@ -156,7 +156,7 @@ field.
   replica's prodromes as a nest keyed by genesis, each read by a member
   level, whose join puts every object at `genesis/key`; `Dag::genesis_of`,
   the genesis of an object's prodrome. `fold::member`, one prodrome as a
-  term elsewhere reads it, and `fold::stores`, a replica's prodromes as an
+  term elsewhere reads it, and `fold::stores`, a fold's prodromes as an
   `fpl::Stores`; `view::entries` prices through `fold::member`, and links
   each entry through the set of its DAG's prodromes, so a qualified
   reference to a sibling prodrome prices as that prodrome's view does. Laws in

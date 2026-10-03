@@ -1104,9 +1104,15 @@ impl Stores {
         self
     }
 
+    /// The member the prodrome `genesis` begins, where the set holds it.
+    #[must_use]
+    pub fn member(&self, genesis: &Hash) -> Option<&Member> {
+        self.members.get(genesis)
+    }
+
     /// The member a qualifier names, by its genesis: a declared name's,
     /// else the qualifier read as a genesis's name.
-    fn member(&self, store: &str) -> Option<(&Hash, &Member)> {
+    fn named_by(&self, store: &str) -> Option<(&Hash, &Member)> {
         match self.names.get(store) {
             Some(genesis) => self.members.get_key_value(genesis),
             None => Hash::new(store)
@@ -1186,7 +1192,7 @@ fn linked(
         TermF::Ref {
             store: Some(store),
             entity,
-        } => match stores.member(&store) {
+        } => match stores.named_by(&store) {
             Some((genesis, member)) if member.specs.contains_key(&entity) => {
                 resolved(Some(genesis), &member.specs, entity, stores, topo)
             }

@@ -186,6 +186,11 @@ fn member(n: usize, log: &[Event]) -> Sub<Event> {
     member
 }
 
+/// The fold a replica holds.
+fn folded(replica: &impl Replica<Event>) -> std::sync::Arc<prodrome::registers::Folded<Event>> {
+    replica.held().expect("reads").folded
+}
+
 fn genesis(member: &Sub<Event>) -> String {
     let dag = dag(&member.store);
     let geneses = dag.geneses();
@@ -339,12 +344,12 @@ proptest! {
             logs.iter().enumerate().map(|(n, log)| member(n, log)).collect();
         let now = instant_of(far());
         let replica = set_replica(&members);
-        let set = fold::stores(&dag(&replica), now, &Everything).expect("reads");
+        let set = fold::stores(&folded(&replica), now, &Everything).expect("reads");
         let first = genesis(&members[0]);
         let named = set.clone().named("todos", name(&first));
         for member in &members {
             let genesis = genesis(member);
-            let own = fold::stores(&dag(&member.store), now, &Everything).expect("reads");
+            let own = fold::stores(&folded(&member.store), now, &Everything).expect("reads");
             let entries = view::entries(
                 &dag(&member.store).nodes().expect("whole"),
                 far(),
@@ -496,7 +501,7 @@ proptest! {
         let named = genesis(&served);
         let read = |served: &Sub<Event>, other: &Sub<Event>| {
             let todos = union(&[served, other]);
-            fold::stores(&dag(&todos), instant_of(far()), &Everything)
+            fold::stores(&folded(&todos), instant_of(far()), &Everything)
                 .expect("reads")
                 .named("todos", name(&named))
         };
