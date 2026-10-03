@@ -15,9 +15,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::vectors::{each, field, integer, moment, strings, text, text_at, vectors};
 use prodrome::change::mk_change;
+use prodrome::dag::Dag;
 use prodrome::event::{
-    mk_cancelled, mk_completed, mk_reopened, parse_envelope, seal_hash, Actor, Envelope, Hash,
-    TodoEvent,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_sealed, parse_envelope, seal_hash,
+    Actor, Envelope, Hash, TodoEvent,
 };
 use prodrome::fold::{Kind, Product};
 use prodrome::fpl::{instant_of, iso, Env};
@@ -125,16 +126,20 @@ fn frozen_conflicts(dag: &Value) -> BTreeMap<String, BTreeMap<String, Vec<String
 fn chain_of(log: &Value) -> Vec<Chain> {
     let seed = integer(field(log, "seed"));
     let mut prev = String::new();
-    let mut nodes = Vec::new();
+    let mut objects = Vec::new();
     for item in each(log, "events") {
         let object = format!("Sealed(prev='{prev}', event={})", text(item));
         let envelope: Envelope<TodoEvent<Todo>> =
             parse_envelope(&object).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
         let name = seal_hash(&envelope);
         prev = name.as_str().to_owned();
-        nodes.push(Node::of(name, &envelope));
+        objects.push((name, envelope));
     }
-    nodes
+    objects
+        .into_iter()
+        .collect::<Dag<TodoEvent<Todo>>>()
+        .nodes()
+        .unwrap_or_else(|e| panic!("seed {seed}: {e}"))
 }
 
 #[test]
@@ -254,10 +259,10 @@ fn at(day: u32) -> Datetime {
     Datetime::new(2026, 9, day, 12, 0, 0, 0).expect("a real instant")
 }
 
-/// Changes of one genesis, each named by its own print, as nodes.
+/// Changes of one genesis, each named by its own print, as a DAG.
 struct Prodrome {
     genesis: Hash,
-    nodes: Vec<Chain>,
+    dag: Dag<TodoEvent<Todo>>,
 }
 
 impl Prodrome {
@@ -267,7 +272,7 @@ impl Prodrome {
         );
         let name = seal_hash(&genesis);
         Prodrome {
-            nodes: vec![Node::of(name.clone(), &genesis)],
+            dag: [(name.clone(), genesis)].into_iter().collect(),
             genesis: name,
         }
     }
@@ -277,8 +282,15 @@ impl Prodrome {
         let change = mk_change(self.genesis.clone(), deps, event).expect("a change");
         let envelope = Envelope::Change(change);
         let name = seal_hash(&envelope);
-        self.nodes.push(Node::of(name.clone(), &envelope));
+        let mut objects = self.dag.objects().clone();
+        objects.insert(name.clone(), envelope);
+        self.dag = objects.into_iter().collect();
         name
+    }
+
+    /// The nodes, as the DAG places them: the only way to have one.
+    fn nodes(&self) -> Vec<Chain> {
+        self.dag.nodes().expect("closed under deps")
     }
 }
 
@@ -300,7 +312,7 @@ fn agreeing_twins_are_one_candidate() {
     let two = p.write(&[&dropped], reopened.clone());
     assert_ne!(one, two, "twins are two objects");
 
-    let state = fold(&p.nodes);
+    let state = fold(&p.nodes());
     let (_, stream) = state.entities().next().expect("alpha");
     let registers = prodrome::fold::read(stream, None, &roster());
     let mut twins = vec![one.clone(), two.clone()];
@@ -314,7 +326,7 @@ fn agreeing_twins_are_one_candidate() {
         deps_for(&state, &genesis, &reopened).expect("no register here is inflationary"),
         twins
     );
-    let rows = view::entries(&p.nodes, at(9), &roster()).expect("folds");
+    let rows = view::entries(&p.nodes(), at(9), &roster()).expect("folds");
     let [row] = &rows[..] else { panic!("one todo") };
     assert_eq!(row.genesis, genesis);
     assert!(row.is_open());
@@ -330,7 +342,7 @@ fn deps_name_one_todo() {
         &[],
         mk_completed("alpha", at(1), "bassel", "").expect("valid"),
     );
-    let state = fold(&p.nodes);
+    let state = fold(&p.nodes());
     let genesis = Some(p.genesis.clone());
     let beta = mk_completed("beta", at(2), "bassel", "").expect("valid");
     assert!(deps_for(&state, &genesis, &beta)
@@ -353,4 +365,51 @@ fn deps_name_one_todo() {
             .is_empty(),
         "another prodrome's frontier is not mine"
     );
+}
+
+/// A MIXED STORE READS ONE TODO AS ONE STREAM. A legacy chain, and a change
+/// written into it after 0.9, naming the legacy root as its genesis: the
+/// change is in the legacy prodrome, which nothing in its own bytes says, so
+/// only the DAG can place it. Folded through the DAG, the todo is one
+/// stream of three writes, the change descending from both legacy ones, and
+/// there is no second prodrome to split it into.
+#[test]
+fn a_mixed_store_folds_a_todo_as_one_stream() {
+    let root = mk_sealed(
+        None,
+        mk_created("alpha", at(1), "writer", "", "").expect("valid"),
+    );
+    let root_name = seal_hash(&root);
+    let done = mk_sealed(
+        Some(root_name.clone()),
+        mk_completed("alpha", at(2), "writer", "").expect("valid"),
+    );
+    let done_name = seal_hash(&done);
+    let reopened = Envelope::Change(
+        mk_change(
+            root_name.clone(),
+            vec![done_name.clone()],
+            mk_reopened("alpha", at(3), "writer", "").expect("valid"),
+        )
+        .expect("a change"),
+    );
+    let reopened_name = seal_hash(&reopened);
+    let dag: Dag<TodoEvent<Todo>> = [
+        (root_name.clone(), root),
+        (done_name.clone(), done),
+        (reopened_name.clone(), reopened),
+    ]
+    .into_iter()
+    .collect();
+    let nodes = dag.nodes().expect("closed under parents");
+    assert!(nodes.iter().all(|node| node.genesis().is_none()));
+    let state = fold(&nodes);
+    assert_eq!(state.prodromes().keys().collect::<Vec<_>>(), vec![&None]);
+    let todo = prodrome::event::TodoId::new("alpha").expect("valid");
+    let stream: Vec<&Hash> = state.prodromes()[&None][&todo]
+        .iter()
+        .map(|stamp| &stamp.name)
+        .collect();
+    assert_eq!(stream, vec![&root_name, &done_name, &reopened_name]);
+    assert!(state.descends(&reopened_name, &root_name));
 }

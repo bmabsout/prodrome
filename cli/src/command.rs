@@ -112,18 +112,14 @@ pub enum Command {
         at: Option<String>,
     },
 
-    /// Full fsck (§3): every object rehashes, every parent exists, no cycle,
-    /// no unreachable object, and the heads agree.
+    /// Check the store, changing nothing (§3): every object rehashes, every
+    /// parent exists, no cycle, nothing in `objects/` that is not an object.
     Verify,
 
-    /// Move an object file that fails its hash out of `objects/` into
-    /// `quarantine/`, so the store answers again (§3). `verify` keeps a
-    /// receipt for it until the object is restored from a replica.
-    Quarantine {
-        /// The object's name, 64 lowercase hex.
-        #[arg(value_name = "NAME")]
-        name: String,
-    },
+    /// `verify`, after moving every object file that fails its hash out of
+    /// `objects/` into `quarantine/`, so the store answers again (§3). The
+    /// report names each one until it is restored from a replica.
+    Fsck,
 
     /// Attest the store: a `Snapshot` of its tips, chained to the last one,
     /// whose name commits to everything written so far (§3).

@@ -163,8 +163,8 @@ fn every_graph_finding() {
         format!("chain broke at {absent}: missing object {absent}"),
         format!(
             "chain broke at {tampered}: object {tampered} hashes to {recomputed} — tampered or \
-             corrupt: `prodrome quarantine {tampered}` (`EventStore::quarantine`) sets it aside \
-             so the store answers again"
+             corrupt: `prodrome fsck` (`EventStore::fsck`) sets it aside so the store answers \
+             again"
         ),
     ];
     expected.sort();

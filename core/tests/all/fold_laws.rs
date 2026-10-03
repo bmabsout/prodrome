@@ -30,7 +30,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use prodrome::event::{mk_completed, mk_spec_revised, mk_tended, Actor, Hash, TodoEvent, TodoId};
+use prodrome::dag::Dag;
+use prodrome::event::{
+    mk_completed, mk_spec_revised, mk_tended, parents_of, seal_hash, Actor, Envelope, Hash,
+    TodoEvent, TodoId,
+};
 use prodrome::fold::{Kind, Product, Write};
 use prodrome::fpl::{self, print_term, Env};
 use prodrome::literal::Datetime;
@@ -648,6 +652,48 @@ fn nodes_from(store: &Store) -> Vec<Chain> {
         .expect("the DAG reads")
 }
 
+/// A WORLD of a legacy store: the same history with the `dropped` writes'
+/// events taken out, as a history of its own. Each object is printed again,
+/// parents first, over its parents' new names, and a dropped write becomes a
+/// `Woven` carrying no event over the parents it had: the shape is the
+/// store's, so every write kept descends from exactly what it descended from.
+/// A node is only ever the DAG's, so a world is a DAG and never an edited node.
+fn world(store: &Store, dropped: &BTreeSet<&Hash>) -> Vec<Chain> {
+    let dag = store.dag().expect("the DAG reads");
+    let mut renamed: BTreeMap<Hash, Hash> = BTreeMap::new();
+    let mut objects: Vec<(Hash, Envelope<Event>)> = Vec::new();
+    for name in dag.linearise().expect("the DAG linearises") {
+        let held = dag.get(&name).expect("a linearised object is held");
+        let parents: Vec<Hash> = parents_of(held)
+            .iter()
+            .map(|parent| renamed[parent].clone())
+            .collect();
+        let object = match (held, dropped.contains(&name)) {
+            (_, true) => Envelope::Woven {
+                parents,
+                event: None,
+            },
+            (Envelope::Sealed { event, .. }, false) => Envelope::Sealed {
+                prev: parents.into_iter().next(),
+                event: event.clone(),
+            },
+            (Envelope::Woven { event, .. }, false) => Envelope::Woven {
+                parents,
+                event: event.clone(),
+            },
+            (other, false) => panic!("{} is not a legacy object", other.name()),
+        };
+        let print = seal_hash(&object);
+        renamed.insert(name, print.clone());
+        objects.push((print, object));
+    }
+    objects
+        .into_iter()
+        .collect::<Dag<Event>>()
+        .nodes()
+        .expect("a world is a DAG")
+}
+
 fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     events
         .iter()
@@ -720,12 +766,12 @@ fn relinearised(nodes: &[Chain], keys: &[u32]) -> Vec<Chain> {
         let ready = left
             .iter()
             .enumerate()
-            .filter(|(_, (_, node))| node.parents.iter().all(|p| placed.contains(p)))
-            .min_by_key(|(_, (key, node))| (*key, &node.name))
+            .filter(|(_, (_, node))| node.parents().iter().all(|p| placed.contains(p)))
+            .min_by_key(|(_, (key, node))| (*key, node.name()))
             .map(|(i, _)| i)
             .expect("a DAG always has a ready node");
         let (_, node) = left.remove(ready);
-        placed.insert(&node.name);
+        placed.insert(node.name());
         out.push(node.clone());
     }
     out
@@ -848,7 +894,7 @@ proptest! {
         });
         if chained {
             let t = moment(when);
-            let linear: Vec<Event> = nodes.iter().filter_map(|node| node.event.clone()).collect();
+            let linear: Vec<Event> = nodes.iter().filter_map(|node| node.event().cloned()).collect();
             let dag = view::entries(&nodes, t, &policy).expect("folds");
             let chain = view::entries(&chain_of(&linear), t, &policy).expect("folds");
             for (a, b) in dag.iter().zip(&chain) {
@@ -903,13 +949,7 @@ proptest! {
                                 .filter(move |name| *name != pick && !state.descends(pick, name))
                         })
                         .collect();
-                    let world: Vec<Chain> = nodes
-                        .iter()
-                        .map(|node| Node {
-                            event: node.event.clone().filter(|_| !dropped.contains(&node.name)),
-                            ..node.clone()
-                        })
-                        .collect();
+                    let world = world(&store, &dropped);
                     let rows = view::entries(&world, t, &policy).expect("folds");
                     let value = rows.iter().find(|r| r.key == row.key).expect("a row").value();
                     if let Ok(Some(value)) = value {

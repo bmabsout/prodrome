@@ -286,6 +286,7 @@ pub fn entries<E: Row + History + Bind>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag::Dag;
     use crate::event::{mk_completed, mk_sealed, seal_hash, Actor};
     use crate::fpl::mk_flat;
     use crate::policy::Untrusted;
@@ -299,14 +300,18 @@ mod tests {
 
     fn chain(events: Vec<Event>) -> Vec<Node<Event>> {
         let mut prev = None;
-        let mut nodes = Vec::new();
+        let mut objects = Vec::new();
         for event in events {
             let envelope = mk_sealed(prev, event);
             let name = seal_hash(&envelope);
             prev = Some(name.clone());
-            nodes.push(Node::of(name, &envelope));
+            objects.push((name, envelope));
         }
-        nodes
+        objects
+            .into_iter()
+            .collect::<Dag<Event>>()
+            .nodes()
+            .expect("a chain")
     }
 
     fn authored(todo: &str, day: u32, actor: &str, spec: Option<Term>) -> Event {
@@ -377,7 +382,7 @@ mod tests {
         );
         assert_eq!(
             entry.content(),
-            [nodes[0].name.clone()].as_slice(),
+            [nodes[0].name().clone()].as_slice(),
             "the name of the winning record, not the record"
         );
         assert_eq!(

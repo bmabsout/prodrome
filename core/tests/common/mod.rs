@@ -610,14 +610,18 @@ pub fn seal<Pol: prodrome::policy::Policy<TodoEvent<Todo>>>(
 /// before, so the node's parents are real and its name is its own hash.
 pub fn chain_of(log: &[Event]) -> Vec<prodrome::registers::Node<TodoEvent<Todo>>> {
     let mut prev: Option<Hash> = None;
-    let mut nodes = Vec::with_capacity(log.len());
+    let mut objects = Vec::with_capacity(log.len());
     for event in log {
         let envelope = mk_sealed(prev.clone(), event.clone());
         let name = seal_hash(&envelope);
         prev = Some(name.clone());
-        nodes.push(prodrome::registers::Node::of(name, &envelope));
+        objects.push((name, envelope));
     }
-    nodes
+    objects
+        .into_iter()
+        .collect::<prodrome::dag::Dag<TodoEvent<Todo>>>()
+        .nodes()
+        .expect("a chain")
 }
 
 /// A log's one prodrome, folded from the chain its writer built.

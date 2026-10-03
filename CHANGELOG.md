@@ -448,6 +448,24 @@ and every vector and export reads as it did.
   message. The wasm `History` (`series_knots`'s argument) refuses a todo's
   bindings out of order, which it read wrongly before; `fold`'s own
   `history` is always in order.
+- **`EventStore::fsck` sets aside every file failing its hash**, then
+  verifies, where `EventStore::quarantine(name)` set aside one named file;
+  `prodrome fsck` replaces `prodrome quarantine <name>`, and a read's
+  refusal names it. `verify` (and `prodrome verify`) still changes nothing.
+  Unreleased API only: `quarantine` never shipped in a release.
+
+- **`Dag::nodes_across_gaps` is gone**: a set of objects missing a parent
+  reads as its `Dag::interior()`, whose `nodes()` never refuses one, and
+  `EventStore::dag` answers that interior (SPEC §3, law 40).
+
+- **Only a `Dag` makes a `registers::Node`** (SPEC §3, §8): `Node::of` is
+  gone and the fields are private, read by `name()`, `parents()`,
+  `event()`, `genesis()` and `into_event()`. An object's prodrome is a
+  function of the set it is in, since a `Change` naming a legacy root is in
+  the legacy prodrome and nothing in its bytes says so; a node made of one
+  envelope put such a change in a prodrome of its own. A caller folds
+  `Dag::nodes()`, and a test that built nodes by hand builds the objects
+  and collects them into a `Dag`. Two compile-fail doctests pin it.
 
 - **A change's deps are its entity's heads (SPEC §3):** `registers::deps_for`
   answers every write to the entity, in any register, that no other write
@@ -557,6 +575,47 @@ and every vector and export reads as it did.
 
 ### Fixed
 
+- **`fsck` quarantines what fails its hash and loses no byte (SPEC §3,
+  law 40).** One damaged file stopped every read until someone named it to
+  `quarantine`; `fsck` now finds and moves every such file, durably and
+  under the lock, names each in its report, and never overwrites one set
+  aside before (a second file under one name lands beside it). The store
+  then reads the history without the object and everything resting on it.
+  Law: `quarantine_is_the_down_set_without_what_rests_on_it` in
+  `core/tests/all/down_set.rs`; `prodrome-cli`'s verbs.
+- **A store reads the largest down-set it holds (SPEC §3, law 40).** A
+  store missing an object (set aside, or not arrived) read every other
+  object across the gap: an object resting on the missing one was folded,
+  was a tip, and was a head an append wrote over, though no replica that
+  lacks the object could hold it, and `events()` and the CLI's reads
+  refused outright on the missing parent. The store's history is now the
+  interior of its objects, `Dag::interior`, every object whose ancestors
+  are all held; one outside it waits, verified, and joins when what it
+  rests on arrives. `Dag::nodes_across_gaps` is gone. Laws:
+  `core/tests/all/down_set.rs`.
+- **Every file the store writes is written durably (SPEC §3).** One write
+  serves them all: a randomly named temp in the target's own directory,
+  synced, renamed, and the directory synced. A directory the store makes
+  (the root, `objects/`, `quarantine/`) was not synced into its parent, so
+  a crash could lose a fresh store's `objects/` with every object synced
+  inside it; each is now synced into its parent as it is made.
+- **The store writes its own `.gitattributes` (SPEC §3, README).** The
+  attribute that keeps git from rewriting an object's bytes was documented
+  and only this repository carried it, so a store elsewhere in a repository
+  was unprotected. A write to a store with no `.gitattributes` in its root
+  writes one, `objects/** -text -diff` and `quarantine/** -text -diff`, and
+  one that is there is never rewritten. `verify` names a temp the root's
+  write left (`Finding::Garbage` is now a path within the store). Tests:
+  `the_gitattributes_is_written_durably_and_never_rewritten`,
+  `a_directory_is_made_with_its_ancestors` and, now asserting the store
+  reads as it did, `a_crash_before_the_rename_leaves_only_a_temp`, in
+  `core/src/store.rs`.
+- **A mixed store reads each todo as one stream.** A caller folding a store
+  of legacy objects and changes object by object (`Node::of`) split a todo
+  whose changes name the legacy root into two prodromes; nodes now come
+  only from the DAG, which places every such change with the `Sealed`s of
+  its todo. Test: `a_mixed_store_folds_a_todo_as_one_stream` in
+  `core/tests/all/registers.rs`.
 - **A handle sees a file change under a name it has read (SPEC §3).** The
   parent index a handle kept said what it gave up: an object tampered with
   after the handle verified it was not noticed by `tips()`. The memory keeps

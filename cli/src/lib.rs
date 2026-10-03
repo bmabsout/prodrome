@@ -21,9 +21,9 @@ pub mod render;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use prodrome::dag::Finding;
 use prodrome::event::{
-    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, Actor, Hash, TodoEvent,
-    TodoId,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, Actor, TodoEvent, TodoId,
 };
 use prodrome::fpl::FplError;
 use prodrome::literal::{Datetime, ProdromeError};
@@ -170,7 +170,10 @@ impl Reading {
 /// do.
 pub fn read(store: &Store, at: Datetime) -> Result<Reading, Error> {
     let nodes = store.dag()?.nodes()?;
-    let events: Vec<TodoEvent<Todo>> = nodes.iter().filter_map(|node| node.event.clone()).collect();
+    let events: Vec<TodoEvent<Todo>> = nodes
+        .iter()
+        .filter_map(|node| node.event().cloned())
+        .collect();
 
     let mut created = BTreeMap::new();
     let mut bodies = BTreeMap::new();
@@ -302,31 +305,9 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
                 .ok_or_else(|| Error::usage(format!("no todo {id:?} in this store")))
         }
 
-        Command::Verify => {
-            let problems = store.verify();
-            if problems.is_empty() {
-                let objects = store.dag()?.objects().len();
-                let heads = store.tips()?.len();
-                Ok(Outcome::said(format!(
-                    "ok: {objects} objects, {heads} head{}",
-                    if heads == 1 { "" } else { "s" }
-                )))
-            } else {
-                Ok(Outcome {
-                    text: problems
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    ok: false,
-                })
-            }
-        }
+        Command::Verify => report(&store, &store.verify()),
 
-        Command::Quarantine { name } => {
-            let aside = store.quarantine(&Hash::new(name.as_str())?)?;
-            Ok(Outcome::said(format!("set aside in {}", aside.display())))
-        }
+        Command::Fsck => report(&store, &store.fsck()),
 
         Command::Snapshot => Ok(Outcome::said(store.snapshot()?.as_str())),
 
@@ -350,6 +331,27 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
 /// `init`: an `objects/` directory holding the prodrome's `Genesis`, labelled
 /// with the directory's name. The objects are the whole store: its tips are
 /// derived from them (§3), so no file names a head.
+/// A check's findings as an outcome: `ok:` with the store's size where
+/// there are none, and each finding on its own line, failed, where there are.
+fn report(store: &Store, findings: &[Finding]) -> Result<Outcome, Error> {
+    if findings.is_empty() {
+        let objects = store.dag()?.objects().len();
+        let heads = store.tips()?.len();
+        return Ok(Outcome::said(format!(
+            "ok: {objects} objects, {heads} head{}",
+            if heads == 1 { "" } else { "s" }
+        )));
+    }
+    Ok(Outcome {
+        text: findings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ok: false,
+    })
+}
+
 fn init(dir: &Path, policy: Untrusted) -> Result<Outcome, Error> {
     if dir.join("objects").is_dir() {
         return Err(Error::usage(format!(

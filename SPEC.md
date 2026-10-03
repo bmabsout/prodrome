@@ -115,21 +115,38 @@ since this grammar has tuples and no mapping.
   `(genesis, todo)` (§6). A `Change` may depend on legacy writes, whose
   global ancestry overstates what it depends on; that is safe, since a
   later write can only settle more than the chain says, never less.
-- **A write is durable.** The print goes to a randomly named temp file in
-  `objects/`, created exclusively (never a fixed `<name>.tmp`, which two
-  writers of one object would share), and is synced to disk before it is
-  renamed to `<name>.py`; the directory is synced once after a batch of
-  placements (one append, one adoption). So a crash leaves either no object
-  or the whole one, never an empty file under a name that promises content,
-  and at worst a temp that `verify` reports.
-- **Tips are derived.** `tips()` is the set of objects no object names as a
-  parent: a function of the object set alone, in any order it is listed. A
+- **A write is durable.** Every file the store writes goes to a randomly
+  named temp file in the directory it is written to, created exclusively
+  (never a fixed `<name>.tmp`, which two writers of one object would
+  share), and is synced to disk before it is renamed into place; the
+  directory is then synced, once after a batch of placements (one append,
+  one adoption). A directory the store makes (the root, `objects/`,
+  `quarantine/`) is synced into its parent before anything is written into
+  it, and a move into `quarantine/` syncs both directories. So a crash
+  leaves either no file or the whole one, never an empty file under a name
+  that promises content, and at worst a temp that `verify` reports.
+- **A store reads the largest down-set it holds.** A history is a set of
+  objects closed under parents, and a store's files need not be one: an
+  object set aside (`quarantine`) or not yet arrived leaves what rests on
+  it naming a parent the store lacks. The store's HISTORY is the INTERIOR
+  of its objects, every object whose ancestors are all held; every read
+  (the objects, the fold, `tips()`, an append's deps) reads it and nothing
+  else. An object outside it is held, verified, and waits: no read sees it
+  until what it rests on arrives, and then it joins as any arrival does.
+  The interior is never more than the objects, idempotent and monotone, so
+  it is a function of the object set (law 40); of a store closed under
+  parents it is the store.
+- **Tips are derived.** `tips()` is the set of objects of the history no
+  object names as a parent: a function of the object set alone, in any
+  order it is listed. A
   store on disk is its `objects/` and nothing else, so two copies that each
   only added objects are merged by uniting the files — a `git merge` of two
   clones is this union and cannot conflict. A store under git needs
   `objects/** -text -diff` in the `.gitattributes` that governs it, so that
   no line-ending conversion or text merge rewrites the bytes a name is the
-  hash of. A store written before 0.9 also holds `HEAD` (one tip) and
+  hash of: a write to a store whose root holds no `.gitattributes` first
+  writes one, durably, marking `objects/**` and `quarantine/**` `-text
+  -diff`, and never rewrites one that is there. A store written before 0.9 also holds `HEAD` (one tip) and
   `refs/` (one file per head while there were several); nothing reads them,
   the objects derive exactly what they named (§9.17), and `verify` reports
   them as leftovers to delete.
@@ -188,11 +205,12 @@ since this grammar has tuples and no mapping.
   no value (law 25). A missing parent or a cycle is a refusal.
 - `ancestors(x)` is the transitive parent closure; `concurrent(a, b)` holds
   when neither is an ancestor of the other.
-- **`verify`** reports an object not hashing to its name, a missing parent, a
-  cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, every entry of
-  `objects/` that is not named `<name>.py` for a well-formed name (a temp an
-  interrupted write left, or a stray) as garbage, each by name — the reads
-  pass over such an entry, and only `verify` speaks of it — a receipt for
+- **`verify`** changes nothing and reports an object not hashing to its
+  name, a missing parent, a cycle, a malformed `Woven`, a leftover `HEAD` or
+  `refs/`, every entry of `objects/` that is not named `<name>.py` for a
+  well-formed name (a temp an interrupted write left, or a stray) and every
+  temp in the root as garbage, each by name — the reads pass over such an
+  entry, and only `verify` speaks of it — a receipt for
   each file in `quarantine/`, which stands in for the missing parent that
   object would otherwise be reported as, and an event the
   policy does not `confirm` (§5) dated before any of its ancestors — a writer
@@ -205,17 +223,25 @@ since this grammar has tuples and no mapping.
   that the store lacks. There is no unreachable object and no stale
   head to report: every object is a tip or beneath one, and no tip rests on
   another.
-- **`quarantine(name)`** moves `objects/<name>.py` to `quarantine/<name>.py`
-  when its bytes do not hash to `name`, and refuses a file that does (that
-  file is the object, even one this reader cannot parse). A read refuses a
-  file failing its hash rather than guess what it held — `tips()` among them,
-  and so every append — and its refusal names the object and this operation
-  (`prodrome quarantine <name>`). Set aside, the store is what it holds
-  without it: `tips()` answers (the object's parents may be tips again), and
-  `verify` reports the receipt until the object is restored from a replica
-  and the quarantined file deleted. An append made meanwhile rests on the
-  heads of what was held; once the object is back, a head it puts beneath
-  another is reported as a redundant dep, which changes no ancestry.
+- **`fsck`** is `verify` after QUARANTINE: every file of `objects/` whose
+  bytes do not hash to its name is moved, under the lock and durably, to
+  `quarantine/<name>.py`, or, where other bytes already lie there,
+  `quarantine/<name>.<sha256 of its bytes>.py`, so no set-aside bytes are
+  ever overwritten or deleted and the same bytes set aside twice are one
+  file; the report names each (the receipt). A file that hashes to
+  its name stays (it is the object, even one this reader cannot parse), and
+  a stray is reported, never moved. A read refuses a file failing its hash
+  rather than guess what it held — `tips()` among them, and so every
+  append — and its refusal names the object and this operation (`prodrome
+  fsck`). No read takes anything in `quarantine/` for part of the history.
+  Set aside, the store reads the largest
+  down-set it holds: the history without the object AND WITHOUT
+  EVERYTHING RESTING ON IT, which is exactly what a replica that never
+  received the object holds (law 40). `tips()` answers (the object's
+  parents may be tips again), and `verify` reports the receipt until the
+  object is restored from a replica and the quarantined file deleted. An
+  append made meanwhile rests on the heads of that history; once the
+  object is back, what rested on it rejoins, concurrent with the append.
 - **`adopt(source, tip)`** copies in everything `tip` rests on that the store
   lacks, a change's or a snapshot's genesis included, verifying all of it
   before writing any, and writing parents before children, since an object
@@ -849,7 +875,9 @@ take no environment because a compiled term cannot consult one, and
 an unwritten register, and its candidates; `Order`, a partial order on a
 register's values (`Discrete` by default, `Total`, inclusion on a set), and
 `Inflationary`, a register type's declaration that a write only grows its
-reading; `Folded`; `Replica`, what every store is (§3), and `sync`, generic over
+reading; `Node`, an object at the place its DAG gives it, which only a
+DAG makes, since an object's prodrome is a function of the set it is in;
+`Folded`; `Replica`, what every store is (§3), and `sync`, generic over
 two of them; `Decision`, the store of record locked, the only value a
 coordinated decision is asked of and one only a store on disk makes;
 `Breaks`; `Entry`
@@ -1147,6 +1175,22 @@ The design's law 7 is law 35: replicas, wherever each is held.
     `replica.rs::sync_is_the_join`,
     `replica.rs::a_store_in_memory_appends_what_a_disk_store_appends`,
     `replica.rs::an_overlay_reads_as_its_union_until_it_is_flushed`.
+
+Law 40 is §3's reading of a store that is not closed under parents, over
+two writers' changes and over legacy chains, with any objects removed.
+
+40. **A store reads the largest down-set it holds.** The interior of a set
+    of objects is exactly the objects no removed object is beneath; it is
+    never more than the set, idempotent, monotone, meet-preserving and the
+    whole of a history. A store holding any subset of a history, read cold
+    or by a handle that held more, reads its objects, its fold and its tips
+    as a store given only that subset's interior. And quarantine is that
+    reading: an object damaged on disk is set aside by `fsck`, named in its
+    report and kept byte for byte, and the store reads the history without
+    it and everything resting on it.
+    `down_set.rs::the_interior_is_the_largest_down_set`,
+    `down_set.rs::a_store_reads_its_largest_down_set`,
+    `down_set.rs::quarantine_is_the_down_set_without_what_rests_on_it`.
 
 Laws 36 and 37 are §3's deps and §6.6's supersession, on two writers whose
 replicas in memory sync in between and whose events are dated anywhere.
