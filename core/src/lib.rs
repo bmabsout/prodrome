@@ -107,6 +107,8 @@
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
 //! - `policy`   — §5: `Standing`, the `Policy` trait, and the reference policy
 //! - `registers`— §6.6: the DAG's structure and each todo's stream, a monoid action
+//! - `schedule` — a step function of time, and its algebra: what a
+//!   `Piecewise`, a register's history and an observed value each are
 //! - `fold`     — §6.1–6.5: the registers, and every reading a projection of them
 //! - `breaks`   — §7 breakpoints and series knots
 //! - `observe`  — §7: a view's precision, and when the value it shows next changes
@@ -135,6 +137,7 @@ pub mod policy;
 #[cfg(feature = "reference")]
 pub mod reference;
 pub mod registers;
+pub mod schedule;
 pub mod schema;
 pub mod snapshot;
 pub mod store;
