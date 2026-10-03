@@ -178,7 +178,7 @@ fn recomputed(before: &Seq, after: &Seq) -> usize {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(crate::common::cases::cases(64))]
 
     /// The tree holds the sequence, in order, and its measures index it.
     #[test]

@@ -553,7 +553,7 @@ fn broken(form: &Form, defect: u8, pick: usize) -> (String, Law) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(crate::common::cases::cases(128))]
 
     #[test]
     fn a_declared_schema_reads_every_history_as_its_rust_twin(draw in a_draw(a_proposal())) {

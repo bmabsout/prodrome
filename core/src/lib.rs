@@ -150,3 +150,8 @@ pub mod term;
 pub mod todo;
 pub mod topo;
 pub mod view;
+
+// The property tests' case counts, one rule with the integration tests'.
+#[cfg(test)]
+#[path = "../tests/common/cases.rs"]
+mod cases;

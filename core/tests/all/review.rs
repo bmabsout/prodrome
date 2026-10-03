@@ -146,7 +146,7 @@ fn try_all(store: &Store, from: u32, phases: &[Phase]) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(crate::common::cases::cases(24))]
 
     /// Law 4, the homomorphism: two replicas that each only grew, merged by
     /// putting their objects in one directory, read the join of their
