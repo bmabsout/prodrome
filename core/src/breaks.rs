@@ -88,11 +88,12 @@ fn local(layer: TermF<Breaks>) -> Breaks {
             slopes: points.iter().map(|point| point.at).collect(),
             ..Breaks::default()
         },
-        TermF::Piecewise { head, pieces } => {
+        TermF::Piecewise(schedule) => {
             let transitions = Breaks {
-                jumps: pieces.iter().map(|(at, _)| *at).collect(),
+                jumps: schedule.knots().iter().map(|(at, _)| *at).collect(),
                 ..Breaks::default()
             };
+            let (head, pieces) = schedule.into_parts();
             std::iter::once(head)
                 .chain(pieces.into_iter().map(|(_, piece)| piece))
                 .sum::<Breaks>()
