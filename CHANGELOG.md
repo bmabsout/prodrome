@@ -101,7 +101,28 @@ MINOR change under this file's rule: new API only, no stored byte moves,
 the object model gains no constructor, and every vector and export reads
 as it did.
 
+And time's one type (`docs/design-register-types.md` §6.2): a behaviour
+that is piecewise constant is a `Schedule<A>`, a step function with its
+algebra law-tested, and what reimplemented one (a `Piecewise`'s pieces, a
+register's history, the wire's environment over time, an observed value)
+is one or a function of one, with one fold over time where there were two.
+A MINOR change under this file's rule: no stored byte, vector or export
+answer moves; the API breaks where a `Piecewise` layer had two fields.
+
 ### Added
+
+- **Schedules (design §6.2):** `schedule::Schedule<A>`, a head and knots at
+  strictly increasing instants, meaning the function whose value at `t` is
+  the last knot at or before `t` (`at`, `since`, `last`). `new` refuses
+  knots out of order (`schedule::Unordered`) and `of` builds one from a
+  map. `map` and `traverse`, `zip` and `sequence` with `constant`, `+` and
+  `Sum` where the value is a monoid, `join` for a schedule of schedules,
+  `shift`, `normal` and `next_change`. `fold::readings`, an entity's
+  registers as a schedule, of which `fold::read` is the value at an
+  instant. `observe::observed`, the observed value of an exact term from an
+  instant on, as a schedule. Laws in `core/tests/all/schedule.rs`,
+  `fold_laws.rs` (a reading at a moment is the readings at it) and
+  `observe.rs` (the observed schedule is the observed value).
 
 - **Nesting (design §6.3, stage 9, SPEC law 39):** `nest`. `nest::Path`,
   the free monoid on `nest::Segment`s, and `nest::History<T>`, a set of
@@ -420,6 +441,13 @@ and every vector and export reads as it did.
   semilattice), and `conformance/change.py`, NEW and written by hand.
 
 ### Changed (breaking)
+
+- **A `Piecewise` holds a schedule:** `TermF::Piecewise(Schedule<A>)`,
+  where it had `head` and `pieces`; `fpl::in_force` is gone, being
+  `Schedule::since`. `mk_piecewise` refuses what it refused, with the same
+  message. The wasm `History` (`series_knots`'s argument) refuses a todo's
+  bindings out of order, which it read wrongly before; `fold`'s own
+  `history` is always in order.
 
 - **A change's deps are its entity's heads (SPEC §3):** `registers::deps_for`
   answers every write to the entity, in any register, that no other write

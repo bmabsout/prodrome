@@ -436,6 +436,33 @@ a new input, and the answer is asked again. The wasm exports carry it:
 `next_change` beside `fulfillment` in the reference module, and
 `next_changes` per row on a priced schema's class.
 
+**Time's one type is a schedule.** A behaviour that is piecewise constant
+is a `schedule::Schedule<A>`: a head and knots at strictly increasing
+instants, MEANING the function whose value at `t` is the last knot at or
+before `t` (`at`). Its algebra is stated as that meaning and law-tested:
+`map` (a functor), `zip` and `sequence` (an applicative, two step functions
+combined pointwise over their merged knots, `constant` the unit), `+` where
+the value is a monoid (`at` a homomorphism), `join` (the reader monad's
+diagonal), `shift` (read later), `normal` (the quotient by meaning) and
+`next_change` (the first knot after `t` whose value differs: the push
+half). Its representation is the free one, a head and a finite map, and
+`Schedule::of` builds it from that map, so it is a function of a set of
+knots, whatever order they came in.
+
+What were step functions written by hand are now it or functions of it. A
+`Piecewise` term holds a `Schedule<Term>`: evaluation is `at`, the normal
+form is `map opened . join . normal` (splicing was the join), and
+`normalize` lifts a pointwise layer by `sequence` and a `Shift` by
+`shift`. An entity's registers as a function of time are
+`fold::readings`, ONE fold over time: `fold::read` is its value at an
+instant (the scan keeping only its end), §6.4's function maps it to
+prices, and §6.5's history maps it to outcomes; the wire's `History` holds
+each todo's bindings as one. The observed value of an exact term is
+`observe::observed`, a `Schedule<Option<u32>>` from `now` on, and on the
+exact fragment `next_change` is its `Schedule::next_change`; the
+conservative enclosure cuts a span by a schedule (a `Piecewise`'s own,
+`After`'s binding, `Recur`'s last tending).
+
 **What landed.** `prodrome::memo` (stage 8, §8), which depends on the hash
 type and on nothing else of the crate.
 
