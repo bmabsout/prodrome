@@ -55,7 +55,7 @@ pub use decision::Decision;
 use memory::{Memory, Printed, Seen, Verified};
 pub use memory_store::MemoryStore;
 pub use overlay::Overlay;
-pub use replica::{sync, Held, Replica};
+pub use replica::{accept, sync, Held, Replica};
 
 /// A chain rooted at `root`, of the schema `E`, read under one host
 /// [`Policy`] (§5).
@@ -422,8 +422,10 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// already contain changes nothing; a tip that contains every tip we hold
     /// names them all beneath it, so they stop being tips (a FAST-FORWARD);
     /// anything else is a second tip. Answers `digest`.
+    ///
+    /// [`accept`], the restricted join, with one tip chosen.
     pub fn adopt(&self, source: &EventStore<E, Pol>, digest: &Hash) -> Result<Hash, ProdromeError> {
-        self.copy_in_from([digest.clone()], |name| source.print(name))?;
+        accept(source, self, [digest.clone()].into())?;
         Ok(digest.clone())
     }
 
