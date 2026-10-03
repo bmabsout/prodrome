@@ -118,7 +118,7 @@ pub trait RowJson: Json + schema::Row {
 /// its todo. Here and not in a host, which could not implement this crate's
 /// trait for the core's type.
 impl<P: Payload> Json for TodoEvent<P> {
-    fn key_field(_: &TodoVocabulary<P>) -> &str {
+    fn key_field(_: &TodoVocabulary<P>) -> &'static str {
         "todo"
     }
 
@@ -387,6 +387,10 @@ impl<E: Schema> Replica<E> {
 
     /// [`Replica::of`], read at the schema `schema`, a value: a declared
     /// schema admitted at run time, or a Rust schema's unit.
+    ///
+    /// # Errors
+    ///
+    /// [`Replica::of`]'s: `objects` is not `[{hash, text}]`.
     pub fn at(schema: E::Vocabulary, objects: &str) -> Result<Replica<E>, Refusal> {
         let mut seen = BTreeSet::new();
         let mut sent = Vec::new();
@@ -476,6 +480,10 @@ impl Replica<Declared> {
 
 /// What a declared replica was admitted at: its content name, canonical
 /// text, key field and register names.
+///
+/// # Errors
+///
+/// None in practice: [`printed`]'s, should JSON not print.
 pub fn declaration(replica: &Replica<Declared>) -> Result<String, Refusal> {
     let schema = &replica.schema;
     printed(&object(vec![
