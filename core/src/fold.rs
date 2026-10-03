@@ -27,21 +27,64 @@ use crate::literal::ProdromeError;
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
 use crate::registers::{Prodrome, Stamp};
+use crate::schedule::Schedule;
 use crate::schema::{Bind, History, Price, Schema};
 use crate::term::Term;
 use crate::todo::{Content, Spec, State};
 
-/// An entity's registers at `at` (`None`: ever) under `policy`: the one fold
-/// every reading projects.
+/// An entity's registers at `at` (`None`: ever) under `policy`: [`readings`]
+/// at its end, the scan keeping nothing but its last value.
 #[must_use]
 pub fn read<'a, E: Schema>(
     stream: &'a [Stamp<E>],
     at: Option<Instant>,
     policy: &impl Policy<E>,
 ) -> E::Registers<'a> {
-    let mut registers = E::Registers::default();
+    scan(stream, at, policy, |_, _| {})
+}
+
+/// An entity's registers as a function of time, as of `at` (`None`: ever)
+/// under `policy`: the empty product before anything, and from each instant
+/// a write is dated, every write dated at or before it joined (§6.5's
+/// `history`). The one fold over time: `read` is its value at `at`, and
+/// every reading of an entity's past (§6.4's function, §6.5's environment)
+/// is a function of it.
+#[must_use]
+pub fn readings<'a, E: Schema>(
+    stream: &'a [Stamp<E>],
+    at: Option<Instant>,
+    policy: &impl Policy<E>,
+) -> Schedule<E::Registers<'a>> {
+    let mut knots = BTreeMap::new();
+    scan(stream, at, policy, |instant, registers| {
+        knots.insert(instant, registers.clone());
+    });
+    Schedule::of(E::Registers::default(), knots)
+}
+
+/// The fold: the admitted writes joined instant by instant, `each` shown
+/// the registers as they stand at every instant one is dated. The product is
+/// a semilattice, so the order writes join in within an instant, or across
+/// the stream, changes nothing.
+fn scan<'a, E: Schema>(
+    stream: &'a [Stamp<E>],
+    at: Option<Instant>,
+    policy: &impl Policy<E>,
+    mut each: impl FnMut(Instant, &E::Registers<'a>),
+) -> E::Registers<'a> {
+    let mut dated: BTreeMap<Instant, Vec<&'a Stamp<E>>> = BTreeMap::new();
     for stamp in stream.iter().filter(|stamp| admits(stamp, at, policy)) {
-        registers.join(stamp);
+        dated
+            .entry(fpl::instant_of(stamp.event.at()))
+            .or_default()
+            .push(stamp);
+    }
+    let mut registers = E::Registers::default();
+    for (instant, stamps) in dated {
+        for stamp in stamps {
+            registers.join(stamp);
+        }
+        each(instant, &registers);
     }
     registers
 }
@@ -346,20 +389,19 @@ fn function<E: History>(
     let Some(head) = least(E::moment(&E::Registers::default(), &first, None)?)? else {
         return Ok(None);
     };
+    // A piece where a register moves: a tending alone moves none.
     let moments: BTreeSet<Instant> = written
         .iter()
         .map(|stamp| fpl::instant_of(stamp.event.at()))
         .collect();
-    let mut pieces = Vec::with_capacity(moments.len());
-    for m in moments {
-        let term = least(E::moment(
-            &read(stream, Some(m), policy),
-            &first,
-            Some(&head),
-        )?)?;
-        pieces.push((m, term.unwrap_or_else(|| head.clone())));
+    let mut pieces = BTreeMap::new();
+    for (m, now) in readings(stream, Some(at), policy).into_parts().1 {
+        if moments.contains(&m) {
+            let term = least(E::moment(&now, &first, Some(&head))?)?;
+            pieces.insert(m, term.unwrap_or_else(|| head.clone()));
+        }
     }
-    fpl::mk_piecewise(head, pieces).map(Some)
+    Ok(Some(fpl::piecewise(Schedule::of(head, pieces))))
 }
 
 /// [`flatten`]'s functions as [`fpl::link`] reads them, over every entity in

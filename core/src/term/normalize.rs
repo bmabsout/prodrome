@@ -1,6 +1,5 @@
-use std::collections::BTreeSet;
-
-use crate::fpl::{in_force, piecewise, Instant};
+use crate::fpl::piecewise;
+use crate::schedule::Schedule;
 use crate::term::{Term, TermF};
 
 /// The Piecewise-outermost normal form (§7). A pointwise layer lifts over the
@@ -9,15 +8,13 @@ use crate::term::{Term, TermF};
 /// commute with a partition and stay where they are.
 pub fn normalize(term: &Term) -> Term {
     term.cata(|layer| match layer {
-        TermF::Piecewise { head, pieces } => piecewise(head, pieces),
+        TermF::Piecewise(schedule) => piecewise(schedule),
         TermF::Shift { delta, term } => match term.into_out() {
-            // ⟦Shift(δ, pw)⟧(now) = ⟦pw⟧(now + δ), so a piece from τ is in force from τ − δ.
-            TermF::Piecewise { head, pieces } => piecewise(
-                Term::new(TermF::Shift { delta, term: head }),
-                pieces
-                    .into_iter()
-                    .map(|(at, term)| (at - delta, Term::new(TermF::Shift { delta, term })))
-                    .collect(),
+            // ⟦Shift(δ, pw)⟧(now) = ⟦pw⟧(now + δ): the schedule read δ later.
+            TermF::Piecewise(schedule) => piecewise(
+                schedule
+                    .shift(delta)
+                    .map(|term| Term::new(TermF::Shift { delta, term })),
             ),
             term => Term::new(TermF::Shift {
                 delta,
@@ -34,35 +31,23 @@ pub fn normalize(term: &Term) -> Term {
     })
 }
 
-/// A pointwise layer over its children's schedules: the layer over what each
-/// child reads before any transition, and again at every instant one changes.
+/// A pointwise layer over its children's schedules: the applicative's
+/// `sequence` of them, the layer applied at every instant one changes.
 fn pointwise(layer: TermF<Term>) -> Term {
-    let schedules: Vec<&[(Instant, Term)]> = layer
+    if !layer
         .children()
         .into_iter()
-        .filter_map(|child| match child.out() {
-            TermF::Piecewise { pieces, .. } => Some(pieces.as_slice()),
-            _ => None,
-        })
-        .collect();
-    if schedules.is_empty() {
+        .any(|child| matches!(child.out(), TermF::Piecewise(_)))
+    {
         return Term::new(layer);
     }
-    let instants: BTreeSet<Instant> = schedules
-        .iter()
-        .flat_map(|pieces| pieces.iter().map(|(at, _)| *at))
-        .collect();
-    let at = |moment: Option<Instant>| {
-        Term::new(layer.map(|child| match (child.out(), moment) {
-            (TermF::Piecewise { head, .. }, None) => head.clone(),
-            (TermF::Piecewise { head, pieces }, Some(moment)) => {
-                in_force(head, pieces, moment).1.clone()
-            }
-            _ => child.clone(),
-        }))
-    };
-    piecewise(
-        at(None),
-        instants.into_iter().map(|m| (m, at(Some(m)))).collect(),
-    )
+    let children = layer.children().into_iter().map(|child| match child.out() {
+        TermF::Piecewise(schedule) => schedule.clone(),
+        _ => Schedule::constant(child.clone()),
+    });
+    piecewise(Schedule::sequence(children).map(|values| {
+        // One value per child, in `children`'s order, which is `map`'s.
+        let mut values = values.into_iter();
+        Term::new(layer.map(|child| values.next().unwrap_or_else(|| child.clone())))
+    }))
 }

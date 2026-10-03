@@ -28,6 +28,7 @@ use thiserror::Error;
 use crate::fpl::{
     self, piecewise, scalars, Closed, Delta, Env, Explanation, Instant, Note, Outcome, Scalar,
 };
+use crate::schedule::Schedule;
 use crate::term::schema::{Fields, Slot};
 use crate::term::{normalize, Term, TermF};
 use crate::topo::Topo;
@@ -286,12 +287,13 @@ fn resolve(term: &Term, env: &Env, links: &mut Vec<Link>) -> Term {
             let pending = resolve(pending, env, links);
             match link {
                 Link::Pending { .. } => pending,
-                Link::Completed { at, slip, .. } => {
-                    piecewise(pending, vec![(at, slid(slip, resolve(body, env, links)))])
-                }
+                Link::Completed { at, slip, .. } => piecewise(Schedule::of(
+                    pending,
+                    BTreeMap::from([(at, slid(slip, resolve(body, env, links)))]),
+                )),
                 Link::Moot { at, .. } => {
                     let body = resolve(body, env, links);
-                    piecewise(pending, vec![(at, mk_moot(body))])
+                    piecewise(Schedule::of(pending, BTreeMap::from([(at, mk_moot(body))])))
                 }
             }
         })
@@ -314,7 +316,7 @@ fn recurrence(
 ) -> Term {
     let pending = resolve(pending, env, links);
     let body = resolve(body, env, links);
-    piecewise(
+    piecewise(Schedule::of(
         pending,
         env.tended
             .get(todo)
@@ -322,7 +324,7 @@ fn recurrence(
             .flatten()
             .map(|tended| (*tended, slid(*tended - anchor, body.clone())))
             .collect(),
-    )
+    ))
 }
 
 /// The body read `slip` later than authored. `Shift(0, x)` is `x`: the

@@ -273,9 +273,10 @@ fn explain_over_a_compiled_term_is_still_a_tree() {
     // and the piece is the shifted body — so the reader walks down to the
     // Decay that actually answered.
     assert_eq!(explanation.node.kind(), "piecewise");
-    let TermF::Piecewise { head, .. } = &*explanation.node else {
+    let TermF::Piecewise(schedule) = &*explanation.node else {
         panic!("the root is the schedule the compiler built");
     };
+    let head = schedule.head();
     assert_eq!(head.node.kind(), "shift");
     assert_eq!(
         compiled.notes().get("links").map(|_| ()),
@@ -337,7 +338,7 @@ fn a_chain_of_three_links_composes_into_one_schedule() {
     ]);
     let compiled = compile(&a_chain(), &snapshot);
     assert_eq!(env_readers(compiled.term().term()), 0);
-    let TermF::Piecewise { pieces, .. } = compiled.term().term().out() else {
+    let TermF::Piecewise(schedule) = compiled.term().term().out() else {
         panic!(
             "the chain should be one schedule at the root, got {}",
             compiled.term().term().out().kind()
@@ -348,7 +349,11 @@ fn a_chain_of_three_links_composes_into_one_schedule() {
     // and alpha shifts that back another 10, so it lands at 60. That
     // arithmetic is the whole of what the compiler did, and it did it once.
     assert_eq!(
-        pieces.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+        schedule
+            .knots()
+            .iter()
+            .map(|(at, _)| *at)
+            .collect::<Vec<_>>(),
         [moment(10), moment(30), moment(60)],
         "one piece per link, over the merged partition"
     );

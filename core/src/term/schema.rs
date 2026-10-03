@@ -144,15 +144,16 @@ pub fn fields<A>(layer: &TermF<A>) -> (&'static str, Fields<&A>) {
                 ("term", Child(term)),
             ],
         ),
-        TermF::Piecewise { head, pieces } => (
+        TermF::Piecewise(schedule) => (
             "Piecewise",
             vec![
-                ("head", Child(head)),
+                ("head", Child(schedule.head())),
                 (
                     "pieces",
                     Rows(
                         "Piece",
-                        pieces
+                        schedule
+                            .knots()
                             .iter()
                             .map(|(at, term)| vec![("at", At(*at)), ("term", Child(term))])
                             .collect(),
