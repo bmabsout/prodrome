@@ -20,6 +20,9 @@
 //! | `prices`   | §6.1, §6.4, `priced` only: the environment and every function |
 //! | `next_changes` | §7, `priced` only: when each entity's observed price next changes |
 //! | `append`   | §3: an event sealed into this replica, and the object to send |
+//! | `sign`     | §3: a held object signed by a device key the host passes, and the object to send |
+//! | `proven`   | §5: the objects a key registered to their actor signed       |
+//! | `public_key` | §3, static: the public key of a device key's seed          |
 //! | `declaration` | `declared` only: the schema it was admitted at          |
 //!
 //! A SCHEMA DECLARED AS DATA ([`prodrome::declared`]) needs no crate of its
@@ -60,7 +63,9 @@ use std::sync::Arc;
 use prodrome::dag::{Dag, Finding, Unread};
 pub use prodrome::declared::Declared;
 use prodrome::declared::{Datum, Declaration, Slot};
-use prodrome::event::{canonical_envelope, parents_of, parse_event, Envelope, Hash, TodoEvent};
+use prodrome::event::{
+    canonical_envelope, parents_of, parse_event, seal_hash, Envelope, Hash, TodoEvent,
+};
 use prodrome::fold::{Kind, Product};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, Instant};
 use prodrome::literal::{Datetime, Value as Literal};
@@ -68,6 +73,7 @@ use prodrome::payload::Payload;
 use prodrome::policy::Everything;
 use prodrome::registers::Node;
 use prodrome::schema::{self, Bind, History, Schema};
+use prodrome::sign::{Proof, Registrar, Secret};
 use prodrome::store::{MemoryStore, Replica as _};
 use prodrome::todo::{self, TodoVocabulary};
 use prodrome::view::{list_order, Entry};
@@ -75,8 +81,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use wire::{
-    json_env, json_literal, json_next_change, json_reading, object, parse_moment, parse_names,
-    parse_objects, parse_observation, parse_untrusted, strings, ObjectIn, Refusal,
+    json_env, json_literal, json_next_change, json_reading, object, parse_keys, parse_moment,
+    parse_names, parse_objects, parse_observation, parse_policy, strings, ObjectIn, Refusal,
 };
 
 /// What a schema says to cross this boundary, beside what it says to be
@@ -285,6 +291,30 @@ macro_rules! schema {
                 genesis: Option<String>,
             ) -> Result<String, wasm_bindgen::JsError> {
                 $crate::thrown($crate::append(&mut self.0, event, genesis))
+            }
+
+            /// §3: the held object `object` signed by the device key whose
+            /// seed is `secret` (64 hex, kept by the host and passed per
+            /// call), sealed into this replica as a `Signed`. Answers
+            /// `{hash, objects}`, as `append` does.
+            pub fn sign(
+                &mut self,
+                secret: &str,
+                object: &str,
+            ) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::sign(&mut self.0, secret, object))
+            }
+
+            /// §5: `{proven}`, the objects a key registered to their actor
+            /// signed, key objects counted where one of `roots` (a JSON
+            /// array of keys) signed them, or every one for `null`.
+            pub fn proven(&self, roots: Option<String>) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::proven(&self.0, roots))
+            }
+
+            /// §3: the public key of the seed `secret`, to register.
+            pub fn public_key(secret: &str) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::public_key(secret))
             }
         }
     };
@@ -527,6 +557,97 @@ pub fn append<E: Schema>(
 ) -> Result<String, Refusal> {
     replica.read()?;
     let event: E = parse_event(&replica.schema, event).map_err(|e| format!("event: {e}"))?;
+    let genesis = genesis
+        .map(|genesis| Hash::new(genesis).map_err(|e| format!("genesis: {e}")))
+        .transpose()?;
+    write(replica, genesis, |store| {
+        store.append(event).map_err(|e| e.to_string())
+    })
+}
+
+/// `secret`'s signature of the object `object` this replica holds, sealed
+/// into it as a `Signed` (SPEC §3). `secret` is a device key's seed, 64
+/// lowercase hex: the host keeps it where it decides (a phone in its own
+/// storage) and passes it to each call, and the module holds no key.
+/// Signing is deterministic, so signing again answers the same object and
+/// nothing to send.
+///
+/// Answers `{hash, objects}`, as [`append`] does.
+///
+/// # Errors
+///
+/// Objects with no honest reading; a secret that is not a seed; an object
+/// name that is not one, or that this replica does not hold.
+pub fn sign<E: Schema>(
+    replica: &mut Replica<E>,
+    secret: &str,
+    object: &str,
+) -> Result<String, Refusal> {
+    let read = replica.read()?;
+    let object = Hash::new(object).map_err(|e| format!("object: {e}"))?;
+    if read.dag.get(&object).is_none() {
+        return Err(format!("object: {object} is not held"));
+    }
+    let signed = Envelope::<E>::Signed(
+        Secret::new(secret)
+            .map_err(|e| format!("secret: {e}"))?
+            .sign(&object),
+    );
+    let (name, print) = (seal_hash(&signed), canonical_envelope(&signed).into_bytes());
+    write(replica, None, |store| {
+        store
+            .receive([name.clone()].into(), &|wanted| {
+                (*wanted == name).then(|| print.clone())
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(name.clone())
+    })
+}
+
+/// The public key of the seed `secret`: what a root registers for a device
+/// in a `KeyAdded`.
+///
+/// # Errors
+///
+/// A secret that is not a seed.
+pub fn public_key(secret: &str) -> Result<String, Refusal> {
+    Secret::new(secret)
+        .map(|secret| secret.public().into_string())
+        .map_err(|e| format!("secret: {e}"))
+}
+
+/// The objects carrying an event that these prove (SPEC §5): signed by a
+/// key registered to their actor, beneath every revocation of it. `roots`
+/// is a JSON array of root keys, the key objects a root signed counted, or
+/// `null` for every key object, as `verify` counts them. Answers `{proven}`,
+/// their names in causal order.
+///
+/// # Errors
+///
+/// Objects with no honest reading; roots that are not keys.
+pub fn proven<E: Schema>(replica: &Replica<E>, roots: Option<String>) -> Result<String, Refusal> {
+    let read = replica.read()?;
+    let registrar = match roots {
+        None => Registrar::Anyone,
+        Some(roots) => Registrar::Roots(parse_keys("roots", &roots)?.into_iter().collect()),
+    };
+    let proof = Proof::of(read.dag, &registrar);
+    let proven = read
+        .nodes
+        .iter()
+        .map(Node::name)
+        .filter(|name| proof.proves(name));
+    printed(&object(vec![("proven", names(proven))]))
+}
+
+/// Seal what `write` writes into `replica`'s store, which holds what the
+/// replica holds, and answer `{hash, objects}`: the object's name and,
+/// unless the host was sent it already or it was a twin, its print.
+fn write<E: Schema>(
+    replica: &mut Replica<E>,
+    genesis: Option<Hash>,
+    write: impl FnOnce(&MemoryStore<E>) -> Result<Hash, Refusal>,
+) -> Result<String, Refusal> {
     let mut store = if let Some(store) = replica.store.take() {
         store
     } else {
@@ -541,12 +662,12 @@ pub fn append<E: Schema>(
         store
     };
     if let Some(genesis) = genesis {
-        store = store.in_genesis(Hash::new(genesis).map_err(|e| format!("genesis: {e}"))?);
+        store = store.in_genesis(genesis);
     }
     // The store's objects are shared with this replica's; let go of them, so
-    // the append extends them where they are rather than copying them.
+    // the write extends them where they are rather than copying them.
     replica.dag = Arc::new(Dag::from_iter([]));
-    let appended = store.append(event).map_err(|e| e.to_string());
+    let appended = write(&store);
     let dag = store.held().map_err(|e| e.to_string())?.dag;
     replica.store = Some(store);
     replica.nodes = dag.nodes().map_err(|e| e.to_string());
@@ -867,7 +988,9 @@ pub fn since<E: Schema>(replica: &Replica<E>, tips: &str) -> Result<String, Refu
 /// none is unwritten. A schema with no valuation is read whole by this.
 ///
 /// At `at` (ISO, or `null` for every write the objects hold) and under
-/// `untrusted`, a list of actor names read as the reference policy (§5). Per
+/// `untrusted`, a list of actor names read as the reference policy (§5), or
+/// `{untrusted, roots}`, that policy held to the actors' keys under the root
+/// keys `roots` ([`wire::WirePolicy`]); so for every reading below. Per
 /// entity in (genesis, key) order: `genesis` is the prodrome's, `null` for a
 /// legacy one, and the entity's key is under the schema's [`Json::key_field`].
 pub fn readings<E: Json>(
@@ -875,8 +998,9 @@ pub fn readings<E: Json>(
     at: Option<String>,
     untrusted: &str,
 ) -> Result<String, Refusal> {
-    let nodes = replica.read()?.nodes;
-    let policy = parse_untrusted(untrusted)?;
+    let read = replica.read()?;
+    let nodes = read.nodes;
+    let policy = parse_policy(untrusted, read.dag)?;
     let at = parse_moment("at", at)?;
     let state = prodrome::registers::fold(nodes);
     let mut rows = Vec::new();
@@ -969,7 +1093,7 @@ pub fn entries<E: RowJson + History + Bind>(
     untrusted: &str,
 ) -> Result<String, Refusal> {
     let read = replica.read()?;
-    let policy = parse_untrusted(untrusted)?;
+    let policy = parse_policy(untrusted, read.dag)?;
     let moment = moment(&read, at)?;
     let mut rows =
         prodrome::view::entries(read.nodes, moment, &policy).map_err(|e| e.to_string())?;
@@ -998,7 +1122,7 @@ pub fn prices<E: History + Bind>(
     untrusted: &str,
 ) -> Result<String, Refusal> {
     let read = replica.read()?;
-    let policy = parse_untrusted(untrusted)?;
+    let policy = parse_policy(untrusted, read.dag)?;
     let moment = moment(&read, at)?;
     let now = instant_of(moment);
     let state = prodrome::registers::fold(read.nodes);
@@ -1043,7 +1167,7 @@ pub fn next_changes<E: History + Bind>(
     observation: &str,
 ) -> Result<String, Refusal> {
     let read = replica.read()?;
-    let policy = parse_untrusted(untrusted)?;
+    let policy = parse_policy(untrusted, read.dag)?;
     let observation = parse_observation(observation)?;
     let now = instant_of(moment(&read, at)?);
     let state = prodrome::registers::fold(read.nodes);
