@@ -93,8 +93,31 @@ union, and hierarchical caching is one memoised fold over a
 content-addressed tree of any shape. A MINOR change under this file's
 rule: a new module, and no stored byte, vector or export moves.
 
+And nesting (`docs/design-register-types.md` §6.3, stage 9, SPEC law 39):
+a register may hold a history by its heads, a nest of such histories
+flattens into one history keyed by path, renaming no object, and every way
+one replica takes chosen objects from another is one restricted join. A
+MINOR change under this file's rule: new API only, no stored byte moves,
+the object model gains no constructor, and every vector and export reads
+as it did.
+
 ### Added
 
+- **Nesting (design §6.3, stage 9, SPEC law 39):** `nest`. `nest::Path`,
+  the free monoid on `nest::Segment`s, and `nest::History<T>`, a set of
+  `(path, value)` pairs that is a monad (`unit`, `fmap`, `join`, `bind`),
+  read at a path by `at` and joined with chosen values of an inner history
+  by `accept`. `nest::Heads<I>`, a register value holding a history of the
+  schema `I` by its heads, ordered by inclusion; `nest::Nests`, a schema's
+  held registers; `nest::pointer`, a held register's reading, the union of
+  its maximal writes' heads. `nest::Nest`, a tree of content-addressed
+  histories read from each level's replica by `nest::Leaf` and
+  `nest::Holding`: `flatten` (the join), `below` and `past` (happens-before
+  across levels), and a `memo::Tree`, so `memo::fold` folds it.
+  `store::accept(from, to, chosen)`, the restricted join for replicas;
+  `sync`, `EventStore::adopt` and `Overlay::flush` are it, and
+  `Overlay::accept` takes a batch object by object. Laws in
+  `core/tests/all/nest.rs`, `nest_histories.rs` and `replica.rs`.
 - **Caches (design §6.2, stage 8, law 8):** `memo`, depending on the hash
   type alone. `memo::Cache`, pairs keyed by `memo::Key` (a function's
   name and its argument's), each key a register in the flat order:
