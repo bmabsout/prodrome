@@ -64,7 +64,7 @@ jobs:
       - run: nix develop --command cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: |
-          if false; then
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             export PRODROME_MAX_CASES=32
           fi
           nix develop --command cargo test --locked --workspace
