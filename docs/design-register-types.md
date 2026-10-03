@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 and 7 to 9 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 to 10 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -197,7 +197,41 @@ legacy envelope belongs to it. Every conformance vector reads byte for byte
 as before: the generalisation must be invisible to the one schema that
 exists.
 
-## 6. The application is the same structure (FRP)
+**What landed: a schema as data** (stage 10, §8). The schema was always a
+value in this design; a Rust schema is the case where the type says all of
+it. So `Schema::Vocabulary` is a value a store is opened at
+(`EventStore::at`, `MemoryStore::at`, `Replica::schema`), every parse takes
+it, and a Rust schema's is a unit with a `Default`. A DECLARED schema is
+another value of that slot, `declared::Declaration`, and its events,
+`declared::Declared`, implement `Schema` by interpreting it. Its parts are
+this section's list, as data:
+
+- the vocabulary: constructors with typed fields in printed order, the
+  types a closed set (text, integer, instant, a reference to an object, a
+  closed enum, a list of those);
+- the key, a text field every event has, and the stamp (`at`, `actor`)
+  every event has because every event says when and who;
+- the registers, each a name, an order from a closed vocabulary (discrete,
+  total over an integer, a machine given by its covering relation, sets
+  under inclusion), whether it is inflationary, and the route: which field
+  of which event writes it, the one combinator;
+- no valuation: a price stays Rust's (§4).
+
+The text is the objects' own §2 grammar under the schema language's closed
+vocabulary, not JSON: one parser, one printer and one whitelist for objects
+and schemas, a canonical print by construction, and so a content name, the
+hash of the text. A schema's sets print sorted, so its text is a function of
+the schema and not of the order it was written in.
+
+Nothing is read by a second path. A declared register is a `Frontier`, read
+by `Frontier::read` under its declared order, which IS the core's
+(`Discrete`, `Total`, the order on sets, and a machine's closure), so its
+reading is the completion every register's is; an inflationary one climbs
+by `fold::grows`, through a value type only admission's inflationary
+registers construct. Stores, `sync`, `accept`, nesting and the memoised fold
+are the code they were, at a type parameter they had not seen.
+
+
 
 A page is a reading too: a fold over the replica's history ∪ the page's
 INTENTS. An intent is a write the page has asked the box for and not yet seen
@@ -292,18 +326,42 @@ choice; the structure allows each and prescribes none. Keystroke-rate state
 (text being typed, scroll, a stream) stays in client-owned islands, so a
 keystroke never recompiles a view.
 
-**Open, for after views are pure: state that is data too.** Views as data
-give an agent new pages over the schemas that exist. The next step is an agent
-adding STATE of its own: a new register type (its order, whether it is
-inflationary) or a new store, appended live and run as a module (wasm, perhaps
-a WASI component) beside the schemas the application ships. Admission would
-then be a law check rather than a review: the order really is a partial
-order, an inflationary register really only climbs, the reading is a function
-of the object set, its intents fall in the closed vocabulary. Which laws can
-be checked mechanically (by construction, by property test at admission, by a
-proof the module carries), and what a module that fails one later costs the
-stores built on it, is not yet thought through. Recorded so the pure-view work
-does not close the door on it.
+**State that is data too: what landed.** Views as data give an agent new
+pages over the schemas that exist. The next step was an agent adding STATE
+of its own: a new register type (its order, whether it is inflationary) or
+a new store. Stage 10 (§5's "What landed") answers the store half without a
+module: a schema arrives as text and admission is a law check rather than a
+review, each law mechanical and named by the refusal when it fails:
+
+- it parses, and it is its own canonical print, so it has a name;
+- names are unique, the key exists on every event, every event is stamped;
+- every route is typed: a register is written by fields that exist, of one
+  type, the type its order reads;
+- every order is a partial order: discrete, total and inclusion by
+  construction, a machine because its covering relation is acyclic, so its
+  transitive closure is antisymmetric;
+- every inflationary register's order has a bottom, since its reading is a
+  homomorphism of semilattices with units and the empty history reads as
+  the least value.
+
+Laws that cannot fail need no check: the reading is a function of the
+object set because no declared order is consulted on succession (§2, §3),
+and an inflationary register climbs because the append refuses a write that
+does not (§3.1). What is still open is the other half, a register type
+whose order is not in the closed vocabulary (code an agent ships: a wasm or
+WASI module, the proof it carries, and what a module failing a law later
+costs the stores built on it), and intents a module declares beyond the
+closed vocabulary of §6.0. A declared schema is the closed vocabulary's
+answer, and adding an order to it is adding a case with its law.
+
+Found on the way: an inflationary register whose maximal values have no
+upper bound keeps its conflict. The proposal machine's `sent` and
+`dismissed` have none, so a write after both must climb above each and none
+can; §9's "a later write that descends from both settles it" holds for a
+register that is not inflationary, and for an inflationary one only where
+the order has a join of the two. That is the order saying the conflict is
+real and final; a host that wants it settled gives the machine a state
+above both.
 
 ### 6.1 Replicas: memory and disk
 
@@ -614,6 +672,13 @@ Each is a property test over generated histories, in the core's `tests/`:
     objects. BUILT: SPEC law 39, `core/tests/all/nest.rs` and
     `nest_histories.rs`.
 
+11. **Declared.** A declared schema equivalent to a Rust one reads every
+    generated history identically, register by register, and appends
+    identically through a store; each declared order is a partial order;
+    admission admits a lawful schema in its canonical print and refuses a
+    generated broken one under the law it breaks. BUILT: SPEC law 40,
+    `core/tests/all/declared.rs`.
+
 ## 8. Stages
 
 In this repository, each one PR:
@@ -767,10 +832,34 @@ In this repository, after stage 3:
    down-set of an overlay's objects leaves the store reading as one given
    exactly those, and the flush takes the rest.
 
+10. **A schema as data** (§5, §6.0). A schema given at run time as text,
+    admitted only when its laws hold, its events implementing the schema
+    trait by interpreting it, so a store at it reads, appends, syncs, nests
+    and memoises by the code a Rust schema's does; the wasm exports with a
+    class over a schema given at construction. Law 11.
+
+    BUILT: `prodrome::declared` (§5's "What landed"). The schema's vocabulary
+    is a value a store is opened at (`EventStore::at`, `MemoryStore::at`,
+    `Replica::schema`), and every parse takes it; `literal::Signature::Owned`
+    lends a field order held as owned names. Laws, `core/tests/all/declared.rs`
+    (SPEC law 40): the proposal schema written in Rust
+    (`core/tests/schemas/proposal.rs`, design §3's machine beside a total, an
+    inclusion and a discrete register) and as data print every generated
+    event alike, so hold the same objects, and read every register alike at
+    every moment; through stores every append is written, refused or
+    answered as a twin alike, and a sync carries the declared store; law 1
+    and law 2 hold over the declared schema; a generated lawful schema is
+    admitted in its canonical print and a generated schema with one defect
+    is refused under the law it breaks, for each of the eight.
+    `nest_histories.rs` nests declared proposals under the shelf schema.
+    The wasm: `schema!(Name, declared)`, `new Name(schema, objects)`, and
+    the reference module's `Declared`.
+
 ## 9. Non-goals
 
 - A last-writer-wins register. Time is data (§1): no value order is a clock.
 - Operation-based types that need delivery order. Every type here reads a
   set; the DAG already carries causality.
 - Merging values a type does not order. Incomparable concurrent values are a
-  conflict, shown, and a later write that descends from both settles it.
+  conflict, shown, and a later write that descends from both settles it
+  (under an inflationary register, only a write at or above both, §6.0).
