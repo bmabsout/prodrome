@@ -28,6 +28,10 @@ pub struct Held<E: Schema> {
 /// of that needs coordination, so none of it is the store of record's
 /// alone; a decision is ([`super::Decision`]).
 pub trait Replica<E: Schema> {
+    /// The schema it is opened at: what every object it holds or receives
+    /// parses at (§5). No object carries it.
+    fn schema(&self) -> &E::Vocabulary;
+
     /// Its objects, their fold and their tips, of one look.
     ///
     /// # Errors
@@ -74,6 +78,10 @@ pub trait Replica<E: Schema> {
 /// A replica borrowed is that replica: an overlay over `&store` reads and
 /// flushes into a store its caller keeps.
 impl<E: Schema, R: Replica<E> + ?Sized> Replica<E> for &R {
+    fn schema(&self) -> &E::Vocabulary {
+        (**self).schema()
+    }
+
     fn held(&self) -> Result<Held<E>, ProdromeError> {
         (**self).held()
     }

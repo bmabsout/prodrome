@@ -37,7 +37,7 @@ fn events_of(log: &Value) -> Vec<Event> {
         .iter()
         .map(|item| {
             let object = format!("Sealed(prev='', event={})", text(item));
-            parse_envelope::<TodoEvent<Todo>>(&object)
+            parse_envelope::<TodoEvent<Todo>>(&Default::default(), &object)
                 .unwrap_or_else(|e| panic!("seed {seed}: {e}"))
                 .into_event()
                 .expect("a Sealed carries its event")

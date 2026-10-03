@@ -46,7 +46,7 @@ struct Sub<E: Schema> {
 }
 
 /// A replica holding a genesis of its own, `label`'s, writing into it.
-fn sub<E: Schema>(label: &str) -> Sub<E> {
+fn sub<E: Schema<Vocabulary: Default>>(label: &str) -> Sub<E> {
     let object = Envelope::<E>::Genesis(mk_genesis(label, &nonce_of(label)).expect("a genesis"));
     let print = canonical_envelope(&object).into_bytes();
     let name = seal_hash(&object);
@@ -116,7 +116,7 @@ fn reading<E: Schema>(replica: &impl Replica<E>) -> Reading<E> {
 }
 
 /// One replica holding every sub-history of a level.
-fn union<E: Schema>(subs: &[&Sub<E>]) -> MemoryStore<E> {
+fn union<E: Schema<Vocabulary: Default>>(subs: &[&Sub<E>]) -> MemoryStore<E> {
     let union = MemoryStore::default();
     for sub in subs {
         sync(&sub.store, &union).expect("syncs");
@@ -191,7 +191,11 @@ struct Two<I: Schema> {
     seen: BTreeMap<Hash, BTreeSet<Hash>>,
 }
 
-fn two<I: Schema>(shelves: usize, steps: &[Step], make: fn(usize, u8) -> I) -> Two<I> {
+fn two<I: Schema<Vocabulary: Default>>(
+    shelves: usize,
+    steps: &[Step],
+    make: fn(usize, u8) -> I,
+) -> Two<I> {
     let two = Two {
         outer: sub("outer"),
         shelves: (0..shelves).map(|s| sub(&format!("inner {s}"))).collect(),
@@ -212,7 +216,7 @@ fn two<I: Schema>(shelves: usize, steps: &[Step], make: fn(usize, u8) -> I) -> T
     Two { seen, ..two }
 }
 
-impl<I: Schema<Key: AsRef<str>>> Two<I> {
+impl<I: Schema<Key: AsRef<str>, Vocabulary: Default>> Two<I> {
     /// The nest the outer replica's tips rest on, its inner level one
     /// replica of every shelf's history; and that replica.
     fn nest(&self) -> (Nest, MemoryStore<I>) {
@@ -227,7 +231,9 @@ impl<I: Schema<Key: AsRef<str>>> Two<I> {
 }
 
 /// Law 10 over two levels of the inner schema `I`.
-fn two_levels<I: Schema<Key: AsRef<str>>>(two: &Two<I>) -> Result<(), TestCaseError> {
+fn two_levels<I: Schema<Key: AsRef<str>, Vocabulary: Default>>(
+    two: &Two<I>,
+) -> Result<(), TestCaseError> {
     let (nest, inner) = two.nest();
     let flat = nest.flatten();
 

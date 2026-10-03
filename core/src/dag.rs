@@ -32,14 +32,18 @@ impl<E> FromIterator<(Hash, Envelope<E>)> for Dag<E> {
 }
 
 /// A stored print, rehashed against its name before it is parsed at the
-/// schema `E`.
-pub fn decode<E: Schema>(name: &Hash, bytes: &[u8]) -> Result<Envelope<E>, Unread> {
+/// schema `schema`.
+pub fn decode<E: Schema>(
+    schema: &E::Vocabulary,
+    name: &Hash,
+    bytes: &[u8],
+) -> Result<Envelope<E>, Unread> {
     let computed = Hash::of_bytes(bytes);
     if computed != *name {
         return Err(Unread::Tampered(computed));
     }
     let text = std::str::from_utf8(bytes).map_err(|_| Unread::NotText)?;
-    parse_envelope(text).map_err(Unread::Unparsed)
+    parse_envelope(schema, text).map_err(Unread::Unparsed)
 }
 
 impl<E> Dag<E> {
@@ -217,16 +221,17 @@ impl<E> Dag<E> {
 }
 
 impl<E: Schema> Dag<E> {
-    /// Each print decoded under its name, a print that is not an object kept
-    /// with why.
+    /// Each print decoded under its name at the schema `schema`, a print
+    /// that is not an object kept with why.
     pub fn from_prints(
+        schema: &E::Vocabulary,
         prints: impl IntoIterator<Item = (Hash, Result<Vec<u8>, ProdromeError>)>,
     ) -> Dag<E> {
         let mut dag = Dag::from_iter([]);
         for (name, bytes) in prints {
             match bytes
                 .map_err(Unread::Io)
-                .and_then(|bytes| decode(&name, &bytes))
+                .and_then(|bytes| decode(schema, &name, &bytes))
             {
                 Ok(object) => {
                     dag.objects.insert(name, object);

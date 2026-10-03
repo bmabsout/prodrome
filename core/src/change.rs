@@ -32,11 +32,12 @@ impl<E: Schema> Change<E> {
         )
     }
 
-    pub fn from_call(call: &Call) -> Result<Change<E>, ProdromeError> {
+    /// A `Change` call, its event parsed at the schema `schema`.
+    pub fn from_call(schema: &E::Vocabulary, call: &Call) -> Result<Change<E>, ProdromeError> {
         mk_change(
             Hash::new(string_field(call, "genesis")?)?,
             hashes(call, "deps")?,
-            E::from_value(required(call, "event")?)?,
+            E::from_value(schema, required(call, "event")?)?,
         )
     }
 }

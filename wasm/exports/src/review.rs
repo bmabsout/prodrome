@@ -211,7 +211,8 @@ fn a_page_seals_into_its_replica() {
         assert_eq!(Some(text.as_bytes().to_vec()), store.print(&name));
         sealed.push((name, text.to_owned()));
     }
-    let Ok(Envelope::Change(merged)) = prodrome::event::parse_envelope::<Review>(&sealed[1].1)
+    let Ok(Envelope::Change(merged)) =
+        prodrome::event::parse_envelope::<Review>(&Default::default(), &sealed[1].1)
     else {
         panic!("a change: {}", sealed[1].1);
     };

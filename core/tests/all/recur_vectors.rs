@@ -25,7 +25,8 @@ fn every_recurrence_reads_its_samples_against_the_tendings() {
     let events: Vec<_> = each(&data, "events")
         .iter()
         .map(|print| {
-            let event = parse_event::<TodoEvent<Todo>>(text(print)).expect("a stored event");
+            let event = parse_event::<TodoEvent<Todo>>(&Default::default(), text(print))
+                .expect("a stored event");
             assert_eq!(canonical(&event), text(print), "print ∘ parse");
             event
         })
