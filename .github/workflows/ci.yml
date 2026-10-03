@@ -45,6 +45,10 @@ jobs:
       # No Cachix here: the dev shell is nixpkgs' toolchain, and
       # cache.nixos.org holds it.
       - uses: DeterminateSystems/nix-installer-action@v23
+      # The toolchain downloads while target/ is restored; the first
+      # `nix develop` below waits for whatever it has not finished.
+      - name: Toolchain, in the background
+        run: nohup nix develop --command true > "$RUNNER_TEMP/toolchain.log" 2>&1 &
       # Main's last target/ for this toolchain: keyed by the commit, found by
       # the toolchain's prefix, so a pull request reads its base's (caches
       # are scoped to a branch and its base) and main reads its previous run.
@@ -58,10 +62,11 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ github.sha }}
           restore-keys: cargo-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
       - run: .github/scripts/target-sources.sh restore
-      - name: Toolchain
-        run: nix develop --command cargo --version
-      - run: nix develop --command cargo fmt --all --check
-      - run: nix develop --command cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: fmt and clippy
+        run: |
+          nix develop --command cargo --version
+          nix develop --command cargo fmt --all --check
+          nix develop --command cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
