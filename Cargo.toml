@@ -20,6 +20,16 @@ repository = "https://github.com/bmabsout/prodrome"
 # oldest one that could compile the crate.
 rust-version = "1.85"
 
+# THE CURVE, OPTIMISED EVEN IN A DEBUG BUILD. Every signed history the
+# tests generate is signed and verified many times over (law 41), and
+# Ed25519's field arithmetic unoptimised is some thirty times slower; the
+# rest of the workspace keeps the dev profile's settings.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+
 # The browser's build, and nothing else's.
 #
 # A profile of its own rather than settings on `[profile.release]`: the wasm is

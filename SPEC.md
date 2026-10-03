@@ -242,8 +242,10 @@ since this grammar has tuples and no mapping.
   deps rest on, so it cannot be dated behind what it was written OVER. It
   also reports an object naming a genesis the store does not hold, an edge
   between geneses, a dep another dep of the same change rests on, a dep that
-  is not a write to its change's entity, and an object a snapshot attests
-  that the store lacks. There is no unreachable object and no stale
+  is not a write to its change's entity, an object a snapshot attests
+  that the store lacks, a `Signed` that does not verify, and an object
+  whose actor has a key in its prodrome and which no key of that actor's
+  proves (§5's proof, every key object counted). There is no unreachable object and no stale
   head to report: every object is a tip or beneath one, and no tip rests on
   another.
 - **`fsck`** is `verify` after QUARANTINE: every file of `objects/` whose
@@ -413,6 +415,29 @@ there; the claimed reading's are all of them — so a claim never moves a
 confirmed price (law 11), and one more urgent than the confirmed answer is
 SHOWN (§6.7). Twins cannot differ in standing: standing is a function of the
 event, and twins carry one.
+
+**Proof: who wrote an object, read from the history.** An object's `actor`
+is a field its writer chose; the history can prove it. A `Signed` (§3)
+PROVES the object it signs when its signature verifies, its key is
+registered to that object's actor in that object's prodrome by a
+`KeyAdded` that counts, and every `KeyRevoked` of that key for that actor
+that counts has it among its ancestors. Which key objects count is the
+reader's: EVERY one for `verify` (the structural reading, as deps are
+read), and under a policy that requires signatures, those a signature by
+one of its ROOT keys that verifies covers. The proof of a history is the
+set of objects it proves; it is a function of the object set, never of
+the order the objects arrived in (law 41).
+
+So a revocation keeps exactly the signatures its writer stood behind, those
+beneath its deps, and takes away every other signature by its key: one made
+after it, beside it, or before it and unseen by its writer. Nothing but the
+objects says which came first, and a revocation that named nothing takes
+every signature away. A key revoked stays revoked, since adding it again
+writes the same `KeyAdded`. A signature need not come after its key's
+registration: a device signs offline and is registered when next seen. A
+key registers or revokes no key; only a root does, because a key that could
+would make what a revocation means depend on which of two revocations came
+first.
 
 **Both readings stay in the database** (§6.7): the CONFIRMED one, under the
 host's policy, and the CLAIMED one, under the policy where everything binds. A
@@ -1316,6 +1341,22 @@ code and on generated declarations.
     `declared.rs::a_lawful_schema_is_admitted_in_its_canonical_print`,
     `declared.rs::a_broken_schema_is_refused_under_the_law_it_breaks`,
     `nest_histories.rs::a_nest_of_declared_proposals_flattens_and_reads_as_its_parts`.
+
+Law 41 is who wrote an object (§3's signatures and keys, §5's proof),
+over generated histories of writes, keys added and revoked by a root or
+by nobody, and honest, unregistered and forged signatures of any object.
+
+41. **A proof is a reading of the history.** The objects a history proves,
+    with keys read structurally or under roots, are a function of its
+    object set: a replica that received them one at a time in any order,
+    or two halves joined by sync, proves what the whole proves. A
+    signature proves only for its key's actor, only where it verifies,
+    and only beneath every revocation of its key that counts.
+    `signatures.rs::a_proof_is_a_function_of_the_object_set`,
+    `sign.rs::a_registered_key_proves_what_it_signs_for_its_actor_only`,
+    `sign.rs::a_forged_signature_proves_nothing`,
+    `sign.rs::a_revocation_keeps_exactly_what_it_rests_on`,
+    `sign.rs::under_roots_a_key_counts_where_a_root_signed_it`.
 
 ## 10. Non-goals
 

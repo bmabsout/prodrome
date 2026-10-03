@@ -14,6 +14,7 @@ use crate::literal::{Datetime, ProdromeError};
 use crate::policy::Policy;
 use crate::registers::{Genesis, Node};
 use crate::schema::Schema;
+use crate::sign::{Proof, Registrar};
 
 /// Named objects of the schema `E`, and the named prints that are not objects.
 #[derive(Debug, Clone, PartialEq)]
@@ -360,6 +361,7 @@ impl<E: Schema> Dag<E> {
             why: self.unread.get(&at).cloned(),
             at,
         }));
+        findings.extend(self.signature_findings());
         for (name, object) in &self.objects {
             findings.extend(self.genesis_findings(name, object));
             match object {
@@ -374,6 +376,30 @@ impl<E: Schema> Dag<E> {
                         }),
                 ),
                 _ => {}
+            }
+        }
+        findings
+    }
+
+    /// §3 and §5: a signature that does not verify, and an object whose
+    /// actor has a key and which no key of its actor's signed, keys read as
+    /// they are written ([`Registrar::Anyone`]).
+    fn signature_findings(&self) -> Vec<Finding> {
+        let proof = Proof::of(self, &Registrar::Anyone);
+        let mut findings = Vec::new();
+        for (name, object) in &self.objects {
+            if matches!(object, Envelope::Signed(signed) if !signed.verifies()) {
+                findings.push(Finding::Forged {
+                    signed: name.clone(),
+                });
+            }
+            if let Some(event) = object.event() {
+                if proof.keyed(&self.prodrome(name, object), event.actor()) && !proof.proves(name) {
+                    findings.push(Finding::Unsigned {
+                        object: name.clone(),
+                        actor: event.actor().clone(),
+                    });
+                }
             }
         }
         findings

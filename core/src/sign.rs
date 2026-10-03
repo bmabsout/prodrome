@@ -12,11 +12,18 @@
 //! is a READING of the history, like every register, and [`Proof`] is that
 //! reading: a function of the object set, whatever order it arrived in.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 
-use crate::event::{field, hashes, hashes_value, lower_hex, sorted_distinct, Actor, Hash};
+use crate::dag::Dag;
+use crate::event::{
+    field, hashes, hashes_value, lower_hex, sorted_distinct, Actor, Envelope, Hash,
+};
 use crate::literal::{Call, ProdromeError, Value};
 use crate::payload::string_field;
+use crate::registers::Genesis;
+use crate::schema::Schema;
 
 crate::newtype_str! {
     /// An Ed25519 public key: its 32 bytes as 64 lowercase hex.
@@ -288,6 +295,127 @@ impl std::fmt::Debug for Secret {
     }
 }
 
+/// Whose signature registers a key: which `KeyAdded` and `KeyRevoked`
+/// objects a [`Proof`] reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Registrar {
+    /// Every key object counts: the STRUCTURAL reading, as a change's deps
+    /// are read under the policy where everything binds. `verify` reads
+    /// keys so, because a finding records what the objects say and never a
+    /// reader's trust.
+    Anyone,
+    /// A key object counts where a signature by one of these keys that
+    /// verifies covers it. The roots are a host's, as its policy is: the
+    /// database does not decide whom to believe about keys either (§5).
+    Roots(BTreeSet<PublicKey>),
+}
+
+/// THE READING OF A HISTORY'S SIGNATURES AND KEYS: which objects carrying
+/// an event a key registered to that event's actor has signed, and which
+/// actors have a registered key, each in its prodrome.
+///
+/// A signature PROVES the object it signs when it verifies, its key is
+/// registered to the object's actor in the object's prodrome by a
+/// `KeyAdded` that counts, and every `KeyRevoked` of that key for that
+/// actor that counts rests on it. So a revocation keeps exactly the
+/// signatures its writer stood behind, named in its deps (or beneath
+/// them), and takes away every other signature by the key, whenever it was
+/// made: one made after the revocation, beside it, or before it and never
+/// seen by its writer is no proof, since no order but the objects' own says
+/// which came first. A revocation with no deps takes every signature away.
+/// A key revoked stays revoked: a later `KeyAdded` of it is the object it
+/// always was, one object, and adds nothing.
+///
+/// A FUNCTION OF THE OBJECT SET (law 41): every clause above is a question
+/// about which objects exist and what each rests on, none about the order
+/// they arrived in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Proof {
+    proven: BTreeSet<Hash>,
+    keyed: BTreeSet<(Genesis, Actor)>,
+}
+
+impl Proof {
+    /// The proof `dag`'s objects give, its keys read as `registrar` says.
+    #[must_use]
+    pub fn of<E: Schema>(dag: &Dag<E>, registrar: &Registrar) -> Proof {
+        let mut signatures: BTreeMap<&Hash, Vec<(&Hash, &PublicKey)>> = BTreeMap::new();
+        for (name, object) in dag.objects() {
+            if let Envelope::Signed(signed) = object {
+                if signed.verifies() {
+                    signatures
+                        .entry(&signed.object)
+                        .or_default()
+                        .push((name, &signed.key));
+                }
+            }
+        }
+        let counts = |name: &Hash| match registrar {
+            Registrar::Anyone => true,
+            Registrar::Roots(roots) => signatures
+                .get(name)
+                .is_some_and(|by| by.iter().any(|(_, key)| roots.contains(*key))),
+        };
+        let mut keys: BTreeSet<(Genesis, &Actor, &PublicKey)> = BTreeSet::new();
+        let mut revoked: BTreeMap<(Genesis, &Actor, &PublicKey), Vec<BTreeSet<Hash>>> =
+            BTreeMap::new();
+        for (name, object) in dag.objects().iter().filter(|(name, _)| counts(name)) {
+            match object {
+                Envelope::KeyAdded(added) => {
+                    keys.insert((dag.prodrome(name, object), &added.actor, &added.key));
+                }
+                Envelope::KeyRevoked(revocation) => revoked
+                    .entry((
+                        dag.prodrome(name, object),
+                        &revocation.actor,
+                        &revocation.key,
+                    ))
+                    .or_default()
+                    .push(dag.closure(revocation.deps.iter().cloned())),
+                _ => {}
+            }
+        }
+        let proven = dag
+            .objects()
+            .iter()
+            .filter(|(name, object)| {
+                let Some(event) = object.event() else {
+                    return false;
+                };
+                let genesis = dag.prodrome(name, object);
+                signatures.get(name).is_some_and(|by| {
+                    by.iter().any(|(signature, key)| {
+                        let whose = (genesis.clone(), event.actor(), *key);
+                        keys.contains(&whose)
+                            && revoked.get(&whose).is_none_or(|kept| {
+                                kept.iter().all(|past| past.contains(*signature))
+                            })
+                    })
+                })
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        let keyed = keys
+            .into_iter()
+            .map(|(genesis, actor, _)| (genesis, actor.clone()))
+            .collect();
+        Proof { proven, keyed }
+    }
+
+    /// Is the object `object` signed by a key that speaks for its actor?
+    #[must_use]
+    pub fn proves(&self, object: &Hash) -> bool {
+        self.proven.contains(object)
+    }
+
+    /// Has `actor` a registered key in the prodrome `genesis`, revoked or
+    /// not? Then its objects are meant to be signed.
+    #[must_use]
+    pub fn keyed(&self, genesis: &Genesis, actor: &Actor) -> bool {
+        self.keyed.contains(&(genesis.clone(), actor.clone()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +513,176 @@ mod tests {
         let key = PublicKey::new(PUBLIC).expect("a key");
         let actor = Actor::new("bassel").expect("an actor");
         assert!(mk_key_revoked(name("g"), vec![name("a"), name("a")], actor, key).is_err());
+    }
+
+    /// A history built by hand: one prodrome, its objects by name.
+    struct History {
+        genesis: Hash,
+        objects: Vec<(Hash, Object)>,
+    }
+
+    impl History {
+        fn new() -> History {
+            let genesis = Envelope::Genesis(
+                crate::genesis::mk_genesis("signed", &"ab".repeat(16)).expect("a genesis"),
+            );
+            let name = seal_hash(&genesis);
+            History {
+                genesis: name.clone(),
+                objects: vec![(name, genesis)],
+            }
+        }
+
+        fn put(&mut self, object: Object) -> Hash {
+            let name = seal_hash(&object);
+            self.objects.push((name.clone(), object));
+            name
+        }
+
+        fn write(&mut self, actor: &str, todo: &str) -> Hash {
+            let at = crate::literal::Datetime::new(2026, 10, 3, 9, 0, 0, 0).expect("an instant");
+            let event = crate::event::mk_completed(todo, at, actor, "").expect("an event");
+            let change =
+                crate::change::mk_change(self.genesis.clone(), vec![], event).expect("a change");
+            self.put(Envelope::Change(change))
+        }
+
+        fn add(&mut self, actor: &str, key: &Secret) -> Hash {
+            self.put(Envelope::KeyAdded(KeyAdded {
+                genesis: self.genesis.clone(),
+                actor: Actor::new(actor).expect("an actor"),
+                key: key.public(),
+            }))
+        }
+
+        fn revoke(&mut self, actor: &str, key: &Secret, deps: Vec<Hash>) -> Hash {
+            let revoked = mk_key_revoked(
+                self.genesis.clone(),
+                deps,
+                Actor::new(actor).expect("an actor"),
+                key.public(),
+            )
+            .expect("a revocation");
+            self.put(Envelope::KeyRevoked(revoked))
+        }
+
+        fn sign(&mut self, key: &Secret, object: &Hash) -> Hash {
+            self.put(Envelope::Signed(key.sign(object)))
+        }
+
+        fn proof(&self, registrar: &Registrar) -> Proof {
+            Proof::of(&self.dag(), registrar)
+        }
+
+        fn dag(&self) -> Dag<TodoEvent<Todo>> {
+            self.objects.iter().cloned().collect()
+        }
+    }
+
+    fn secret(byte: char) -> Secret {
+        Secret::new(&byte.to_string().repeat(64)).expect("a seed")
+    }
+
+    #[test]
+    fn a_registered_key_proves_what_it_signs_for_its_actor_only() {
+        let (phone, other) = (secret('1'), secret('2'));
+        let mut history = History::new();
+        let mine = history.write("bassel", "a");
+        let theirs = history.write("triage", "b");
+        let unsigned = history.write("bassel", "c");
+        history.add("bassel", &phone);
+        history.sign(&phone, &mine);
+        history.sign(&phone, &theirs);
+        history.sign(&other, &unsigned);
+        let proof = history.proof(&Registrar::Anyone);
+        assert!(proof.proves(&mine));
+        assert!(
+            !proof.proves(&theirs),
+            "the key is bassel's, the object triage's"
+        );
+        assert!(
+            !proof.proves(&unsigned),
+            "a key registered to nobody proves nothing"
+        );
+        let genesis = Some(history.genesis.clone());
+        assert!(proof.keyed(&genesis, &Actor::new("bassel").expect("an actor")));
+        assert!(!proof.keyed(&genesis, &Actor::new("triage").expect("an actor")));
+    }
+
+    #[test]
+    fn a_forged_signature_proves_nothing() {
+        let phone = secret('1');
+        let mut history = History::new();
+        let mine = history.write("bassel", "a");
+        let other = history.write("bassel", "b");
+        history.add("bassel", &phone);
+        history.put(Envelope::Signed(Signed {
+            object: mine.clone(),
+            ..phone.sign(&other)
+        }));
+        assert!(!history.proof(&Registrar::Anyone).proves(&mine));
+        let findings = history.dag().verify(&crate::policy::Everything);
+        assert!(findings
+            .iter()
+            .any(|finding| matches!(finding, crate::dag::Finding::Forged { .. })));
+        assert!(findings.iter().any(|finding| matches!(
+            finding,
+            crate::dag::Finding::Unsigned { object, .. } if *object == mine
+        )));
+    }
+
+    #[test]
+    fn a_revocation_keeps_exactly_what_it_rests_on() {
+        let phone = secret('1');
+        let mut history = History::new();
+        history.add("bassel", &phone);
+        let (kept, dropped) = (history.write("bassel", "a"), history.write("bassel", "b"));
+        let kept_signature = history.sign(&phone, &kept);
+        history.sign(&phone, &dropped);
+        history.revoke("bassel", &phone, vec![kept_signature]);
+        let later = history.write("bassel", "c");
+        history.sign(&phone, &later);
+        let proof = history.proof(&Registrar::Anyone);
+        assert!(proof.proves(&kept));
+        assert!(!proof.proves(&dropped), "signed, and not stood behind");
+        assert!(
+            !proof.proves(&later),
+            "signed beside or after the revocation"
+        );
+        history.revoke("bassel", &phone, vec![]);
+        assert!(
+            !history.proof(&Registrar::Anyone).proves(&kept),
+            "every revocation must keep it"
+        );
+    }
+
+    #[test]
+    fn under_roots_a_key_counts_where_a_root_signed_it() {
+        let (root, phone) = (secret('9'), secret('1'));
+        let mut history = History::new();
+        let mine = history.write("bassel", "a");
+        history.sign(&phone, &mine);
+        let added = history.add("bassel", &phone);
+        let roots = Registrar::Roots([root.public()].into());
+        assert!(history.proof(&Registrar::Anyone).proves(&mine));
+        assert!(
+            !history.proof(&roots).proves(&mine),
+            "no root registered it"
+        );
+        history.sign(&phone, &added);
+        assert!(
+            !history.proof(&roots).proves(&mine),
+            "a key cannot register itself"
+        );
+        history.sign(&root, &added);
+        assert!(history.proof(&roots).proves(&mine));
+        let revoked = history.revoke("bassel", &phone, vec![]);
+        assert!(
+            history.proof(&roots).proves(&mine),
+            "a revocation no root signed is not one"
+        );
+        history.sign(&root, &revoked);
+        assert!(!history.proof(&roots).proves(&mine));
     }
 
     #[test]
