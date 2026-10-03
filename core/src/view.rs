@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::event::{Hash, TodoEvent};
 use crate::fold::{self, Product};
-use crate::fpl::{self, Candidates, Env, LinkError, Outcome};
+use crate::fpl::{self, Candidates, LinkError, Outcome};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
@@ -242,25 +242,16 @@ pub fn entries<E: Row + History + Bind>(
     let now = fpl::instant_of(t);
     let mut out = Vec::new();
     for (genesis, prodrome) in state.prodromes() {
-        let confirmed: Vec<(&E::Key, E::Registers<'_>)> = prodrome
-            .iter()
-            .map(|(key, stream)| (key, fold::read(stream, Some(now), policy)))
-            .collect();
-        let mut env = Env::new();
-        for (key, registers) in &confirmed {
-            E::bind(key, registers, &mut env);
-        }
-        let functions = fold::flatten(prodrome, now, policy)?;
-        let linkable = fold::link_specs(&functions, prodrome.keys());
-        for (key, registers) in confirmed {
-            let stream = &prodrome[key];
+        let fpl::Member { specs, env } = fold::member(prodrome, now, policy)?;
+        for (key, stream) in prodrome {
+            let registers = fold::read(stream, Some(now), policy);
             let reading = E::reading(&registers);
             // The readings differ only where the policy refuses a write.
             let claim = (!stream.iter().all(|s| policy.standing(&*s.event).binds()))
                 .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
                 .filter(|claimed| E::disputes(&reading, claimed));
-            let spec = functions.get(key).cloned().unwrap_or_else(fpl::mk_absent);
-            let linked = fpl::link(&spec, &linkable);
+            let spec = specs[key.as_ref()].clone();
+            let linked = fpl::link(&spec, &specs);
             out.push(Entry {
                 genesis: genesis.clone(),
                 key: key.clone(),

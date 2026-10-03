@@ -13,6 +13,10 @@
 //! renames no object and rewrites no dep, causality crosses its levels only
 //! where a pointer names what it saw ([`Nest::past`]), and the memoised
 //! fold folds it as any other tree.
+//!
+//! A SET OF PRODROMES is such a nest, keyed by genesis ([`Set`]): its join
+//! puts each member's objects under its genesis, and no member reaches
+//! another's, so a set of prodromes is a prodrome.
 
 #![warn(clippy::pedantic)]
 
@@ -23,5 +27,5 @@ mod path;
 
 pub use heads::{pointer, Heads, Nests};
 pub use history::History;
-pub use level::{Holding, Leaf, Level, Nest};
+pub use level::{Holding, Leaf, Level, Nest, Set};
 pub use path::{Path, Segment};

@@ -1328,6 +1328,27 @@ code and on generated declarations.
     `declared.rs::a_broken_schema_is_refused_under_the_law_it_breaks`,
     `nest_histories.rs::a_nest_of_declared_proposals_flattens_and_reads_as_its_parts`.
 
+Law 41 is a set of prodromes (§3, §7.2), over generated sets of todo
+prodromes, each a replica of its own genesis.
+
+41. **A set of prodromes is a prodrome.** A set is a nest keyed by
+    genesis: its join holds every object once and reads at each member's
+    genesis as that member reads alone, whatever the other members hold
+    (disjointness); the set a synced replica holds is the union of the sets
+    synced into it, and a set of sets flattens associatively, in its
+    history and its content name. Its reading is the product of its
+    members': a qualified reference reads, through the set, what it reads
+    through its member alone and what that member's view prices the entity
+    at, by genesis or by a declared name, and under any environment of the
+    term it lands in; one to a store or an entity the set lacks reads `∅`;
+    and a term with no qualified reference links alike under any set.
+    `sets.rs::each_member_reads_in_the_set_as_alone`,
+    `sets.rs::a_set_of_sets_is_associative`,
+    `sets.rs::a_set_reads_as_the_product_of_its_members`,
+    `sets.rs::a_qualified_ref_reads_what_its_member_reads`,
+    `sets.rs::a_qualified_ref_to_what_the_set_lacks_is_absent`,
+    `sets.rs::an_unqualified_term_links_alike_under_any_set`.
+
 ## 10. Non-goals
 
 A clock in the merge; a second evaluator; a rendering as a source of truth;

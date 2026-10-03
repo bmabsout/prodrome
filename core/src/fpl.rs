@@ -952,6 +952,10 @@ pub fn mk_ref(todo: String) -> Result<Term, FplError> {
 /// ([`Stores::named`]); both obey [`crate::event::TodoId`]'s rule, which a
 /// genesis's 64 lowercase hex does. `entity` is a key as a nest's path
 /// holds it ([`crate::nest::Segment`]): not empty, no `/`.
+///
+/// # Errors
+///
+/// A store or an entity that breaks its rule.
 pub fn mk_ref_in(store: String, entity: String) -> Result<Term, FplError> {
     crate::event::TodoId::new(store.as_str()).map_err(|e| FplError(format!("RefIn.store: {e}")))?;
     crate::nest::Segment::new(entity.as_str())
@@ -1074,6 +1078,7 @@ pub struct Stores {
 
 impl Stores {
     /// The empty set: every qualified reference reads `∅`.
+    #[must_use]
     pub fn new() -> Stores {
         Stores::default()
     }
@@ -1127,6 +1132,11 @@ pub fn link(term: &Term, specs: &BTreeMap<String, Term>) -> Result<Closed, LinkE
 /// wrong history. A store the set does not hold, or an entity its member
 /// does not, reads `∅`: the documented absence, no claim on attention.
 /// Cycles are refused across members as within one.
+///
+/// # Errors
+///
+/// An unqualified `Ref` its prodrome does not hold, or references that
+/// loop.
 pub fn link_in(
     term: &Term,
     specs: &BTreeMap<String, Term>,

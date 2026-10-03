@@ -273,6 +273,18 @@ impl<E> Dag<E> {
         }
     }
 
+    /// The genesis of the prodrome the object `name` is in (§3): a
+    /// `Genesis`'s own name, the one a change or a snapshot names, and for
+    /// the legacy prodrome its least root. `None` where the DAG lacks it.
+    #[must_use]
+    pub fn genesis_of(&self, name: &Hash) -> Option<Hash> {
+        let object = self.objects.get(name)?;
+        match self.prodrome(name, object) {
+            Some(genesis) => Some(genesis),
+            None => self.objects.keys().find(|name| self.is_root(name)).cloned(),
+        }
+    }
+
     /// The tips of one prodrome's objects.
     pub fn tips_in(&self, prodrome: &Genesis) -> BTreeSet<Hash> {
         self.tips()
