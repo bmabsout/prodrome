@@ -152,6 +152,14 @@ field.
   environment, so it reads what its entity reads at home; a store or an
   entity the set lacks reads `∅`. Its JSON kind is `refIn`. Laws in
   `core/tests/all/sets.rs`.
+- **A set of prodromes (design §6.3.1, SPEC law 41):** `nest::Set`, a
+  replica's prodromes as a nest keyed by genesis, each read by a member
+  level, whose join puts every object at `genesis/key`; `Dag::genesis_of`,
+  the genesis of an object's prodrome. `fold::member`, one prodrome as a
+  term elsewhere reads it, and `fold::stores`, a replica's prodromes as an
+  `fpl::Stores`; `view::entries` prices through `fold::member`. Laws in
+  `core/tests/all/sets.rs`: disjointness, a set of sets is associative, and
+  the set's reading is the product of its members'.
 
 - **A schema as data (design §5, §6.0, stage 10, SPEC law 40):** `declared`.
   `declared::Form`, a schema in the schema language, the objects' own §2

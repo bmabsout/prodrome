@@ -1,17 +1,33 @@
 //! SPEC law 41, the design's law 12: a set of prodromes is a prodrome.
 //!
-//! Here, the qualified reference (§7.2): `RefIn(store, entity)` reads the
+//! The qualified reference (§7.2): `RefIn(store, entity)` reads the
 //! entity's function in the member of the set a host passes that `store`
 //! names, as that member reads it; an unqualified `Ref` keeps meaning what
 //! it meant; a store or an entity the set does not hold reads `∅`.
+//!
+//! The set (design §6.3.1), over generated sets of todo prodromes, each a
+//! replica of its own genesis: a set is a nest keyed by genesis, so its join
+//! reads each member at its genesis as the member reads alone (the
+//! DISJOINTNESS law), sets join by union and a set of sets is associative;
+//! and its reading is the product of its members' readings, so a qualified
+//! reference into one member reads as that member's own view prices it.
 
 use crate::common;
 
 use std::collections::BTreeMap;
 
 use common::terms::{a_spec_onto, acyclic_specs, an_env, moment, ok, TODOS};
-use prodrome::fpl::{self, link, link_in, Closed, Env, LinkError, Member, Stores};
+use common::{a_log, far, Event};
+use prodrome::fold;
+use prodrome::fpl::{self, instant_of, link, link_in, Closed, Env, LinkError, Member, Stores};
+use prodrome::nest::{History, Leaf, Level, Nest, Path, Segment, Set};
+use prodrome::policy::Everything;
+use prodrome::store::{sync, MemoryStore, Replica};
+use prodrome::todo::TodoVocabulary;
+use prodrome::view;
 use proptest::prelude::*;
+
+use crate::nest_histories::{dag, sub, union, Sub};
 
 /// Two prodromes' names, as their geneses would be.
 const HERE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -136,6 +152,216 @@ proptest! {
                 }),
                 "{store}: {at_home:?} vs {away:?}"
             );
+        }
+    }
+}
+
+// --- The set: a nest keyed by genesis -----------------------------------------
+
+/// Member `n`'s label, so its genesis is its own.
+fn label(n: usize) -> String {
+    format!("member-{n}")
+}
+
+/// A replica of member `n`'s prodrome holding `log`, written in order: two
+/// replicas of one member, one holding a prefix of the other's log, hold a
+/// down-set of the other's objects.
+fn member(n: usize, log: &[Event]) -> Sub<Event> {
+    let member = sub::<Event>(TodoVocabulary::default(), &label(n));
+    for event in log {
+        member
+            .store
+            .append(event.clone())
+            .expect("a todo event appends");
+    }
+    member
+}
+
+fn genesis(member: &Sub<Event>) -> String {
+    let dag = dag(&member.store);
+    let geneses = dag.geneses();
+    assert_eq!(geneses.len(), 1, "a member is one prodrome");
+    geneses.into_iter().next().expect("one").into_string()
+}
+
+/// A replica holding every member given, synced.
+fn set_replica(members: &[Sub<Event>]) -> MemoryStore<Event> {
+    if members.is_empty() {
+        return MemoryStore::default();
+    }
+    union(&members.iter().collect::<Vec<_>>())
+}
+
+/// The set a replica holds, as a nest.
+fn set_of(replica: &impl Replica<Event>) -> Nest {
+    let dag = dag(replica);
+    let leaf = Leaf::new(dag.clone());
+    Set::new(dag, &leaf)
+        .nest(&replica.tips().expect("derives"))
+        .expect("a set reads")
+}
+
+/// A member alone, as its own nest.
+fn alone(member: &Sub<Event>) -> Nest {
+    Leaf::new(dag(&member.store))
+        .nest(&member.store.tips().expect("derives"))
+        .expect("a member reads")
+}
+
+fn at_genesis(genesis: &str) -> Path {
+    Segment::new(genesis).expect("a segment").into()
+}
+
+/// One to three members' logs, and three sets of them, each holding of
+/// every member nothing or a prefix of its log.
+fn sets() -> impl Strategy<Value = (Vec<Vec<Event>>, [Vec<Option<usize>>; 3])> {
+    prop::collection::vec(a_log(), 1..=3).prop_flat_map(|logs| {
+        let held = |logs: &Vec<Vec<Event>>| {
+            logs.iter()
+                .map(|log| prop::option::of(0..=log.len()))
+                .collect::<Vec<_>>()
+        };
+        (Just(logs.clone()), [held(&logs), held(&logs), held(&logs)])
+    })
+}
+
+/// A set holding of each member the prefix `held` says.
+fn holding(logs: &[Vec<Event>], held: &[Option<usize>]) -> MemoryStore<Event> {
+    let members: Vec<Sub<Event>> = logs
+        .iter()
+        .zip(held)
+        .enumerate()
+        .filter_map(|(n, (log, held))| held.map(|k| member(n, &log[..k])))
+        .collect();
+    set_replica(&members)
+}
+
+/// The union of two replicas, neither touched.
+fn joined(a: &MemoryStore<Event>, b: &MemoryStore<Event>) -> MemoryStore<Event> {
+    let out = MemoryStore::default();
+    sync(a, &out).expect("syncs");
+    sync(b, &out).expect("syncs");
+    out
+}
+
+/// The reading of a linked term at instants across the generator's window,
+/// and last at [`far`], when every event is in force.
+fn sampled(linked: &Closed, env: &Env) -> Vec<Option<f64>> {
+    (0..=8)
+        .map(|n| common::moment(n * common::WINDOW / 8))
+        .chain([far()])
+        .map(|t| fpl::fulfillment(linked, instant_of(t), env))
+        .collect()
+}
+
+fn agree(a: &[Option<f64>], b: &[Option<f64>]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| match (a, b) {
+            (Some(a), Some(b)) => (a - b).abs() <= 1e-9,
+            (a, b) => a == b,
+        })
+}
+
+/// `RefIn(store, todo)` linked through `stores`, read across the window
+/// from a term with no environment of its own.
+fn through(stores: &Stores, store: &str, todo: &str) -> Vec<Option<f64>> {
+    let reference = ok(fpl::mk_ref_in(store.to_owned(), todo.to_owned()));
+    let linked = link_in(&reference, &BTreeMap::new(), stores).expect("links");
+    sampled(&linked, &Env::new())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// DISJOINTNESS. A set is a nest keyed by genesis: its join holds every
+    /// object once, and reads at each member's genesis exactly as that
+    /// member reads alone, whatever the other members hold.
+    #[test]
+    fn each_member_reads_in_the_set_as_alone(logs in prop::collection::vec(a_log(), 1..=3)) {
+        let members: Vec<Sub<Event>> =
+            logs.iter().enumerate().map(|(n, log)| member(n, log)).collect();
+        let replica = set_replica(&members);
+        let set = set_of(&replica);
+        let flat = set.flatten();
+        prop_assert_eq!(flat.len(), dag(&replica).objects().len());
+        prop_assert!(set.own().is_empty(), "a set has no objects of its own");
+        for member in &members {
+            let path = at_genesis(&genesis(member));
+            prop_assert_eq!(&set.held()[&path], &alone(member));
+            prop_assert_eq!(flat.at(&path), alone(member).flatten());
+        }
+    }
+
+    /// Sets join by union, each member by its own genesis: the set a synced
+    /// replica holds is the union of the sets synced into it, so a set of
+    /// sets flattens as a nest keyed at the root (a genesis is a global
+    /// name, so a member needs no prefix), and associatively, in its
+    /// history and in its content name.
+    #[test]
+    fn a_set_of_sets_is_associative((logs, [a, b, c]) in sets()) {
+        let (a, b, c) = (holding(&logs, &a), holding(&logs, &b), holding(&logs, &c));
+        let flat = |replica: &MemoryStore<Event>| set_of(replica).flatten();
+        prop_assert_eq!(flat(&joined(&a, &b)), flat(&a).union(flat(&b)));
+        let left = joined(&joined(&a, &b), &c);
+        let right = joined(&a, &joined(&b, &c));
+        prop_assert_eq!(set_of(&left).name().clone(), set_of(&right).name().clone());
+        let root = Path::root;
+        let nested: History<History<History<_>>> = [
+            (root(), [(root(), flat(&a)), (root(), flat(&b))].into_iter().collect()),
+            (root(), [(root(), flat(&c))].into_iter().collect()),
+        ]
+        .into_iter()
+        .collect();
+        let outer_first = nested.clone().join().join();
+        let inner_first = nested.fmap(History::join).join();
+        prop_assert_eq!(&outer_first, &inner_first);
+        prop_assert_eq!(outer_first, flat(&left));
+    }
+
+    /// THE READING IS THE PRODUCT. A set's reading is each member's, read
+    /// from its own objects alone: a qualified reference into a member
+    /// reads, through the set, what it reads through that member alone, and
+    /// what that member's own view prices the entity at; by a declared name
+    /// as by the genesis. An entity the member lacks, or a member the set
+    /// lacks, reads `∅`.
+    #[test]
+    fn a_set_reads_as_the_product_of_its_members(logs in prop::collection::vec(a_log(), 1..=3)) {
+        let members: Vec<Sub<Event>> =
+            logs.iter().enumerate().map(|(n, log)| member(n, log)).collect();
+        let now = instant_of(far());
+        let replica = set_replica(&members);
+        let set = fold::stores(&dag(&replica), now, &Everything).expect("reads");
+        let first = genesis(&members[0]);
+        let named = set.clone().named("todos", first.clone());
+        for member in &members {
+            let genesis = genesis(member);
+            let own = fold::stores(&dag(&member.store), now, &Everything).expect("reads");
+            let entries = view::entries(
+                &dag(&member.store).nodes().expect("whole"),
+                far(),
+                &Everything,
+            )
+            .expect("a view");
+            for todo in common::TODOS {
+                let through_set = through(&set, &genesis, todo);
+                prop_assert!(agree(&through_set, &through(&own, &genesis, todo)));
+                if genesis == first {
+                    prop_assert!(agree(&through_set, &through(&named, "todos", todo)));
+                }
+                let entry = entries.iter().find(|entry| entry.key.as_str() == todo);
+                let priced = through_set[9];
+                match entry {
+                    Some(entry) => {
+                        let value = entry.price.value.clone().expect("the generator's specs link");
+                        prop_assert!(agree(&[priced], &[value]), "{todo}: {priced:?} vs {value:?}");
+                    }
+                    None => prop_assert!(through_set.iter().all(Option::is_none)),
+                }
+            }
+        }
+        let stranger = genesis(&member(9, &[]));
+        for todo in common::TODOS {
+            prop_assert!(through(&set, &stranger, todo).iter().all(Option::is_none));
         }
     }
 }
