@@ -77,15 +77,16 @@ fn nodes(term: &Term, out: &mut Vec<Term>) {
 }
 
 fn is_piecewise(t: &Term) -> bool {
-    matches!(t.out(), TermF::Piecewise { .. })
+    matches!(t.out(), TermF::Piecewise(_))
 }
 
 /// A schedule at this node is well formed: strictly increasing instants, no
 /// adjacent repeats, and nothing nested under it.
 fn schedule_is_normal(term: &Term) -> Result<(), String> {
-    let TermF::Piecewise { head, pieces } = term.out() else {
+    let TermF::Piecewise(schedule) = term.out() else {
         return Ok(());
     };
+    let (head, pieces) = (schedule.head(), schedule.knots());
     if pieces.is_empty() {
         return Err("unit: a Piecewise with no pieces should be its head".into());
     }
@@ -146,14 +147,14 @@ fn a_conjunction_of_schedules_lifts_to_the_root() {
     )
     .expect("ordered");
     let normal = normalize(&ok(fpl::mk_conj(vec![left, right], -4.0)));
-    let TermF::Piecewise { pieces, .. } = normal.out() else {
+    let TermF::Piecewise(schedule) = normal.out() else {
         panic!(
             "the schedule should be at the root, got {}",
             normal.out().kind()
         );
     };
     assert_eq!(
-        pieces.len(),
+        schedule.knots().len(),
         2,
         "one piece per instant in the merged partition"
     );
@@ -194,8 +195,9 @@ proptest! {
     /// Idempotent: re-splitting a normal form at its own instants changes nothing.
     #[test]
     fn mk_piecewise_is_idempotent(term in a_term()) {
-        if let TermF::Piecewise { head, pieces } = term.out() {
-            let again = mk_piecewise(head.clone(), pieces.clone()).expect("already ordered");
+        if let TermF::Piecewise(schedule) = term.out() {
+            let again = mk_piecewise(schedule.head().clone(), schedule.knots().to_vec())
+                .expect("already ordered");
             prop_assert_eq!(again, term.clone());
         }
     }

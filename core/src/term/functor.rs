@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 
 use crate::fpl::{Delta, Instant};
+use crate::schedule::Schedule;
 
 /// One layer of the term functor: every child position is an `A`.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,10 +69,8 @@ pub enum TermF<A> {
         anchor: Instant,
         term: A,
     },
-    Piecewise {
-        head: A,
-        pieces: Vec<(Instant, A)>,
-    },
+    /// A step function of terms: the term in force, read at `now`.
+    Piecewise(Schedule<A>),
     OffsetBy {
         delta: A,
         term: A,
@@ -179,13 +178,7 @@ impl<A> TermF<A> {
                 anchor: *anchor,
                 term: f(term)?,
             },
-            TermF::Piecewise { head, pieces } => TermF::Piecewise {
-                head: f(head)?,
-                pieces: pieces
-                    .iter()
-                    .map(|(at, piece)| Ok((*at, f(piece)?)))
-                    .collect::<Result<_, _>>()?,
-            },
+            TermF::Piecewise(schedule) => TermF::Piecewise(schedule.traverse(&mut f)?),
             TermF::OffsetBy { delta, term } => TermF::OffsetBy {
                 delta: f(delta)?,
                 term: f(term)?,
@@ -226,7 +219,7 @@ impl<A> TermF<A> {
             TermF::After { .. } => "after",
             TermF::Recur { .. } => "recur",
             TermF::Periodic { .. } => "periodic",
-            TermF::Piecewise { .. } => "piecewise",
+            TermF::Piecewise(_) => "piecewise",
             TermF::OffsetBy { .. } => "offsetBy",
             TermF::Ref { .. } => "ref",
             TermF::Absent => "absent",
