@@ -43,17 +43,6 @@ pub enum Law {
 }
 
 impl Law {
-    pub const ALL: [Law; 8] = [
-        Law::Grammar,
-        Law::Canonical,
-        Law::Unique,
-        Law::Key,
-        Law::Stamp,
-        Law::Typed,
-        Law::PartialOrder,
-        Law::Bottom,
-    ];
-
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {

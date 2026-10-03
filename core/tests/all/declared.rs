@@ -324,12 +324,18 @@ fn a_register(name: String, write: Write, ty: &Type, choice: u8, inflationary: b
         (Type::List(_), 1) => (Poset::Inclusion, inflationary),
         (Type::Enum(states), 1) => {
             // Covers that only climb in the alternatives' order are
-            // acyclic; from the first to each other, they have a bottom.
-            let covers = states
-                .iter()
-                .skip(1)
-                .map(|upper| (states[0].clone(), upper.clone()))
-                .collect();
+            // acyclic: `choice`'s bits pick which; an inflationary machine
+            // also climbs from the first to each other, its bottom.
+            let mut covers = Vec::new();
+            let mut bit = 1;
+            for i in 0..states.len() {
+                for j in i + 1..states.len() {
+                    if u32::from(choice) >> bit & 1 == 1 || (inflationary && i == 0) {
+                        covers.push((states[i].clone(), states[j].clone()));
+                    }
+                    bit += 1;
+                }
+            }
             (Poset::Machine(covers), inflationary)
         }
         _ => (Poset::Discrete, false),
@@ -598,6 +604,17 @@ proptest! {
         prop_assert_eq!(Form::parse(&text).expect("parses").print(), text.clone());
         let digest: String = Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
         prop_assert_eq!(admitted.name().as_str(), digest.as_str());
+        // Law 2 over every generated machine, exhaustively over its states.
+        for register in &form.registers {
+            if let Poset::Machine(_) = register.order {
+                let write = &register.writes[0];
+                let event = form.events.iter().find(|e| e.name == write.event).expect("an event");
+                let field = event.fields.iter().find(|f| f.name == write.field).expect("a field");
+                let Type::Enum(states) = &field.ty else { panic!("a machine reads an enum") };
+                let states: Vec<Datum> = states.iter().cloned().map(Datum::Alternative).collect();
+                partial_order(&admitted, &register.name, &states)?;
+            }
+        }
     }
 
     #[test]
