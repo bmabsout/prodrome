@@ -98,6 +98,7 @@
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
 //! - `genesis`, `change`, `snapshot` — §3: a prodrome, a change, an attestation
+//! - `sign`     — §3, §5: detached signatures, keys as objects, and their proof
 //! - `dag`      — §3: the DAG as a value: tips, closure, linearisation, verify
 //! - `store`    — §3: the files around a `Dag` (the lock, placement, quarantine),
 //!   and replicas: one in memory, an overlay, `sync` and a `Decision`
@@ -106,7 +107,8 @@
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
-//! - `policy`   — §5: `Standing`, the `Policy` trait, and the reference policy
+//! - `policy`   — §5: `Standing`, the `Policy` trait, the reference policy, and
+//!   `Proven`, the policy that requires signatures
 //! - `registers`— §6.6: the DAG's structure and each todo's stream, a monoid action
 //! - `schedule` — a step function of time, and its algebra: what a
 //!   `Piecewise`, a register's history and an observed value each are
@@ -141,6 +143,7 @@ pub mod reference;
 pub mod registers;
 pub mod schedule;
 pub mod schema;
+pub mod sign;
 pub mod snapshot;
 pub mod store;
 pub mod term;

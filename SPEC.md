@@ -78,7 +78,7 @@ since this grammar has tuples and no mapping.
 
 ## 3. Objects and the DAG
 
-- An **object** is one of five constructors.
+- An **object** is one of eight constructors.
   - `Genesis(label, nonce)` begins a prodrome. `label` is the host's name for
     it and `nonce` is 32 lowercase hex characters drawn once, so two
     prodromes a host labels alike are two. It has no parents and no event,
@@ -95,18 +95,41 @@ since this grammar has tuples and no mapping.
     `Woven` only over a legacy store's tips. A `Sealed` has one parent,
     `prev == ""` at a legacy root; a `Woven` has two or more, sorted and
     distinct, and its `event` may be `None`: a merge is structure.
+  - `Signed(object, key, signature)` is a DETACHED signature: `key`, an
+    Ed25519 public key as 64 lowercase hex (a point of the curve), signs the
+    object named `object`, and `signature` is the signature's 64 bytes as
+    128 lowercase hex. What is signed is the UTF-8 bytes `prodrome object `
+    followed by `object`, so a signature covers an object's name and through
+    it every byte of the object, its genesis and deps included, and the
+    signed object's bytes and name never change: an object gains signatures
+    at any time, from any number of keys. A signature VERIFIES when Ed25519's
+    strict verification (no small-order key, a canonical scalar) accepts it.
+    Signing is deterministic, so one key signing one object writes one
+    `Signed`, byte for byte, however often it signs. Its prodrome is its
+    object's, which is why it names no genesis.
+  - `KeyAdded(genesis, actor, key)` registers `key` for `actor` in the
+    prodrome `genesis`. It has no parents, so registering a key twice is one
+    object and a key may sign before it is registered (a device signs what
+    it wrote offline and is registered when next seen).
+  - `KeyRevoked(genesis, deps, actor, key)` revokes `key` for `actor` in
+    `genesis`, except for the signatures beneath it: `deps` are object
+    names, sorted, distinct and possibly empty, and name what its writer
+    stands behind, as a change's deps name what its writer saw (§5 reads
+    it).
 
   `parents_of` is a `Change`'s `deps`, a `Snapshot`'s `tips` plus a non-empty
-  `previous`, a `Sealed`'s `prev` (none at a root), a `Woven`'s `parents`,
-  and nothing for a `Genesis`. Every rule below that reads parents reads
+  `previous`, a `Sealed`'s `prev` (none at a root), a `Woven`'s `parents`, a
+  `Signed`'s `object`, a `KeyRevoked`'s `deps`, and nothing for a `Genesis`
+  or a `KeyAdded`. Every rule below that reads parents reads
   these.
 - An object's **name** is `sha256(utf8(print(object)))` in lowercase hex.
   The file `objects/<name>.py` holds exactly that print, and a loader
   re-hashes the bytes before parsing them. `event_id(e) =
   sha256(utf8(print(e)))` names an EVENT apart from where it was written; it
   is never stored.
-- **Every object has exactly one genesis.** A `Change` or a `Snapshot` names
-  it; a `Genesis` is its own; a legacy object's is the `Sealed("", …)` root
+- **Every object has exactly one genesis.** A `Change`, a `Snapshot`, a
+  `KeyAdded` or a `KeyRevoked` names it; a `Genesis` is its own; a `Signed`'s
+  is its object's; a legacy object's is the `Sealed("", …)` root
   it rests on, or, where a legacy store already joined two roots, the least
   such root by name, whose one prodrome every legacy object is in. No `deps`
   or snapshot edge crosses geneses. So a store may hold several prodromes, a
@@ -219,8 +242,10 @@ since this grammar has tuples and no mapping.
   deps rest on, so it cannot be dated behind what it was written OVER. It
   also reports an object naming a genesis the store does not hold, an edge
   between geneses, a dep another dep of the same change rests on, a dep that
-  is not a write to its change's entity, and an object a snapshot attests
-  that the store lacks. There is no unreachable object and no stale
+  is not a write to its change's entity, an object a snapshot attests
+  that the store lacks, a `Signed` that does not verify, and an object
+  whose actor has a key in its prodrome and which no key of that actor's
+  proves (§5's proof, every key object counted). There is no unreachable object and no stale
   head to report: every object is a tip or beneath one, and no tip rests on
   another.
 - **`fsck`** is `verify` after QUARANTINE: every file of `objects/` whose
@@ -345,18 +370,24 @@ them and never interprets them.
 ## 5. Standing
 
 The database does not decide whom to believe. It asks the HOST, about one
-event at a time, and the answer is a `Standing`:
+object carrying an event at a time, and the answer is a `Standing`:
 
 - **`Binds`** — the folds take it. It writes its registers and it is what the
   store believes.
 - **`Claims`** — the folds refuse it. It is stored and it is SHOWN, beside the
   answer that stands, and it changes no confirmed reading.
 
-A **policy** is that function: `standing(event) : Standing`, of the EVENT and
-nothing else — not of the log, not of the position, not of the moment. Every
-fold in §6 takes one, §6.7 takes one, and §3's `verify` takes one; nothing in
-the database reads an actor name to decide anything. The SCHEMA says which of
-its events a policy is asked about (§4); any other binds whoever wrote it.
+A **policy** is that function: `standing(object, event) : Standing`, of the
+object (its name, and the event it carries) and of a READING of the history
+it is in, the proof below, and nothing else — not of the log's order, not
+of the position, not of the moment. A policy that reads nothing of the
+history is the same at every one; a reader asks a policy that does at the
+history it reads (`at(history)`), and a store asks its own at every
+`verify`. Every fold in §6 takes one, §6.7 takes one, and §3's `verify`
+takes one; nothing in the database reads an actor name to decide anything.
+A policy is asked of every object carrying an event. The SCHEMA says which
+of its events are about standing (§4): the reference policy binds any other
+whoever wrote it, and a policy that requires signatures asks of every one.
 The todo schema asks about every kind but the record.
 
 A policy answers one further question, whose default is the reading above:
@@ -388,8 +419,46 @@ Each reading has its own candidates — the confirmed reading's are the
 binding writes, and a register none of whose writes binds is unwritten
 there; the claimed reading's are all of them — so a claim never moves a
 confirmed price (law 11), and one more urgent than the confirmed answer is
-SHOWN (§6.7). Twins cannot differ in standing: standing is a function of the
-event, and twins carry one.
+SHOWN (§6.7). Twins differ in standing only where a policy reads the proof:
+a signature covers an object's name, so it proves the twin it signs and not
+another placement of the same event over other deps, which would supersede
+what its actor never saw.
+
+**Proof: who wrote an object, read from the history.** An object's `actor`
+is a field its writer chose; the history can prove it. A `Signed` (§3)
+PROVES the object it signs when its signature verifies, its key is
+registered to that object's actor in that object's prodrome by a
+`KeyAdded` that counts, and every `KeyRevoked` of that key for that actor
+that counts has it among its ancestors. Which key objects count is the
+reader's: EVERY one for `verify` (the structural reading, as deps are
+read), and under a policy that requires signatures, those a signature by
+one of its ROOT keys that verifies covers. The proof of a history is the
+set of objects it proves; it is a function of the object set, never of
+the order the objects arrived in (law 41).
+
+So a revocation keeps exactly the signatures its writer stood behind, those
+beneath its deps, and takes away every other signature by its key: one made
+after it, beside it, or before it and unseen by its writer. Nothing but the
+objects says which came first, and a revocation that named nothing takes
+every signature away. A key revoked stays revoked, since adding it again
+writes the same `KeyAdded`. A signature need not come after its key's
+registration: a device signs offline and is registered when next seen. A
+key registers or revokes no key; only a root does, because a key that could
+would make what a revocation means depend on which of two revocations came
+first.
+
+**The policy that requires signatures**, over any policy `P`, with a set
+of ROOT keys: an object by actor `A` binds only where the proof of its
+history, key objects counted where a root signed them, proves it, and then
+as `P` says; it is the host's own word where it is proven and `P` confirms
+it. An object it does not prove CLAIMS, whatever its kind, a content record
+included, and is stored and shown as every claim is. It is the meet of `P`
+and "proven", so it composes with any policy, and under it the reading is
+`P`'s with exactly the unproven objects' events claims, whatever order the
+objects arrived in. A history whose actors have no keys reads under any
+policy that does not require signatures exactly as it did, and adding
+signatures and keys to a history changes no reading under such a policy
+(law 41).
 
 **Both readings stay in the database** (§6.7): the CONFIRMED one, under the
 host's policy, and the CLAIMED one, under the policy where everything binds. A
@@ -996,12 +1065,13 @@ say the parameter cannot do anything but select.
     the specs, the content, the functions, the whole history. It is stored and
     it is shown; it is not folded.
 12. **Standing selects events, not positions.** Because `standing` is a
-    function of the event alone, folding under a policy equals folding the
-    sub-log of the events it binds under the policy that binds everything —
-    and that stays true under any permutation of the log, since filtering
-    commutes with reordering. Which events count is a function of the event
-    SET; law 25 is the other half, that no linear extension of the DAG reads
-    differently.
+    function of the object and of a reading of the object set, never of a
+    position, folding under a policy equals folding the sub-log of the
+    events it binds under the policy that binds everything — and that stays
+    true under any permutation of the log, since filtering commutes with
+    reordering. Which events count is a function of the object SET (law 41
+    for a policy that reads the proof); law 25 is the other half, that no
+    linear extension of the DAG reads differently.
 
 Law 13 quantifies over the ENVIRONMENT, and it is what makes §7.1's compiler an
 optimisation rather than a second evaluator.
@@ -1354,6 +1424,33 @@ prodromes, each a replica of its own genesis.
     `sets.rs::an_unqualified_term_links_alike_under_any_set`,
     `sets.rs::a_view_prices_a_qualified_ref_through_its_replicas_set`,
     `sets.rs::a_proposal_prices_as_the_todo_it_serves`.
+
+Law 42 is who wrote an object (§3's signatures and keys, §5's proof),
+over generated histories of writes, keys added and revoked by a root or
+by nobody, and honest, unregistered and forged signatures of any object.
+
+42. **A proof is a reading of the history.** The objects a history proves,
+    with keys read structurally or under roots, are a function of its
+    object set: a replica that received them one at a time in any order,
+    or two halves joined by sync, proves what the whole proves. A
+    signature proves only for its key's actor, only where it verifies,
+    and only beneath every revocation of its key that counts. Under a
+    policy that does not require signatures, signatures and keys change no
+    entry of any reading. Under one that does, an object the history does
+    not prove claims (one that no signature that verifies covers among
+    them) and every other stands as the wrapped policy says, so the reading
+    is the wrapped policy's with exactly those claims, through replicas
+    that received the objects in any order; and a history whose every
+    write is signed by its actor's registered key reads as the wrapped
+    policy reads it, with no finding.
+    `signatures.rs::a_proof_is_a_function_of_the_object_set`,
+    `signatures.rs::signatures_change_no_reading_under_a_policy_that_does_not_require_them`,
+    `signatures.rs::under_proven_an_unproven_object_claims_in_any_arrival_order`,
+    `signatures.rs::a_history_signed_throughout_reads_as_the_wrapped_policy`,
+    `sign.rs::a_registered_key_proves_what_it_signs_for_its_actor_only`,
+    `sign.rs::a_forged_signature_proves_nothing`,
+    `sign.rs::a_revocation_keeps_exactly_what_it_rests_on`,
+    `sign.rs::under_roots_a_key_counts_where_a_root_signed_it`.
 
 ## 10. Non-goals
 

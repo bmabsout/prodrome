@@ -751,6 +751,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// every entry of `objects/` that is not an object, a `HEAD` or `refs/`
     /// left from before the tips were derived, and a receipt for each file in
     /// `quarantine/`, which stands in for the missing parent it would be.
+    /// Asked under the store's policy at what it read ([`Policy::at`]).
     pub fn verify(&self) -> Vec<Finding> {
         let Listing { objects, garbage } = match self.listing() {
             Ok(listing) => listing,
@@ -763,9 +764,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             .map(|file| format!("objects/{file}"))
             .collect();
         garbage.sort();
-        let (mut findings, graph): (Vec<Finding>, Vec<Finding>) = self
-            .read(&objects)
-            .verify(&self.policy)
+        let dag = self.read(&objects);
+        let (mut findings, graph): (Vec<Finding>, Vec<Finding>) = dag
+            .verify(self.policy.at(&dag).as_ref().unwrap_or(&self.policy))
             .into_iter()
             .partition(|finding| matches!(finding, Finding::Unread { .. }));
         garbage.extend(self.temps());
@@ -1454,7 +1455,9 @@ mod tests {
         let events = store.events().expect("reads");
         let late = events.last().expect("the record");
         assert!(
-            roster().standing(late).binds(),
+            roster()
+                .standing(&Hash::new("0".repeat(64)).expect("a name"), late)
+                .binds(),
             "a content record binds whoever wrote it"
         );
         assert_eq!(

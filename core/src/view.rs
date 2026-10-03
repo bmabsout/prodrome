@@ -254,9 +254,11 @@ pub fn entries<E: Row + History + Bind>(
             let registers = fold::read(stream, Some(now), policy);
             let reading = E::reading(&registers);
             // The readings differ only where the policy refuses a write.
-            let claim = (!stream.iter().all(|s| policy.standing(&*s.event).binds()))
-                .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
-                .filter(|claimed| E::disputes(&reading, claimed));
+            let claim = (!stream
+                .iter()
+                .all(|s| policy.standing(&s.name, &s.event).binds()))
+            .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
+            .filter(|claimed| E::disputes(&reading, claimed));
             let spec = specs
                 .get(key.as_ref())
                 .cloned()

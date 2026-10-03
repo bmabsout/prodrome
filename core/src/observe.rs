@@ -637,10 +637,12 @@ fn steps(
             let ((from, to), step) = line.zip(current)?;
             let boundary = observation.boundary(step, to > from)?;
             let fraction = (boundary - from) / (to - from);
-            // Rounded to the grid; `first_in` clamps it into the stretch.
+            // Rounded to the grid; `first_in` clamps it into the stretch. A
+            // line that never reaches the boundary inside it (a fraction far
+            // outside `[0, 1]`) saturates there rather than overflowing.
             #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-            let us = low + (fraction * (high - low) as f64).round() as i64;
-            fraction.is_finite().then_some(us)
+            let us = || low.saturating_add((fraction * (high - low) as f64).round() as i64);
+            fraction.is_finite().then(us)
         };
         while let Some(us) = first_in(start + 1, high, guess(current), |us| read(us) != current) {
             step(us, &mut current);
