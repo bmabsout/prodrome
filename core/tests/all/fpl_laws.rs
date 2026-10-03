@@ -61,8 +61,12 @@ fn refs_of(term: &Term) -> BTreeSet<String> {
     let mut all = vec![];
     nodes(term, &mut all);
     for node in all {
-        if let TermF::Ref { todo } = node.out() {
-            out.insert(todo.clone());
+        if let TermF::Ref {
+            store: None,
+            entity,
+        } = node.out()
+        {
+            out.insert(entity.clone());
         }
     }
     out

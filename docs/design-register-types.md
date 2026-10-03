@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 and 7 to 10 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 to 11 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -661,6 +661,75 @@ message plumbing.
   `memo::name` over its keyed objects and their children's names. The join
   is `memo::fold` of one algebra, and nothing was added to `memo`.
 
+### 6.3.1 A set of prodromes is a prodrome
+
+A store already holds several prodromes, each begun by its own `Genesis`
+and none resting on another's objects (SPEC §3: no edge crosses geneses).
+That is a SET OF PRODROMES, and it is §6.3's nest keyed by genesis, not a
+structure beside it.
+
+- **Identity by genesis.** A member's key in the set is its genesis's
+  name, which is global and content-addressed, so a member is never given
+  a key by the set it is in: the same prodrome in two sets is one member,
+  and its two replicas join by union like any replica (§6.1).
+- **A set is a nest keyed by genesis.** It has no objects of its own; each
+  member's history is held at its genesis, so `join` puts every object at
+  `genesis/key`, renaming nothing.
+- **Disjointness.** A member's reading is a function of its own objects:
+  no other member's objects move it. Each object is in exactly one member,
+  and reading the set's join at a genesis reads that member as it reads
+  alone.
+- **A set of sets is a set.** Its members carry their own keys, so a set
+  of sets is a nest keyed at the root, and its join is the union of the
+  sets: syncing two replicas is joining the sets they hold, each member by
+  its genesis. Associativity is the nest's: a union of unions is one union.
+- **The reading is the product.** The set's reading is each member's
+  reading, by genesis. What a term elsewhere reads of a member is that
+  member's functions and the environment its terms read (§4's `Bind` is
+  this, for one store).
+
+**A qualified Ref is a variable of the set.** `Bind` keeps a reference to
+another store out of every schema: "a host's environment, passed in". The
+set is that environment. `RefIn(store, entity)` names an entity of the
+member `store` names, a genesis or a name the host maps to one, and it is
+the same variable as `Ref(todo)` with a qualifier: an unqualified `Ref` is
+the qualified one at home, so it keeps meaning what it meant and every
+vector stands. A qualified reference binds to its entity's function linked
+in its own member, so a `Ref` inside it names that member's entity, and
+compiled against that member's environment (§7.1), so no `After` or
+`Recur` of it reads the history of the term it lands in. It therefore
+reads what the entity reads at home (SPEC law 13). A store the set does
+not hold, or an entity its member does not, reads `∅`: what one replica
+does not yet know of another has no claim on attention, and the next sync
+that brings it makes the reference read it.
+
+So a proposal in an inbox store is priced by the todo it serves, a
+`RefIn` into the todo store, and its price moves when that todo's history
+moves, and at no other time.
+
+**What landed.**
+
+- **The set as objects.** `nest::Set`, a `Level` over a replica's objects
+  that reads each prodrome by a member level and holds it at its genesis
+  (`Dag::genesis_of` says which); its nest's `flatten` is the join, its
+  name covers its members'. Nothing was added to `Nest` but a nest with no
+  objects of its own.
+- **The set as a reading.** `fpl::Stores`, the product of members' readings
+  as references read them (`fpl::Member`: functions and environment), with
+  a host's names (`Stores::named`); `fold::member` reads one prodrome so,
+  `fold::stores` the prodromes of the fold a replica holds (the legacy
+  prodrome, which no `Genesis` begins, is no member), and `view::entries`
+  prices each
+  entry through `fold::member`, so the two cannot disagree, and links it
+  through the set of its DAG's prodromes, so a replica of several reads as
+  the set it is.
+- **The qualified reference.** `fpl::mk_ref_in` and `fpl::link_in`, of
+  which `link` is the case with no other stores.
+- **The motivating use**, as a test: `core/tests/schemas/inbox.rs`, an
+  inbox whose proposal's `Price` is a `RefIn` to the todo it serves, read
+  through a set of it and two todo prodromes (`sets.rs`). A proposal that
+  serves nothing has no price, which is not `Absent` (§4).
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -705,6 +774,19 @@ Each is a property test over generated histories, in the core's `tests/`:
     admission admits a lawful schema in its canonical print and refuses a
     generated broken one under the law it breaks. BUILT: SPEC law 40,
     `core/tests/all/declared.rs`.
+
+12. **A set of prodromes.** Over generated sets of prodromes, each member
+    a replica of its own genesis: a set's join reads each member at its
+    genesis as it reads alone (disjointness); the set a synced replica
+    holds is the union of the sets synced into it, associatively; a
+    qualified reference reads, through the set, what its member alone
+    prices its entity at, by genesis or by a declared name; one to a store
+    or an entity the set lacks reads `∅`; an unqualified term links alike
+    under any set; a view prices a qualified reference to a sibling
+    prodrome as that prodrome's view does; and a proposal priced by the
+    todo it serves moves
+    exactly when that todo's history does. BUILT: SPEC law 41,
+    `core/tests/all/sets.rs`.
 
 ## 8. Stages
 
@@ -881,6 +963,13 @@ In this repository, after stage 3:
     `nest_histories.rs` nests declared proposals under the shelf schema.
     The wasm: `schema!(Name, declared)`, `new Name(schema, objects)`, and
     the reference module's `Declared`.
+
+11. **Sets of prodromes** (§6.3.1). A set as a nest keyed by genesis, its
+    reading the product of its members', and the qualified reference that
+    reads a member, resolved through the set a host passes. Law 12.
+
+    BUILT: `nest::Set`, `fpl::Stores`, `fold::stores` and `fpl::link_in`
+    (§6.3.1's "What landed"). Laws, `core/tests/all/sets.rs` (SPEC law 41).
 
 ## 9. Non-goals
 

@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::event::{Hash, TodoEvent};
 use crate::fold::{self, Product};
-use crate::fpl::{self, Candidates, Env, LinkError, Outcome};
+use crate::fpl::{self, Candidates, LinkError, Outcome};
 use crate::literal::{Datetime, ProdromeError};
 use crate::payload::Payload;
 use crate::policy::{Everything, Policy};
@@ -226,7 +226,10 @@ fn lowered(candidates: &Candidates) -> String {
 /// Per entity: `reading` is the confirmed one; `claim` the claimed one where
 /// it disputes it; `spec` is `flatten`'s function, `Absent` where none, and
 /// `value` its fulfillment at `t`, linked against its prodrome's functions
-/// under the CONFIRMED environment; `conflicts` every register with two
+/// under the CONFIRMED environment, and a qualified reference through the
+/// set of the DAG's prodromes a `Genesis` begins (design §6.3.1), each read
+/// as `spec` is;
+/// `conflicts` every register with two
 /// writes; and `confidence` whether a claim was refused or a winning write is
 /// one the policy does not confirm.
 ///
@@ -240,27 +243,25 @@ pub fn entries<E: Row + History + Bind>(
 ) -> Result<Vec<Entry<E>>, ProdromeError> {
     let state = registers::fold(nodes);
     let now = fpl::instant_of(t);
+    let set = fold::stores(&state, now, policy)?;
     let mut out = Vec::new();
     for (genesis, prodrome) in state.prodromes() {
-        let confirmed: Vec<(&E::Key, E::Registers<'_>)> = prodrome
-            .iter()
-            .map(|(key, stream)| (key, fold::read(stream, Some(now), policy)))
-            .collect();
-        let mut env = Env::new();
-        for (key, registers) in &confirmed {
-            E::bind(key, registers, &mut env);
-        }
-        let functions = fold::flatten(prodrome, now, policy)?;
-        let linkable = fold::link_specs(&functions, prodrome.keys());
-        for (key, registers) in confirmed {
-            let stream = &prodrome[key];
+        let fpl::Member { specs, env } = match genesis {
+            Some(genesis) => set.member(genesis).cloned().unwrap_or_default(),
+            None => fold::member(prodrome, now, policy)?,
+        };
+        for (key, stream) in prodrome {
+            let registers = fold::read(stream, Some(now), policy);
             let reading = E::reading(&registers);
             // The readings differ only where the policy refuses a write.
             let claim = (!stream.iter().all(|s| policy.standing(&*s.event).binds()))
                 .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
                 .filter(|claimed| E::disputes(&reading, claimed));
-            let spec = functions.get(key).cloned().unwrap_or_else(fpl::mk_absent);
-            let linked = fpl::link(&spec, &linkable);
+            let spec = specs
+                .get(key.as_ref())
+                .cloned()
+                .unwrap_or_else(fpl::mk_absent);
+            let linked = fpl::link_in(&spec, &specs, &set);
             out.push(Entry {
                 genesis: genesis.clone(),
                 key: key.clone(),

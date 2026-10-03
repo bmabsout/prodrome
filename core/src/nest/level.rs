@@ -119,6 +119,50 @@ impl<E: Nests> Level for Holding<'_, E> {
     }
 }
 
+/// A SET OF PRODROMES (design §6.3.1): a replica's prodromes, each the nest
+/// its member level reads, held at its genesis. A set is a nest keyed by
+/// genesis: it has no objects of its own, so its join ([`Nest::flatten`])
+/// puts each member's objects at `genesis/key`, and since no edge crosses
+/// geneses (§3), no member's nest reaches another's objects. A genesis is
+/// a global name, so a member's key is its own, never one the set gives it:
+/// two sets are joined by union, and a prodrome in both is one member.
+pub struct Set<'l, E: Schema> {
+    dag: Arc<Dag<E>>,
+    member: &'l dyn Level,
+}
+
+impl<'l, E: Schema> Set<'l, E> {
+    /// The set of `dag`'s prodromes, each read by `member`, a level of the
+    /// same objects.
+    #[must_use]
+    pub fn new(dag: Arc<Dag<E>>, member: &'l dyn Level) -> Set<'l, E> {
+        Set { dag, member }
+    }
+}
+
+impl<E: Schema> Level for Set<'_, E> {
+    fn nest(&self, heads: &BTreeSet<Hash>) -> Result<Nest, ProdromeError> {
+        let mut members: BTreeMap<Hash, BTreeSet<Hash>> = BTreeMap::new();
+        for head in heads {
+            let genesis = self.dag.genesis_of(head).ok_or_else(|| {
+                ProdromeError::Store(format!(
+                    "missing object {}, named in a set's heads",
+                    head.as_str()
+                ))
+            })?;
+            members.entry(genesis).or_default().insert(head.clone());
+        }
+        let mut held = BTreeMap::new();
+        for (genesis, heads) in members {
+            held.insert(
+                Segment::new(genesis.as_str())?.into(),
+                self.member.nest(&heads)?,
+            );
+        }
+        Ok(Nest::holding(held))
+    }
+}
+
 /// An object's key at its level: its entity's, or the root for one with no
 /// event (a genesis, a snapshot).
 fn key<E: Schema<Key: AsRef<str>>>(object: &Envelope<E>) -> Result<Path, ProdromeError> {
@@ -178,6 +222,18 @@ impl Nest {
             points,
             held,
         })
+    }
+
+    /// A nest with no objects of its own, holding `held`.
+    fn holding(held: BTreeMap<Path, Nest>) -> Nest {
+        let own = History::default();
+        Nest {
+            name: Nest::name_of(&own, &held),
+            own,
+            parents: BTreeMap::new(),
+            points: BTreeMap::new(),
+            held,
+        }
     }
 
     /// [`crate::memo::name`] over this level's objects, each at its key, and

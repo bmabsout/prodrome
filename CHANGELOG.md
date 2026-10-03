@@ -131,7 +131,42 @@ gains no constructor, no object carries its schema, and every vector and
 export reads as it did. The API breaks where a schema's vocabulary was a
 type with a `Default`: it is now a value a store is opened at.
 
+And a set of prodromes is a prodrome (`docs/design-register-types.md`
+§6.3.1, SPEC §7.2 and law 41): a qualified reference, `RefIn(store,
+entity)`, prices a term in one store by an entity in another, through a set
+of prodromes the host passes. A MINOR change under this file's rule: `RefIn`
+is a new term constructor, so no stored byte moves, and every unqualified
+`Ref` links and reads as it did. The API breaks where `TermF::Ref` had one
+field.
+
 ### Added
+
+- **A qualified reference (SPEC §7.2):** `fpl::mk_ref_in` and the term
+  `RefIn(store, entity)`, the same variable as `Ref` with a qualifier:
+  `TermF::Ref { store, entity }`, `store` none for an unqualified one, which
+  prints as `Ref(todo)` did. `fpl::Stores`, a set of prodromes as qualified
+  references read it (`fpl::Member`, each member's functions and
+  environment, by genesis, and `Stores::named` for a host's names), and
+  `fpl::link_in`, of which `link` is the case with no stores. A qualified
+  reference is linked in its member and compiled against that member's
+  environment, so it reads what its entity reads at home; a store or an
+  entity the set lacks reads `∅`. Its JSON kind is `refIn`. Laws in
+  `core/tests/all/sets.rs`.
+- **A set of prodromes (design §6.3.1, SPEC law 41):** `nest::Set`, a
+  replica's prodromes as a nest keyed by genesis, each read by a member
+  level, whose join puts every object at `genesis/key`; `Dag::genesis_of`,
+  the genesis of an object's prodrome. `fold::member`, one prodrome as a
+  term elsewhere reads it, and `fold::stores`, a fold's prodromes as an
+  `fpl::Stores`; `view::entries` prices through `fold::member`, and links
+  each entry through the set of its DAG's prodromes, so a qualified
+  reference to a sibling prodrome prices as that prodrome's view does. Laws in
+  `core/tests/all/sets.rs`: disjointness, a set of sets is associative, and
+  the set's reading is the product of its members'.
+- **The inbox, priced by what it serves (design §0, §6.3.1):** a test
+  schema, `core/tests/schemas/inbox.rs`, whose proposal's `Price` is a
+  qualified reference to the todo it serves; read through a set of it and
+  two todo prodromes, its price is that todo's and moves exactly when that
+  todo's history does (`sets.rs`).
 
 - **A schema as data (design §5, §6.0, stage 10, SPEC law 40):** `declared`.
   `declared::Form`, a schema in the schema language, the objects' own §2

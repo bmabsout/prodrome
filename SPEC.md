@@ -578,7 +578,7 @@ Flat(value) | Decay(start, end, end_date, lead_up, start_date?) | Curve(points)
 | Within(window, p, a) | Importance(w, a) | After(event, anchor, term, pending, needs?)
 | Recur(todo, anchor, term, pending) | Periodic(period, anchor, term)
 | Piecewise(head, pieces) | OffsetBy(delta, term) | Least(terms) | Ref(todo)
-| Absent
+| RefIn(store, entity) | Absent
 ```
 
 Semantics `⟦t⟧(now, env) ∈ [0, 1] ∪ {∅}`. `∅` is NO VALUE: a note, a
@@ -622,8 +622,9 @@ lowers anything it is composed with.
   `OffsetBy`: `offset(⟦term⟧, ⟦delta⟧)`; an absent delta is no offset,
   `⟦term⟧`, and an absent term is `∅`. So `checklist(own, n)` with an
   absent `own` reads as the checklist alone.
-- `Ref(todo)`: no reading of its own. It is a variable, bound by `link`
-  (§7.2); the semantics above are defined on CLOSED terms only.
+- `Ref(todo)` and `RefIn(store, entity)`: no reading of their own. Each is
+  a variable, bound by `link` (§7.2); the semantics above are defined on
+  CLOSED terms only.
 - **Normal form** (`mk_piecewise`): no pieces means the head; nested pieces
   are spliced; no adjacent equal pieces; instants strictly increasing.
   `Absent` is a leaf and `normalize` leaves it where it is. `normalize`
@@ -809,8 +810,39 @@ cycle, reported with that path, its first todo repeated at the end. So `link`
 is total and never loops. A cycle is refused where it is REACHED: specs that
 loop elsewhere do not stop a term that never names them from linking.
 
+**A qualified reference.** `RefIn(store, entity)` is "the fulfillment of
+`entity` in the prodrome `store` names": a term in one store priced by an
+entity in another, such as a proposal priced by the todo it serves. `store`
+is a genesis's name or a name the host declares for one, and obeys
+`TodoId`'s rule, which a genesis's 64 lowercase hex does; `entity` is a key
+as a nest's path holds it, not empty and holding no `/`. It is the same
+variable as `Ref` with a qualifier: `Ref(todo)` is `todo` at home.
+
+```
+link_in(term, specs, stores) : Closed | LinkError
+stores = { genesis → (specs, env) }, names : name → genesis
+```
+
+`stores` is a SET OF PRODROMES, the host's environment, passed in (a
+schema never reads another store): each member by its genesis, its
+entities' own functions and the environment its terms read. `link` is
+`link_in` with no stores. A `RefIn(s, x)` binds to `x`'s function in the
+member `s` names (a declared name's genesis, else `s` read as a genesis),
+linked THERE, so an unqualified `Ref` inside it names that member's own
+entity, and compiled against that member's environment (§7.1), so no
+`After` or `Recur` of it reads the history of the term it lands in. By law
+13 it reads, at every instant and under any environment of the term it
+lands in, what `x` reads in its own prodrome. A store the set does not
+hold, or an entity its member does not, links to `Absent` and reads `∅`:
+what a store does not know of another prices no claim, and once a sync
+brings it, the reference reads it. Every unqualified `Ref` means exactly
+what it meant, and links alike under any `stores`. A cycle is refused
+across members as within one; a variable of another member is named
+`genesis/entity` in a refusal.
+
 No stored byte moves: `Ref` is a new constructor (§1), and a store without one
-reads exactly what it read before. Nor does `Absent`, a new constructor too: a
+reads exactly what it read before. Nor does `RefIn`, a new constructor
+beside it: a term without one prints, links and reads as before. Nor does `Absent`, a new constructor too: a
 record whose `spec` is `None` reads as `Absent` at the todo, so an old store
 reads as before except that a `Ref` to an unpriced todo, refused before `∅`
 existed, now links.
@@ -890,7 +922,9 @@ schema's events, each object's genesis beside it (§3);
 `TodoEvent`, the todo schema's events; `Term` as `Fix TermF`, `Absent` among its leaves; a value as
 `[0, 1] ∪ {∅}`, `∅` never a number (`Option`); `Closed` (§7.2), a term with
 no `Ref`, which is what every evaluator takes, and `LinkError = Unknown |
-Cycle`;
+Cycle`; `Stores`, a set of prodromes as qualified references read it, each
+member's functions and environment by its genesis, and the names a host
+declares (§7.2);
 `Env`, the environment, each todo's candidate outcomes beside the grow-only
 tendings (§6.1, §7.3);
 `Explanation = Cofree TermF Annotation`; `Compiled` (§7.1), a term with every
@@ -1293,6 +1327,33 @@ code and on generated declarations.
     `declared.rs::a_lawful_schema_is_admitted_in_its_canonical_print`,
     `declared.rs::a_broken_schema_is_refused_under_the_law_it_breaks`,
     `nest_histories.rs::a_nest_of_declared_proposals_flattens_and_reads_as_its_parts`.
+
+Law 41 is a set of prodromes (§3, §7.2), over generated sets of todo
+prodromes, each a replica of its own genesis.
+
+41. **A set of prodromes is a prodrome.** A set is a nest keyed by
+    genesis: its join holds every object once and reads at each member's
+    genesis as that member reads alone, whatever the other members hold
+    (disjointness); the set a synced replica holds is the union of the sets
+    synced into it, and a set of sets flattens associatively, in its
+    history and its content name. Its reading is the product of its
+    members': a qualified reference reads, through the set, what it reads
+    through its member alone and what that member's view prices the entity
+    at, by genesis or by a declared name, and under any environment of the
+    term it lands in; one to a store or an entity the set lacks reads `∅`;
+    a term with no qualified reference links alike under any set; a view
+    prices a qualified reference to another prodrome of its DAG as that
+    prodrome's view prices the entity; and a
+    proposal priced by the todo it serves, through the set, prices as that
+    todo's own view does and moves exactly when that todo's history does.
+    `sets.rs::each_member_reads_in_the_set_as_alone`,
+    `sets.rs::a_set_of_sets_is_associative`,
+    `sets.rs::a_set_reads_as_the_product_of_its_members`,
+    `sets.rs::a_qualified_ref_reads_what_its_member_reads`,
+    `sets.rs::a_qualified_ref_to_what_the_set_lacks_is_absent`,
+    `sets.rs::an_unqualified_term_links_alike_under_any_set`,
+    `sets.rs::a_view_prices_a_qualified_ref_through_its_replicas_set`,
+    `sets.rs::a_proposal_prices_as_the_todo_it_serves`.
 
 ## 10. Non-goals
 

@@ -75,9 +75,15 @@ pub enum TermF<A> {
         delta: A,
         term: A,
     },
-    /// The fulfillment of todo `todo`: a free variable, which `fpl::link` binds.
+    /// The fulfillment of the entity `entity`: a free variable, which
+    /// `fpl::link` binds. Unqualified (`store` none) it names an entity of
+    /// the term's own prodrome, printed `Ref(todo)`; qualified, an entity of
+    /// the prodrome `store` names in the set a host passes, printed
+    /// `RefIn(store, entity)`. One variable, two spellings: the unqualified
+    /// one is the qualified one at home.
     Ref {
-        todo: String,
+        store: Option<String>,
+        entity: String,
     },
     /// `∅` at every instant.
     Absent,
@@ -183,7 +189,10 @@ impl<A> TermF<A> {
                 delta: f(delta)?,
                 term: f(term)?,
             },
-            TermF::Ref { todo } => TermF::Ref { todo: todo.clone() },
+            TermF::Ref { store, entity } => TermF::Ref {
+                store: store.clone(),
+                entity: entity.clone(),
+            },
             TermF::Absent => TermF::Absent,
         })
     }
@@ -221,7 +230,8 @@ impl<A> TermF<A> {
             TermF::Periodic { .. } => "periodic",
             TermF::Piecewise(_) => "piecewise",
             TermF::OffsetBy { .. } => "offsetBy",
-            TermF::Ref { .. } => "ref",
+            TermF::Ref { store: None, .. } => "ref",
+            TermF::Ref { store: Some(_), .. } => "refIn",
             TermF::Absent => "absent",
         }
     }

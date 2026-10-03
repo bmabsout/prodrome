@@ -213,6 +213,7 @@ fn the_vocabulary_is_exactly_the_spec_s() {
             "Piecewise",
             "Recur",
             "Ref",
+            "RefIn",
             "Reopened",
             "Sealed",
             "Shift",
