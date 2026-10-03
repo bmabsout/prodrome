@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 
 use common::terms::{a_spec_onto, acyclic_specs, an_env, moment, ok, TODOS};
 use common::{a_log, far, Event};
+use prodrome::event::Hash;
 use prodrome::fold;
 use prodrome::fpl::{self, instant_of, link, link_in, Closed, Env, LinkError, Member, Stores};
 use prodrome::nest::{History, Leaf, Level, Nest, Path, Segment, Set};
@@ -32,6 +33,10 @@ use crate::nest_histories::{dag, sub, union, Sub};
 /// Two prodromes' names, as their geneses would be.
 const HERE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const THERE: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+fn name(genesis: &str) -> Hash {
+    Hash::new(genesis).expect("a genesis's name")
+}
 
 fn readings(linked: &Closed, env: &Env, probes: &[i64]) -> Vec<Option<f64>> {
     probes
@@ -63,7 +68,9 @@ fn a_qualified_ref_to_what_the_set_lacks_is_absent() {
         specs: [("a".to_owned(), ok(fpl::mk_flat(0.5)))].into(),
         env: Env::new(),
     };
-    let stores = Stores::new().with(THERE, member).named("todos", THERE);
+    let stores = Stores::new()
+        .with(name(THERE), member)
+        .named("todos", name(THERE));
     for (store, entity) in [("todos", "b"), (HERE, "a"), ("elsewhere", "a")] {
         let reference = ok(fpl::mk_ref_in(store.to_owned(), entity.to_owned()));
         let linked = link_in(&reference, &BTreeMap::new(), &stores).expect("links");
@@ -96,7 +103,9 @@ fn a_loop_across_prodromes_is_a_cycle() {
         specs: [("a".to_owned(), forth.clone())].into(),
         env: Env::new(),
     };
-    let stores = Stores::new().with(HERE, here).with(THERE, there);
+    let stores = Stores::new()
+        .with(name(HERE), here)
+        .with(name(THERE), there);
     let refusal = link_in(&forth, &BTreeMap::new(), &stores).expect_err("a loop");
     assert_eq!(
         refusal,
@@ -121,8 +130,8 @@ proptest! {
         env in an_env(),
     ) {
         let stores = Stores::new()
-            .with(THERE, Member { specs: theirs, env })
-            .named("todos", THERE);
+            .with(name(THERE), Member { specs: theirs, env })
+            .named("todos", name(THERE));
         prop_assert_eq!(link_in(&term, &specs, &stores), link(&term, &specs));
     }
 
@@ -139,7 +148,7 @@ proptest! {
         probes in prop::collection::vec(-500i64..500, 6),
     ) {
         let member = Member { specs: specs.clone(), env: theirs.clone() };
-        let stores = Stores::new().with(THERE, member).named("todos", THERE);
+        let stores = Stores::new().with(name(THERE), member).named("todos", name(THERE));
         let at_home = readings(&link(&specs[todo], &specs).expect("acyclic"), &theirs, &probes);
         for store in ["todos", THERE] {
             let reference = ok(fpl::mk_ref_in(store.to_owned(), todo.to_owned()));
@@ -332,7 +341,7 @@ proptest! {
         let replica = set_replica(&members);
         let set = fold::stores(&dag(&replica), now, &Everything).expect("reads");
         let first = genesis(&members[0]);
-        let named = set.clone().named("todos", first.clone());
+        let named = set.clone().named("todos", name(&first));
         for member in &members {
             let genesis = genesis(member);
             let own = fold::stores(&dag(&member.store), now, &Everything).expect("reads");
@@ -444,7 +453,7 @@ proptest! {
             let todos = union(&[served, other]);
             fold::stores(&dag(&todos), instant_of(far()), &Everything)
                 .expect("reads")
-                .named("todos", named.clone())
+                .named("todos", name(&named))
         };
         let mut before = price_of(&inbox, "p1", &read(&served, &other)).expect("p1 serves");
         for (n, step) in (1..).zip(&steps) {
