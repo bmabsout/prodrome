@@ -607,3 +607,77 @@ proptest! {
         prop_assert_eq!(depths, vec![(1, 0), (1, 1), (1, 1)]);
     }
 }
+
+/// CONCURRENT POINTERS READ AS THE UNION. Two replicas of one shelf each
+/// point it at a different branch of the same inner history, neither seeing
+/// the other's; once synced, the pointer reads both branches' heads, the
+/// nest holds both, and each write's past holds its own branch alone.
+#[test]
+fn concurrent_pointers_read_as_the_union_of_their_histories() {
+    let base: Sub<Review> = sub("inner 0");
+    base.store
+        .append(a_review(0, 0))
+        .expect("a review is opened");
+    let fork = || {
+        let store = MemoryStore::default();
+        sync(&base.store, &store).expect("syncs");
+        let genesis = genesis_of(&store);
+        Sub {
+            store: store.in_genesis(genesis),
+        }
+    };
+    let (left, right) = (fork(), fork());
+    let x = left
+        .store
+        .append(a_review(1, 1))
+        .expect("r2 opened on the left");
+    let y = right
+        .store
+        .append(a_review(2, 2))
+        .expect("r1 opened again on the right");
+
+    let mut seen = BTreeMap::new();
+    let here: Sub<Holder<Review>> = sub("outer");
+    let there = MemoryStore::default();
+    sync(&here.store, &there).expect("syncs");
+    let there = Sub {
+        store: there.in_genesis(genesis_of(&here.store)),
+    };
+    point(&here, "s0", &left, 3, &mut seen);
+    point(&there, "s0", &right, 4, &mut seen);
+    sync(&there.store, &here.store).expect("syncs");
+
+    let two = Two {
+        outer: here,
+        shelves: vec![left, right],
+        seen,
+    };
+    let (nest, _) = two.nest();
+    let folded = reading(&two.outer.store).folded;
+    let (_, stream) = folded.entities().next().expect("one shelf");
+    let heads: BTreeSet<Hash> = two.seen.values().flatten().cloned().collect();
+    assert!(heads.contains(&x) && heads.contains(&y));
+    assert_eq!(
+        pointer(stream, Slot::Held),
+        heads,
+        "the reading is the union"
+    );
+    let flat = nest.flatten().at(&held("s0"));
+    assert!(flat.values().any(|name| *name == x) && flat.values().any(|name| *name == y));
+    for (write, saw) in &two.seen {
+        let past = nest.past(write).expect("in the nest");
+        let (mine, theirs) = if saw.contains(&x) { (&x, &y) } else { (&y, &x) };
+        assert!(past.contains(mine) && !past.contains(theirs));
+    }
+}
+
+fn genesis_of<E: Schema>(store: &MemoryStore<E>) -> Hash {
+    store
+        .held()
+        .expect("reads")
+        .dag
+        .geneses()
+        .into_iter()
+        .next()
+        .expect("one genesis")
+}

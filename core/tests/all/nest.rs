@@ -1,6 +1,6 @@
 //! Law 10 (design §6.3, §7), the monad: histories keyed by path, over
 //! generated nests of two and three levels whose keys share prefixes.
-//! Unit and associativity, bind as `join ∘ fmap`, reading at a path
+//! Unit and associativity, the functor's laws and join's naturality, bind as `join ∘ fmap`, reading at a path
 //! commuting with join, and the restricted join reading as the parent plus
 //! exactly what was chosen.
 
@@ -64,6 +64,18 @@ proptest! {
     fn unit_is_a_unit_of_join(history in a_history(any::<u8>())) {
         prop_assert_eq!(History::unit(history.clone()).join(), history.clone());
         prop_assert_eq!(history.clone().fmap(History::unit).join(), history);
+    }
+
+    /// A functor: `fmap id = id` and `fmap (g ∘ f) = fmap g ∘ fmap f`; and
+    /// join is natural, `fmap f ∘ join = join ∘ fmap (fmap f)`, so mapping
+    /// values before or after flattening is one history.
+    #[test]
+    fn fmap_is_a_functor_and_join_is_natural(nest in a_nest(), f in any::<u8>(), g in any::<u8>()) {
+        let history = nest.clone().join();
+        let (f, g) = (move |x: u8| x.wrapping_mul(f) % 7, move |x: u8| x.wrapping_add(g) % 5);
+        prop_assert_eq!(history.clone().fmap(|x| x), history.clone());
+        prop_assert_eq!(history.clone().fmap(|x| g(f(x))), history.fmap(f).fmap(g));
+        prop_assert_eq!(nest.clone().join().fmap(f), nest.fmap(|inner| inner.fmap(f)).join());
     }
 
     /// `join ∘ join = join ∘ fmap join`: three levels flatten to one
