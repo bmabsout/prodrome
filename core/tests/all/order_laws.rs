@@ -15,9 +15,10 @@
 //! Law 6, that the todo vocabulary reads byte for byte as before, is every
 //! vector suite beside this one, unchanged.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use prodrome::event::{mk_completed, Hash, TodoEvent, TodoId};
+use prodrome::dag::Dag;
+use prodrome::event::{mk_completed, seal_hash, Envelope, Hash, TodoEvent, TodoId};
 use prodrome::fold::{grows, maximal, Discrete, Frontier, Order, Total};
 use prodrome::literal::Datetime;
 use prodrome::policy::Everything;
@@ -89,31 +90,53 @@ fn a_dag() -> impl Strategy<Value = Vec<Step>> {
     prop::collection::vec((0u8..4, 0u32..2, any::<u64>()), 1..10)
 }
 
-fn name(i: usize) -> Hash {
-    Hash::new(format!("{:064x}", i + 1)).expect("64 hex")
-}
+/// A replica: legacy objects of one todo, by name.
+type Objects = BTreeMap<Hash, Envelope<TodoEvent<Todo>>>;
 
-/// The `i`th object: a state write of `value`, carried in its note.
-fn node(i: usize, value: u8, day: u32, parents: Vec<Hash>) -> Node<TodoEvent<Todo>> {
+/// A state write of `value`, carried in its note, over `parents`: a legacy
+/// object, `Sealed` on none or one and `Woven` on more, under its own name.
+fn object(value: u8, day: u32, mut parents: Vec<Hash>) -> (Hash, Envelope<TodoEvent<Todo>>) {
     let at = Datetime::new(2026, 9, 1 + day, 12, 0, 0, 0).expect("a real instant");
     let event = mk_completed("alpha", at, "writer", &value.to_string()).expect("valid");
-    Node {
-        name: name(i),
-        parents,
-        event: Some(event),
-        genesis: None,
-    }
+    parents.sort();
+    parents.dedup();
+    let object = if parents.len() < 2 {
+        Envelope::Sealed {
+            prev: parents.pop(),
+            event,
+        }
+    } else {
+        Envelope::Woven {
+            parents,
+            event: Some(event),
+        }
+    };
+    (seal_hash(&object), object)
 }
 
-/// The steps as legacy objects of one todo.
+/// A replica's objects as the fold reads them: through its DAG, the one
+/// thing that makes a node.
+fn placed(objects: &Objects) -> Vec<Node<TodoEvent<Todo>>> {
+    objects
+        .iter()
+        .map(|(name, object)| (name.clone(), object.clone()))
+        .collect::<Dag<TodoEvent<Todo>>>()
+        .nodes()
+        .expect("a replica is closed under parents")
+}
+
+/// The steps as legacy objects of one todo: the `i`th rests on the earlier
+/// steps its bits name.
 fn nodes(dag: &[Step]) -> Vec<Node<TodoEvent<Todo>>> {
-    dag.iter()
-        .enumerate()
-        .map(|(i, (value, day, parents))| {
-            let parents = (0..i.min(64)).filter(|j| parents >> j & 1 == 1);
-            node(i, *value, *day, parents.map(name).collect())
-        })
-        .collect()
+    let mut names: Vec<Hash> = Vec::new();
+    let mut objects = Objects::new();
+    for (i, (value, day, parents)) in dag.iter().enumerate() {
+        let parents = (0..i.min(64)).filter(|j| parents >> j & 1 == 1);
+        let (name, object) = object(*value, *day, parents.map(|j| names[j].clone()).collect());
+        names.push(name.clone());
+        objects.insert(name, object);
+    }
+    placed(&objects)
 }
 
 fn value(stamp: &Stamp<TodoEvent<Todo>>) -> u8 {
@@ -190,22 +213,18 @@ fn phase(stamp: &Stamp<TodoEvent<Todo>>) -> Phase {
 }
 
 /// The machine's reading of a replica's objects.
-fn reading(objects: &[Node<TodoEvent<Todo>>]) -> Vec<Phase> {
-    let folded = fold(objects);
+fn reading(objects: &Objects) -> Vec<Phase> {
+    let folded = fold(&placed(objects));
     let frontier = frontier(&folded);
     frontier.read(phase).into_iter().map(phase).collect()
 }
 
-/// Two replicas' objects together, parents first: a name is its index.
-fn union(a: &[Node<TodoEvent<Todo>>], b: &[Node<TodoEvent<Todo>>]) -> Vec<Node<TodoEvent<Todo>>> {
-    let mut out = a.to_vec();
-    out.extend(
-        b.iter()
-            .filter(|o| !a.iter().any(|m| m.name == o.name))
-            .cloned(),
-    );
-    out.sort_by(|x, y| x.name.cmp(&y.name));
-    out
+/// Two replicas' objects together.
+fn union(a: &Objects, b: &Objects) -> Objects {
+    a.iter()
+        .chain(b)
+        .map(|(name, object)| (name.clone(), object.clone()))
+        .collect()
 }
 
 /// Two antichains as sets.
@@ -229,8 +248,7 @@ proptest! {
     /// `read(h₁ ∪ h₂) = max(read(h₁) ∪ read(h₂))`.
     #[test]
     fn an_inflationary_reading_is_a_homomorphism(acts in acts()) {
-        let mut replicas: [Vec<Node<TodoEvent<Todo>>>; 2] = [Vec::new(), Vec::new()];
-        let mut written = 0;
+        let mut replicas: [Objects; 2] = [Objects::new(), Objects::new()];
         for (side, act) in acts {
             match act {
                 Some(index) => {
@@ -239,11 +257,10 @@ proptest! {
                     let refused = grows(&held, &value).is_err();
                     prop_assert_eq!(refused, !held.iter().all(|v| v.le(&value)));
                     if !refused {
-                        let folded = fold(&replicas[side]);
+                        let folded = fold(&placed(&replicas[side]));
                         let deps = frontier(&folded).names();
-                        let object = node(written, index, 0, deps);
-                        replicas[side].push(object);
-                        written += 1;
+                        let (name, object) = object(index, 0, deps);
+                        replicas[side].insert(name, object);
                     }
                 }
                 None => replicas[side] = union(&replicas[0], &replicas[1]),

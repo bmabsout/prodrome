@@ -12,7 +12,8 @@ pub enum Finding {
         name: Hash,
         why: Unread,
     },
-    /// An entry of `objects/` not named like an object.
+    /// An entry of `objects/` not named like an object, or a temp in the
+    /// root: its path within the store.
     Garbage(String),
     /// `HEAD` or `refs/`, from before the tips were derived.
     Leftover(&'static str),
@@ -70,8 +71,8 @@ impl Unread {
         match self {
             Unread::Io(error) | Unread::Unparsed(error) => error.clone(),
             Unread::Tampered(computed) => ProdromeError::Store(format!(
-                "object {name} hashes to {computed} — tampered or corrupt: `prodrome quarantine \
-                 {name}` (`EventStore::quarantine`) sets it aside so the store answers again"
+                "object {name} hashes to {computed} — tampered or corrupt: `prodrome fsck` \
+                 (`EventStore::fsck`) sets it aside so the store answers again"
             )),
             Unread::NotText => ProdromeError::Store(format!("object {name} is not UTF-8")),
         }
@@ -93,8 +94,8 @@ impl fmt::Display for Finding {
             },
             Finding::Garbage(file) => write!(
                 f,
-                "objects/{file} is not an object: a temp an interrupted write left, or a stray \
-                 (SPEC §3); delete it"
+                "{file} is not an object: a temp an interrupted write left, or a stray (SPEC §3); \
+                 delete it"
             ),
             Finding::Leftover(file) => write!(
                 f,

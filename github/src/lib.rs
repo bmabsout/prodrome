@@ -424,7 +424,10 @@ impl<'a> Known<'a> {
         let nodes = dag.nodes()?;
         Ok(Known {
             dag,
-            events: nodes.iter().filter_map(|node| node.event.clone()).collect(),
+            events: nodes
+                .iter()
+                .filter_map(|node| node.event().cloned())
+                .collect(),
             state: registers::fold(&nodes),
             genesis: dag.geneses().first().and_then(|genesis| dag.key(genesis)),
         })

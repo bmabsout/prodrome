@@ -55,12 +55,81 @@ impl<E> Dag<E> {
         self.objects.get(name)
     }
 
-    pub(crate) fn insert(&mut self, name: Hash, object: Envelope<E>) {
-        self.objects.insert(name, object);
+    pub(crate) fn into_objects(self) -> BTreeMap<Hash, Envelope<E>> {
+        self.objects
     }
 
-    pub(crate) fn remove(&mut self, name: &Hash) {
-        self.objects.remove(name);
+    pub(crate) fn remove(&mut self, name: &Hash) -> Option<Envelope<E>> {
+        self.objects.remove(name)
+    }
+
+    /// THE HISTORY THESE OBJECTS HOLD: the largest down-set among them, every
+    /// object whose ancestors are all here. Of a store closed under parents
+    /// it is the store; of one missing an object (set aside, never arrived)
+    /// it is the store without that object and everything resting on it,
+    /// which is the history a replica holding exactly those objects has. An
+    /// interior operator on sets of objects: never more than the set,
+    /// idempotent and monotone, so a function of the objects alone (law 40).
+    /// A cycle, which only a hash collision makes, is in no down-set.
+    #[must_use]
+    pub fn interior(&self) -> Dag<E>
+    where
+        E: Clone,
+    {
+        let mut interior = Dag {
+            objects: BTreeMap::new(),
+            unread: self.unread.clone(),
+        };
+        interior.grow(self.objects.clone());
+        interior
+    }
+
+    /// Extend this down-set by every object of `waiting` that rests only on
+    /// it and on each other, and answer the names taken and the objects that
+    /// stay waiting, each resting on something neither holds. The one step
+    /// [`Dag::interior`] and a store's memory share: what arrives either
+    /// joins the history or waits for what it rests on, and whatever
+    /// arrives later that completes it brings it in.
+    pub(crate) fn grow(
+        &mut self,
+        mut waiting: BTreeMap<Hash, Envelope<E>>,
+    ) -> (BTreeSet<Hash>, BTreeMap<Hash, Envelope<E>>) {
+        waiting.retain(|name, _| !self.objects.contains_key(name));
+        let mut children: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
+        let mut short: BTreeMap<Hash, usize> = BTreeMap::new();
+        let mut ready: Vec<Hash> = Vec::new();
+        for (name, object) in &waiting {
+            let mut count = 0;
+            for parent in parents_of(object) {
+                if waiting.contains_key(&parent) {
+                    children.entry(parent).or_default().push(name.clone());
+                    count += 1;
+                } else if !self.objects.contains_key(&parent) {
+                    // Missing: this object waits until it arrives.
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                ready.push(name.clone());
+            } else {
+                short.insert(name.clone(), count);
+            }
+        }
+        let mut taken = BTreeSet::new();
+        while let Some(name) = ready.pop() {
+            let object = waiting.remove(&name).expect("a ready object waits");
+            self.objects.insert(name.clone(), object);
+            for child in children.remove(&name).into_iter().flatten() {
+                let count = short.get_mut(&child).expect("a child waits");
+                *count -= 1;
+                if *count == 0 {
+                    short.remove(&child);
+                    ready.push(child);
+                }
+            }
+            taken.insert(name);
+        }
+        (taken, waiting)
     }
 
     /// The DAG, or the refusal of its first print that is not an object.
@@ -103,23 +172,16 @@ impl<E> Dag<E> {
     /// incomparable objects in name order. A missing parent or a cycle is a
     /// refusal.
     pub fn linearise(&self) -> Result<Vec<Hash>, ProdromeError> {
-        self.order(false)
-    }
-
-    /// [`Dag::linearise`], passing over a parent this DAG lacks when `gaps`.
-    fn order(&self, gaps: bool) -> Result<Vec<Hash>, ProdromeError> {
-        if !gaps {
-            for (name, object) in &self.objects {
-                if let Some(parent) = parents_of(object)
-                    .into_iter()
-                    .find(|parent| !self.objects.contains_key(parent))
-                {
-                    return Err(ProdromeError::Store(format!(
-                        "missing object {}, named as a parent by {}",
-                        parent.as_str(),
-                        name.as_str()
-                    )));
-                }
+        for (name, object) in &self.objects {
+            if let Some(parent) = parents_of(object)
+                .into_iter()
+                .find(|parent| !self.objects.contains_key(parent))
+            {
+                return Err(ProdromeError::Store(format!(
+                    "missing object {}, named as a parent by {}",
+                    parent.as_str(),
+                    name.as_str()
+                )));
             }
         }
         self.order_among(&self.objects.keys().collect())
@@ -240,27 +302,24 @@ impl<E: Schema> Dag<E> {
     }
 
     /// The objects as the registers read them, in the linearisation's order.
+    /// A DAG missing a parent refuses: its [`Dag::interior`] is the history
+    /// it holds.
     pub fn nodes(&self) -> Result<Vec<Node<E>>, ProdromeError> {
-        Ok(self.nodes_in(self.linearise()?))
-    }
-
-    /// [`Dag::nodes`] over what is held when a parent is not: a writer's
-    /// read of a store with an object set aside.
-    pub fn nodes_across_gaps(&self) -> Result<Vec<Node<E>>, ProdromeError> {
-        Ok(self.nodes_in(self.order(true)?))
-    }
-
-    fn nodes_in(&self, order: Vec<Hash>) -> Vec<Node<E>> {
-        order.iter().filter_map(|name| self.node(name)).collect()
+        Ok(self
+            .linearise()?
+            .iter()
+            .filter_map(|name| self.node(name))
+            .collect())
     }
 
     /// One object as the registers read it, in this DAG's prodromes.
     pub(crate) fn node(&self, name: &Hash) -> Option<Node<E>> {
         let (name, object) = self.objects.get_key_value(name)?;
-        Some(Node {
-            genesis: self.prodrome(name, object),
-            ..Node::of(name.clone(), object)
-        })
+        Some(Node::placed(
+            name.clone(),
+            object,
+            self.prodrome(name, object),
+        ))
     }
 
     /// §3's findings: every print that is not an object, by name, then every

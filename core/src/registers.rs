@@ -89,28 +89,85 @@ impl<K> Place<K> {
     }
 }
 
-/// What the fold reads of a stored object. `genesis` is `None` for a legacy
+/// What the fold reads of a stored object: its name, its parents, its event
+/// and its PLACE, the prodrome it is in. `genesis` is `None` for a legacy
 /// object, and for a change in the legacy prodrome.
+///
+/// ONLY A [`crate::dag::Dag`] MAKES ONE ([`Dag::nodes`](crate::dag::Dag::nodes)).
+/// An object's prodrome is a function of the SET it is in, not of the
+/// object: a `Change` naming a legacy root is in the legacy prodrome, with
+/// every `Sealed` of its todo, and nothing in the change's bytes says that
+/// its genesis is a root rather than a `Genesis`. A node built from one
+/// envelope would put that change in a prodrome of its own and split its
+/// todo in two, so the fields are private and no constructor is public.
+///
+/// ```compile_fail
+/// use prodrome::event::{Hash, TodoEvent};
+/// use prodrome::reference::Todo;
+/// use prodrome::registers::Node;
+///
+/// fn misplace(name: Hash, parents: Vec<Hash>) -> Node<TodoEvent<Todo>> {
+///     // A node's place is its DAG's to give.
+///     Node { name, parents, event: None, genesis: None }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use prodrome::event::{Envelope, Hash, TodoEvent};
+/// use prodrome::reference::Todo;
+/// use prodrome::registers::Node;
+///
+/// fn misplace(name: Hash, object: &Envelope<TodoEvent<Todo>>) -> Node<TodoEvent<Todo>> {
+///     // No node is made of one envelope, which cannot say its prodrome.
+///     Node::of(name, object)
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node<E> {
-    pub name: Hash,
-    pub parents: Vec<Hash>,
-    pub event: Option<E>,
-    pub genesis: Genesis,
+    name: Hash,
+    parents: Vec<Hash>,
+    event: Option<E>,
+    genesis: Genesis,
 }
 
-impl<E: Schema> Node<E> {
-    pub fn of(name: Hash, envelope: &Envelope<E>) -> Node<E> {
-        let genesis = match envelope {
-            Envelope::Genesis(_) => Some(name.clone()),
-            other => other.genesis().cloned(),
-        };
+impl<E: Clone> Node<E> {
+    /// `envelope` under `name`, in the prodrome `genesis`, which the DAG
+    /// holding it decides.
+    pub(crate) fn placed(name: Hash, envelope: &Envelope<E>, genesis: Genesis) -> Node<E> {
         Node {
             parents: crate::event::parents_of(envelope),
             event: envelope.event().cloned(),
             name,
             genesis,
         }
+    }
+}
+
+impl<E> Node<E> {
+    #[must_use]
+    pub fn name(&self) -> &Hash {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn parents(&self) -> &[Hash] {
+        &self.parents
+    }
+
+    #[must_use]
+    pub fn event(&self) -> Option<&E> {
+        self.event.as_ref()
+    }
+
+    /// The prodrome the object is in: `None` for the legacy one.
+    #[must_use]
+    pub fn genesis(&self) -> &Genesis {
+        &self.genesis
+    }
+
+    #[must_use]
+    pub fn into_event(self) -> Option<E> {
+        self.event
     }
 }
 

@@ -114,15 +114,15 @@ fn ordered<E: Schema>(nodes: &[Node<E>], ranks: &[u32]) -> Vec<Node<E>> {
             .iter()
             .enumerate()
             .filter(|(_, (_, node))| {
-                node.parents
+                node.parents()
                     .iter()
-                    .all(|p| placed.contains(p) || !nodes.iter().any(|n| &n.name == p))
+                    .all(|p| placed.contains(p) || !nodes.iter().any(|n| n.name() == p))
             })
-            .min_by_key(|(_, (rank, node))| (*rank, &node.name))
+            .min_by_key(|(_, (rank, node))| (*rank, node.name()))
             .map(|(i, _)| i)
             .expect("a DAG always has a ready node");
         let (_, node) = left.remove(ready);
-        placed.insert(&node.name);
+        placed.insert(node.name());
         out.push(node.clone());
     }
     out
@@ -142,7 +142,7 @@ fn free<E: Schema>(draw: &Draw<E>) -> Result<(), TestCaseError> {
         let node = permuted[i % permuted.len()].clone();
         let after = doubled
             .iter()
-            .position(|held| held.name == node.name)
+            .position(|held| held.name() == node.name())
             .expect("held");
         let at = (after + 1 + i % 3).min(doubled.len());
         doubled.insert(at, node);
@@ -154,13 +154,13 @@ fn free<E: Schema>(draw: &Draw<E>) -> Result<(), TestCaseError> {
             .iter()
             .enumerate()
             .filter(move |(i, _)| (draw.replica >> (i % 64) & 1 == 1) == mine)
-            .map(|(_, node)| node.name.clone())
+            .map(|(_, node)| node.name().clone())
     };
     let (here, there) = (dag.closure(seeds(true)), dag.closure(seeds(false)));
     let within = |held: &BTreeSet<Hash>| -> Vec<Node<E>> {
         permuted
             .iter()
-            .filter(|node| held.contains(&node.name))
+            .filter(|node| held.contains(node.name()))
             .cloned()
             .collect()
     };
