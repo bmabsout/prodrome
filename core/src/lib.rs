@@ -107,7 +107,8 @@
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
 //! - `chain`    — §7.1: the chain compiler, `After` erased against a snapshot
-//! - `policy`   — §5: `Standing`, the `Policy` trait, and the reference policy
+//! - `policy`   — §5: `Standing`, the `Policy` trait, the reference policy, and
+//!   `Proven`, the policy that requires signatures
 //! - `registers`— §6.6: the DAG's structure and each todo's stream, a monoid action
 //! - `schedule` — a step function of time, and its algebra: what a
 //!   `Piecewise`, a register's history and an observed value each are

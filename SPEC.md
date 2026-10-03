@@ -370,18 +370,24 @@ them and never interprets them.
 ## 5. Standing
 
 The database does not decide whom to believe. It asks the HOST, about one
-event at a time, and the answer is a `Standing`:
+object carrying an event at a time, and the answer is a `Standing`:
 
 - **`Binds`** — the folds take it. It writes its registers and it is what the
   store believes.
 - **`Claims`** — the folds refuse it. It is stored and it is SHOWN, beside the
   answer that stands, and it changes no confirmed reading.
 
-A **policy** is that function: `standing(event) : Standing`, of the EVENT and
-nothing else — not of the log, not of the position, not of the moment. Every
-fold in §6 takes one, §6.7 takes one, and §3's `verify` takes one; nothing in
-the database reads an actor name to decide anything. The SCHEMA says which of
-its events a policy is asked about (§4); any other binds whoever wrote it.
+A **policy** is that function: `standing(object, event) : Standing`, of the
+object (its name, and the event it carries) and of a READING of the history
+it is in, the proof below, and nothing else — not of the log's order, not
+of the position, not of the moment. A policy that reads nothing of the
+history is the same at every one; a reader asks a policy that does at the
+history it reads (`at(history)`), and a store asks its own at every
+`verify`. Every fold in §6 takes one, §6.7 takes one, and §3's `verify`
+takes one; nothing in the database reads an actor name to decide anything.
+A policy is asked of every object carrying an event. The SCHEMA says which
+of its events are about standing (§4): the reference policy binds any other
+whoever wrote it, and a policy that requires signatures asks of every one.
 The todo schema asks about every kind but the record.
 
 A policy answers one further question, whose default is the reading above:
@@ -413,8 +419,10 @@ Each reading has its own candidates — the confirmed reading's are the
 binding writes, and a register none of whose writes binds is unwritten
 there; the claimed reading's are all of them — so a claim never moves a
 confirmed price (law 11), and one more urgent than the confirmed answer is
-SHOWN (§6.7). Twins cannot differ in standing: standing is a function of the
-event, and twins carry one.
+SHOWN (§6.7). Twins differ in standing only where a policy reads the proof:
+a signature covers an object's name, so it proves the twin it signs and not
+another placement of the same event over other deps, which would supersede
+what its actor never saw.
 
 **Proof: who wrote an object, read from the history.** An object's `actor`
 is a field its writer chose; the history can prove it. A `Signed` (§3)
@@ -438,6 +446,19 @@ registration: a device signs offline and is registered when next seen. A
 key registers or revokes no key; only a root does, because a key that could
 would make what a revocation means depend on which of two revocations came
 first.
+
+**The policy that requires signatures**, over any policy `P`, with a set
+of ROOT keys: an object by actor `A` binds only where the proof of its
+history, key objects counted where a root signed them, proves it, and then
+as `P` says; it is the host's own word where it is proven and `P` confirms
+it. An object it does not prove CLAIMS, whatever its kind, a content record
+included, and is stored and shown as every claim is. It is the meet of `P`
+and "proven", so it composes with any policy, and under it the reading is
+`P`'s with exactly the unproven objects' events claims, whatever order the
+objects arrived in. A history whose actors have no keys reads under any
+policy that does not require signatures exactly as it did, and adding
+signatures and keys to a history changes no reading under such a policy
+(law 41).
 
 **Both readings stay in the database** (§6.7): the CONFIRMED one, under the
 host's policy, and the CLAIMED one, under the policy where everything binds. A
@@ -1010,12 +1031,13 @@ say the parameter cannot do anything but select.
     the specs, the content, the functions, the whole history. It is stored and
     it is shown; it is not folded.
 12. **Standing selects events, not positions.** Because `standing` is a
-    function of the event alone, folding under a policy equals folding the
-    sub-log of the events it binds under the policy that binds everything —
-    and that stays true under any permutation of the log, since filtering
-    commutes with reordering. Which events count is a function of the event
-    SET; law 25 is the other half, that no linear extension of the DAG reads
-    differently.
+    function of the object and of a reading of the object set, never of a
+    position, folding under a policy equals folding the sub-log of the
+    events it binds under the policy that binds everything — and that stays
+    true under any permutation of the log, since filtering commutes with
+    reordering. Which events count is a function of the object SET (law 41
+    for a policy that reads the proof); law 25 is the other half, that no
+    linear extension of the DAG reads differently.
 
 Law 13 quantifies over the ENVIRONMENT, and it is what makes §7.1's compiler an
 optimisation rather than a second evaluator.
@@ -1351,8 +1373,19 @@ by nobody, and honest, unregistered and forged signatures of any object.
     object set: a replica that received them one at a time in any order,
     or two halves joined by sync, proves what the whole proves. A
     signature proves only for its key's actor, only where it verifies,
-    and only beneath every revocation of its key that counts.
+    and only beneath every revocation of its key that counts. Under a
+    policy that does not require signatures, signatures and keys change no
+    entry of any reading. Under one that does, an object the history does
+    not prove claims (one that no signature that verifies covers among
+    them) and every other stands as the wrapped policy says, so the reading
+    is the wrapped policy's with exactly those claims, through replicas
+    that received the objects in any order; and a history whose every
+    write is signed by its actor's registered key reads as the wrapped
+    policy reads it, with no finding.
     `signatures.rs::a_proof_is_a_function_of_the_object_set`,
+    `signatures.rs::signatures_change_no_reading_under_a_policy_that_does_not_require_them`,
+    `signatures.rs::under_proven_an_unproven_object_claims_in_any_arrival_order`,
+    `signatures.rs::a_history_signed_throughout_reads_as_the_wrapped_policy`,
     `sign.rs::a_registered_key_proves_what_it_signs_for_its_actor_only`,
     `sign.rs::a_forged_signature_proves_nothing`,
     `sign.rs::a_revocation_keeps_exactly_what_it_rests_on`,

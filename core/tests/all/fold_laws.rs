@@ -32,8 +32,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use prodrome::dag::Dag;
 use prodrome::event::{
-    mk_completed, mk_spec_revised, mk_tended, parents_of, seal_hash, Actor, Envelope, Hash,
-    TodoEvent, TodoId,
+    event_id, mk_completed, mk_spec_revised, mk_tended, parents_of, seal_hash, Actor, Envelope,
+    Hash, TodoEvent, TodoId,
 };
 use prodrome::fold::{Kind, Product, Write};
 use prodrome::fpl::{self, print_term, Env};
@@ -350,7 +350,10 @@ proptest! {
     ) {
         let policy = roster();
         let claim = claim.at(moment(when));
-        prop_assert!(policy.standing(&claim).claims(), "the generator draws a claim");
+        prop_assert!(
+            policy.standing(&event_id(&claim), &claim).claims(),
+            "the generator draws a claim"
+        );
 
         let mut extended = log.clone();
         extended.push(claim);
@@ -385,7 +388,7 @@ proptest! {
         for log in [&log, &shuffled] {
             let kept: Vec<Event> = log
                 .iter()
-                .filter(|event| policy.standing(*event).binds())
+                .filter(|event| policy.standing(&event_id(*event), *event).binds())
                 .cloned()
                 .collect();
             // `authored_at` takes no policy and reads EVERY record, so the
@@ -697,7 +700,7 @@ fn world(store: &Store, dropped: &BTreeSet<&Hash>) -> Vec<Chain> {
 fn written(events: &[Event], policy: &Untrusted) -> BTreeSet<(Kind, TodoId)> {
     events
         .iter()
-        .filter(|event| policy.standing(*event).binds())
+        .filter(|event| policy.standing(&event_id(*event), *event).binds())
         .flat_map(|event| {
             Write::of(event)
                 .filter_map(|write| write.kind())
@@ -862,7 +865,7 @@ proptest! {
             prop_assert_eq!(row.content(), &names, "content");
             prop_assert_eq!(&row.conflicts, &registers.conflicts(), "conflicts");
             let provisional = disputed
-                || registers.content.candidates().iter().any(|s| !policy.confirms(&*s.event));
+                || registers.content.candidates().iter().any(|s| !policy.confirms(&s.name, &*s.event));
             prop_assert_eq!(row.confidence.is_provisional(), provisional, "confidence");
             let names: Vec<&Hash> = stream.iter().map(|s| &s.name).collect();
             prop_assert_eq!(row.stream.iter().collect::<Vec<_>>(), names, "stream");

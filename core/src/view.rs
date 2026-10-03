@@ -256,9 +256,11 @@ pub fn entries<E: Row + History + Bind>(
             let stream = &prodrome[key];
             let reading = E::reading(&registers);
             // The readings differ only where the policy refuses a write.
-            let claim = (!stream.iter().all(|s| policy.standing(&*s.event).binds()))
-                .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
-                .filter(|claimed| E::disputes(&reading, claimed));
+            let claim = (!stream
+                .iter()
+                .all(|s| policy.standing(&s.name, &s.event).binds()))
+            .then(|| E::reading(&fold::read(stream, Some(now), &Everything)))
+            .filter(|claimed| E::disputes(&reading, claimed));
             let spec = functions.get(key).cloned().unwrap_or_else(fpl::mk_absent);
             let linked = fpl::link(&spec, &linkable);
             out.push(Entry {
