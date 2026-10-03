@@ -131,10 +131,11 @@ pub fn parse_policy<E: Schema>(json_text: &str, history: &Dag<E>) -> Result<Wire
         Ok(Held { untrusted, roots }) => WirePolicy::Proven(Proven::new(
             parse_untrusted(&untrusted.to_string())?,
             parse_keys("roots", &roots.to_string())?,
+            history,
         )),
         Err(_) => WirePolicy::Roster(parse_untrusted(json_text)?),
     };
-    Ok(policy.at(history).unwrap_or(policy))
+    Ok(policy)
 }
 
 /// A JSON array of public keys, each checked as one.

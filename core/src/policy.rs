@@ -220,8 +220,9 @@ impl<E: Schema> Policy<E> for Untrusted {
 /// a record whose author is unproven is not its author's word. It is still
 /// stored and shown, as every claim is, and the claimed reading folds it.
 ///
-/// Made at the empty history, where it proves nothing; a reader asks it
-/// [`Policy::at`] the history it reads.
+/// A POLICY AT A HISTORY: it is made at one, and read only there; a reader
+/// of another history asks it [`Policy::at`] that one, as the store's
+/// `verify` does of what it read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proven<P> {
     policy: P,
@@ -231,13 +232,18 @@ pub struct Proven<P> {
 
 impl<P> Proven<P> {
     /// `policy`, with every object held to its actor's keys, registered by
-    /// `roots`.
+    /// `roots`, at the history `history`.
     #[must_use]
-    pub fn new(policy: P, roots: impl IntoIterator<Item = PublicKey>) -> Proven<P> {
+    pub fn new<E: Schema>(
+        policy: P,
+        roots: impl IntoIterator<Item = PublicKey>,
+        history: &Dag<E>,
+    ) -> Proven<P> {
+        let roots: BTreeSet<PublicKey> = roots.into_iter().collect();
         Proven {
             policy,
-            roots: roots.into_iter().collect(),
-            proof: Proof::default(),
+            proof: Proof::of(history, &Registrar::Roots(roots.clone())),
+            roots,
         }
     }
 
@@ -273,11 +279,11 @@ impl<E: Schema, P: Policy<E> + Clone> Policy<E> for Proven<P> {
     }
 
     fn at(&self, history: &Dag<E>) -> Option<Self> {
-        Some(Proven {
-            policy: at(&self.policy, history).into_owned(),
-            roots: self.roots.clone(),
-            proof: Proof::of(history, &Registrar::Roots(self.roots.clone())),
-        })
+        Some(Proven::new(
+            at(&self.policy, history).into_owned(),
+            self.roots.iter().cloned(),
+            history,
+        ))
     }
 }
 
