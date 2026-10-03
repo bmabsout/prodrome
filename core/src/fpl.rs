@@ -971,6 +971,10 @@ pub fn checklist(own: Option<Term>, items: usize) -> Result<Option<Term>, FplErr
 /// term are one piece, and instants strictly increase or this refuses.
 /// `fulfillment` gives the raw record and its normal form the same reading at
 /// every instant.
+///
+/// # Errors
+///
+/// Two pieces whose instants do not strictly increase.
 pub fn mk_piecewise(head: Term, pieces: Vec<(Instant, Term)>) -> Result<Term, FplError> {
     Schedule::new(head, pieces)
         .map(piecewise)

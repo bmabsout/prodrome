@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use prodrome::event::{Envelope, Hash, TodoEvent};
 use prodrome::fold::{self, Product};
-use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars, Candidates};
+use prodrome::fpl::{datetime_of, instant_of, iso, print_term, scalars};
 use prodrome::policy::Policy;
 use prodrome::registers;
 use prodrome_wasm_exports::{self as exports, json, name_of, Read, Replica};
@@ -133,38 +133,30 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
             .collect(),
     );
 
-    // Each todo's state register read at every instant a binding write is
-    // dated, where the reading changes, and every binding tending: what
-    // `series_knots` reads back.
+    // Each todo's candidate bindings as a step function of time: its
+    // readings mapped to their outcomes, a knot where they change; and every
+    // binding tending. What `series_knots` reads back.
     let mut bindings = serde_json::Map::new();
     let mut tended = BTreeMap::new();
     for (todo, stream) in state.entities() {
-        let mut instants = BTreeSet::new();
         for stamp in stream.iter().filter(|s| policy.standing(&*s.event).binds()) {
             for write in fold::Write::of(&stamp.event) {
-                match write {
-                    fold::Write::State(_) => {
-                        instants.insert(instant_of(stamp.event.at()));
-                    }
-                    fold::Write::Tend(at) => {
-                        tended
-                            .entry(todo.as_str().to_owned())
-                            .or_insert_with(BTreeSet::new)
-                            .insert(at);
-                    }
-                    _ => {}
+                if let fold::Write::Tend(at) = write {
+                    tended
+                        .entry(todo.as_str().to_owned())
+                        .or_insert_with(BTreeSet::new)
+                        .insert(at);
                 }
             }
         }
-        let mut timeline = Vec::new();
-        let mut before = Candidates::from([None]);
-        for at in instants {
-            let reading = fold::read(stream, Some(at), &policy).outcomes();
-            if reading != before {
-                timeline.push(json!({ "at": iso(at), "binding": json_reading(&reading) }));
-                before = reading;
-            }
-        }
+        let outcomes = fold::readings(stream, None, &policy)
+            .map(|registers| registers.outcomes())
+            .normal();
+        let timeline: Vec<Value> = outcomes
+            .knots()
+            .iter()
+            .map(|(at, reading)| json!({ "at": iso(*at), "binding": json_reading(reading) }))
+            .collect();
         if !timeline.is_empty() {
             bindings.insert(todo.as_str().to_owned(), Value::Array(timeline));
         }

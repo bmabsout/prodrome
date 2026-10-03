@@ -279,6 +279,28 @@ proptest! {
         );
     }
 
+    /// ONE FOLD OVER TIME: an entity's registers at `t` are its readings,
+    /// the step function, at `t`, and ever are their last value, under a
+    /// policy and under everything.
+    #[test]
+    fn a_reading_at_a_moment_is_the_readings_at_it(log in a_log()) {
+        let state = fold(&chain_of(&log));
+        for (_, stream) in state.entities() {
+            for policy in [roster(), Untrusted::none()] {
+                let readings = prodrome::fold::readings(stream, None, &policy);
+                prop_assert_eq!(&prodrome::fold::read(stream, None, &policy), readings.last());
+                for stamp in stream {
+                    let t = fpl::instant_of(stamp.event.at());
+                    for t in [t - chrono::Duration::hours(1), t, t + chrono::Duration::hours(1)] {
+                        prop_assert_eq!(&prodrome::fold::read(stream, Some(t), &policy), readings.at(t));
+                        let until = prodrome::fold::readings(stream, Some(t), &policy);
+                        prop_assert_eq!(until.last(), readings.at(t));
+                    }
+                }
+            }
+        }
+    }
+
     /// §9.10 — UNDER A POLICY THAT BINDS EVERYTHING THE TWO READINGS ARE ONE.
     ///
     /// [`Everything`]'s whole content is that no event claims, so the CLAIMED
