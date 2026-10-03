@@ -205,11 +205,12 @@ since this grammar has tuples and no mapping.
   no value (law 25). A missing parent or a cycle is a refusal.
 - `ancestors(x)` is the transitive parent closure; `concurrent(a, b)` holds
   when neither is an ancestor of the other.
-- **`verify`** reports an object not hashing to its name, a missing parent, a
-  cycle, a malformed `Woven`, a leftover `HEAD` or `refs/`, every entry of
-  `objects/` that is not named `<name>.py` for a well-formed name (a temp an
-  interrupted write left, or a stray) as garbage, each by name — the reads
-  pass over such an entry, and only `verify` speaks of it — a receipt for
+- **`verify`** changes nothing and reports an object not hashing to its
+  name, a missing parent, a cycle, a malformed `Woven`, a leftover `HEAD` or
+  `refs/`, every entry of `objects/` that is not named `<name>.py` for a
+  well-formed name (a temp an interrupted write left, or a stray) and every
+  temp in the root as garbage, each by name — the reads pass over such an
+  entry, and only `verify` speaks of it — a receipt for
   each file in `quarantine/`, which stands in for the missing parent that
   object would otherwise be reported as, and an event the
   policy does not `confirm` (§5) dated before any of its ancestors — a writer
@@ -222,12 +223,17 @@ since this grammar has tuples and no mapping.
   that the store lacks. There is no unreachable object and no stale
   head to report: every object is a tip or beneath one, and no tip rests on
   another.
-- **`quarantine(name)`** moves `objects/<name>.py` to `quarantine/<name>.py`
-  when its bytes do not hash to `name`, and refuses a file that does (that
-  file is the object, even one this reader cannot parse). A read refuses a
-  file failing its hash rather than guess what it held — `tips()` among them,
-  and so every append — and its refusal names the object and this operation
-  (`prodrome quarantine <name>`). Set aside, the store reads the largest
+- **`fsck`** is `verify` after QUARANTINE: every file of `objects/` whose
+  bytes do not hash to its name is moved, under the lock and durably, to
+  `quarantine/<name>.py`, or `quarantine/<name>.<random>.py` where a file
+  already lies there, so no set-aside bytes are ever overwritten or
+  deleted, and the report names each (the receipt). A file that hashes to
+  its name stays (it is the object, even one this reader cannot parse), and
+  a stray is reported, never moved. A read refuses a file failing its hash
+  rather than guess what it held — `tips()` among them, and so every
+  append — and its refusal names the object and this operation (`prodrome
+  fsck`). No read takes anything in `quarantine/` for part of the history.
+  Set aside, the store reads the largest
   down-set it holds: the history without the object AND WITHOUT
   EVERYTHING RESTING ON IT, which is exactly what a replica that never
   received the object holds (law 40). `tips()` answers (the object's
