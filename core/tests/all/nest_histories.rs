@@ -1,6 +1,7 @@
 //! Law 10 (design §6.3, §7) over histories held in registers: nests of two
-//! and three levels, generated over three inner schemas (reviews, todos and
-//! shelves of reviews), each sub-history its own prodrome in its own replica
+//! and three levels, generated over four inner schemas (reviews, todos,
+//! shelves of reviews, and proposals at a schema declared as data), each
+//! sub-history its own prodrome in its own replica
 //! and every level's objects in one replica of its schema, as one object
 //! database holds a git repository's trees.
 //!
@@ -45,12 +46,13 @@ struct Sub<E: Schema> {
     store: MemoryStore<E>,
 }
 
-/// A replica holding a genesis of its own, `label`'s, writing into it.
-fn sub<E: Schema>(label: &str) -> Sub<E> {
+/// A replica at the schema `schema` holding a genesis of its own,
+/// `label`'s, writing into it.
+fn sub<E: Schema>(schema: E::Vocabulary, label: &str) -> Sub<E> {
     let object = Envelope::<E>::Genesis(mk_genesis(label, &nonce_of(label)).expect("a genesis"));
     let print = canonical_envelope(&object).into_bytes();
     let name = seal_hash(&object);
-    let store = MemoryStore::default();
+    let store = MemoryStore::at(schema);
     store
         .receive([name.clone()].into(), &|_| Some(print.clone()))
         .expect("a genesis verifies");
@@ -117,7 +119,7 @@ fn reading<E: Schema>(replica: &impl Replica<E>) -> Reading<E> {
 
 /// One replica holding every sub-history of a level.
 fn union<E: Schema>(subs: &[&Sub<E>]) -> MemoryStore<E> {
-    let union = MemoryStore::default();
+    let union = MemoryStore::at(subs[0].store.schema().clone());
     for sub in subs {
         sync(&sub.store, &union).expect("syncs");
     }
@@ -191,10 +193,17 @@ struct Two<I: Schema> {
     seen: BTreeMap<Hash, BTreeSet<Hash>>,
 }
 
-fn two<I: Schema>(shelves: usize, steps: &[Step], make: fn(usize, u8) -> I) -> Two<I> {
+fn two<I: Schema>(
+    schema: &I::Vocabulary,
+    shelves: usize,
+    steps: &[Step],
+    make: fn(usize, u8) -> I,
+) -> Two<I> {
     let two = Two {
-        outer: sub("outer"),
-        shelves: (0..shelves).map(|s| sub(&format!("inner {s}"))).collect(),
+        outer: sub(Default::default(), "outer"),
+        shelves: (0..shelves)
+            .map(|s| sub(schema.clone(), &format!("inner {s}")))
+            .collect(),
         seen: BTreeMap::new(),
     };
     let mut seen = two.seen;
@@ -256,7 +265,7 @@ fn two_levels<I: Schema<Key: AsRef<str>>>(two: &Two<I>) -> Result<(), TestCaseEr
         // Reading commutes with join.
         prop_assert_eq!(&flat.at(&path), &level(&sub.store));
         prop_assert_eq!(&flat.at(&path), &nest.held()[&path].flatten());
-        let read = MemoryStore::<I>::default();
+        let read = MemoryStore::<I>::at(inner.schema().clone());
         accept(&inner, &read, flat.at(&path).values().cloned().collect()).expect("accepts");
         prop_assert_eq!(reading(&read), reading(&sub.store));
         // The pointer reads as the heads its last write saw.
@@ -340,10 +349,16 @@ struct Three {
 
 fn three(steps: &[Deep]) -> Three {
     let mut three = Three {
-        outer: sub("outer"),
-        middles: (0..2).map(|o| sub(&format!("middle {o}"))).collect(),
+        outer: sub(Default::default(), "outer"),
+        middles: (0..2)
+            .map(|o| sub(Default::default(), &format!("middle {o}")))
+            .collect(),
         leaves: (0..2)
-            .map(|o| (0..2).map(|m| sub(&format!("leaf {o} {m}"))).collect())
+            .map(|o| {
+                (0..2)
+                    .map(|m| sub(Default::default(), &format!("leaf {o} {m}")))
+                    .collect()
+            })
             .collect(),
         seen: BTreeMap::new(),
     };
@@ -402,13 +417,26 @@ proptest! {
     /// Two levels, a shelf of reviews.
     #[test]
     fn a_nest_of_reviews_flattens_and_reads_as_its_parts(steps in steps(3)) {
-        two_levels(&two(3, &steps, a_review))?;
+        two_levels(&two(&Default::default(), 3, &steps, a_review))?;
     }
 
     /// Two levels, a shelf of todos.
     #[test]
     fn a_nest_of_todos_flattens_and_reads_as_its_parts(steps in steps(2)) {
-        two_levels(&two(2, &steps, a_todo))?;
+        two_levels(&two(&Default::default(), 2, &steps, a_todo))?;
+    }
+
+    /// Two levels, a shelf of proposals at a schema declared as data.
+    #[test]
+    fn a_nest_of_declared_proposals_flattens_and_reads_as_its_parts(steps in steps(2)) {
+        let schema = crate::declared::proposals();
+        let two = two(schema, 2, &steps, crate::declared::a_declared_proposal);
+        two_levels(&two)?;
+        // And the memoised fold of the join's algebra is the join.
+        let (nest, _) = two.nest();
+        let algebra = Flatten(prodrome::memo::name(b"nest flatten", []));
+        let (value, _) = fold(&algebra, &nest, &mut Cache::default());
+        prop_assert_eq!(value, nest.flatten());
     }
 
     /// Three levels, shelves of shelves of reviews. The flattened history
@@ -477,7 +505,7 @@ proptest! {
 #[test]
 fn an_outer_write_saw_exactly_the_heads_it_names() {
     let steps = [Step::Inner(0, 0), Step::Point(0), Step::Inner(0, 1)];
-    let two = two(1, &steps, a_review);
+    let two = two(&Default::default(), 1, &steps, a_review);
     let (nest, _) = two.nest();
     let reviews = dag(&two.shelves[0].store);
     let first = reviews
@@ -520,7 +548,7 @@ fn an_outer_write_saw_exactly_the_heads_it_names() {
 /// a cross-level edge.
 #[test]
 fn a_pointer_to_another_levels_object_is_missing() {
-    let two = two(1, &[Step::Inner(0, 0)], a_review);
+    let two = two(&Default::default(), 1, &[Step::Inner(0, 0)], a_review);
     let (_, inner) = two.nest();
     let outer: BTreeSet<Hash> = reading(&two.outer.store).objects;
     let leaf = Leaf::new(dag(&inner));
@@ -614,7 +642,7 @@ proptest! {
 /// nest holds both, and each write's past holds its own branch alone.
 #[test]
 fn concurrent_pointers_read_as_the_union_of_their_histories() {
-    let base: Sub<Review> = sub("inner 0");
+    let base: Sub<Review> = sub(Default::default(), "inner 0");
     base.store
         .append(a_review(0, 0))
         .expect("a review is opened");
@@ -637,7 +665,7 @@ fn concurrent_pointers_read_as_the_union_of_their_histories() {
         .expect("r1 opened again on the right");
 
     let mut seen = BTreeMap::new();
-    let here: Sub<Holder<Review>> = sub("outer");
+    let here: Sub<Holder<Review>> = sub(Default::default(), "outer");
     let there = MemoryStore::default();
     sync(&here.store, &there).expect("syncs");
     let there = Sub {

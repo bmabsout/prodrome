@@ -123,6 +123,45 @@ answer moves; the API breaks where a `Piecewise` layer had two fields.
   instant on, as a schedule. Laws in `core/tests/all/schedule.rs`,
   `fold_laws.rs` (a reading at a moment is the readings at it) and
   `observe.rs` (the observed schedule is the observed value).
+And a schema as data (`docs/design-register-types.md` §5 and §6.0, stage
+10, SPEC law 40): a schema may arrive as text at run time, is admitted only
+when its laws hold, and is read by the code a Rust schema is read by. A
+MINOR change under this file's rule: no stored byte moves, the object model
+gains no constructor, no object carries its schema, and every vector and
+export reads as it did. The API breaks where a schema's vocabulary was a
+type with a `Default`: it is now a value a store is opened at.
+
+### Added
+
+- **A schema as data (design §5, §6.0, stage 10, SPEC law 40):** `declared`.
+  `declared::Form`, a schema in the schema language, the objects' own §2
+  literal grammar under a closed vocabulary: event constructors with typed
+  fields (text, integer, instant, reference, a closed enum, a list), the
+  key, and registers with an order (`Discrete`, `Total`, a `Machine` given
+  by its covering relation, `Inclusion`), inflationary or not, and the
+  fields that write them; `print` is canonical, every set sorted.
+  `declared::Declaration::admit(text)`, the only way to a declaration,
+  asks eight laws in order and refuses with the first that fails
+  (`declared::Law`, `declared::Refusal`): grammar, canonical (the text is
+  its own print, so its name is its hash), unique names, the key, a stamp
+  on every event, typed routes, every order a partial order (a machine's
+  covers acyclic) and a bottom under every inflationary register.
+  `declared::Declared`, an event of a declared schema, implements `Schema`
+  with the declaration as its vocabulary; its registers are `Frontier`s
+  read under the declared order (`declared::Valued`, the core's own
+  orders interpreted) and an inflationary one climbs by `fold::grows`.
+  Laws in `core/tests/all/declared.rs`: a differential against the
+  proposal schema written in Rust (`core/tests/schemas/proposal.rs`) over
+  generated histories and through stores, law 1 and law 2 over the
+  declared schema, a lawful generated schema admitted and a broken one
+  refused under the law it breaks; `nest_histories.rs` nests it.
+- **`EventStore::at`, `MemoryStore::at`, `Replica::schema`:** a store
+  opened at a schema value; an overlay parses at its base's.
+- **`literal::Signature::Owned`:** a field order a vocabulary holds as
+  owned names, bound by the function that binds a static one.
+- **The wasm exports over a declared schema:** `schema!(Name, declared)`, a
+  class `new Name(schema, objects)` that admits the schema first, with
+  `declaration()`; the reference module exports it as `Declared`.
 
 - **Nesting (design §6.3, stage 9, SPEC law 39):** `nest`. `nest::Path`,
   the free monoid on `nest::Segment`s, and `nest::History<T>`, a set of
@@ -467,6 +506,17 @@ and every vector and export reads as it did.
   `Dag::nodes()`, and a test that built nodes by hand builds the objects
   and collects them into a `Dag`. Two compile-fail doctests pin it.
 
+- **A schema's vocabulary is a value (design §5, stage 10):**
+  `Schema::Vocabulary` asks `Clone + Debug + Send + Sync` and no longer
+  `Default`; `Schema::from_value`, `parse_event`, `parse_envelope`,
+  `Envelope::from_value`, `Change::from_call`, `dag::decode`,
+  `Dag::from_prints` and `memory::receive` take the schema they parse at;
+  `Schema::REGISTERS` is `Schema::registers(vocabulary)`, and
+  `fold::Product` gains `registers`, which `conflicts` reads.
+  `EventStore::new`, `MemoryStore::default` and the wasm's `Replica::of`
+  stay, for a schema whose vocabulary has a `Default`. The wasm's `Json`
+  names its key field and registers off the schema value (`Json::KEY` is
+  `Json::key_field`, `Json::register` takes the schema).
 - **A change's deps are its entity's heads (SPEC §3):** `registers::deps_for`
   answers every write to the entity, in any register, that no other write
   to it descends from (`registers::heads`), so the store on disk, the store

@@ -61,7 +61,7 @@ pub fn placed<I>(shelf: &str, at: Datetime, actor: &str, heads: BTreeSet<Hash>) 
 
 const HOLDER_SIGNATURES: &[(&str, &[&str])] = &[("Placed", &["shelf", "at", "actor", "heads"])];
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct HolderVocabulary;
 
 impl Vocabulary for HolderVocabulary {
@@ -100,6 +100,10 @@ impl<I: Schema> Default for Slots<'_, I> {
 impl<'a, I: Schema> Product<'a> for Slots<'a, I> {
     type Schema = Holder<I>;
 
+    fn registers(&self) -> Vec<Slot> {
+        vec![Slot::Held]
+    }
+
     fn join(&mut self, stamp: &'a Stamp<Holder<I>>) {
         self.0.join(stamp);
     }
@@ -131,7 +135,9 @@ impl<I: Schema> Schema for Holder<I> {
     type Key = Shelf;
     type Register = Slot;
 
-    const REGISTERS: &'static [Slot] = &[Slot::Held];
+    fn registers(_: &HolderVocabulary) -> Vec<Slot> {
+        vec![Slot::Held]
+    }
 
     type Registers<'a> = Slots<'a, I>;
 
@@ -147,7 +153,7 @@ impl<I: Schema> Schema for Holder<I> {
         )
     }
 
-    fn from_value(value: &Value) -> Result<Holder<I>, ProdromeError> {
+    fn from_value(_: &HolderVocabulary, value: &Value) -> Result<Holder<I>, ProdromeError> {
         let call: &Call = value
             .as_call()
             .ok_or_else(|| ProdromeError::invalid("a holder event is a constructor call"))?;

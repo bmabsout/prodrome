@@ -33,6 +33,10 @@ type Object = Envelope<Event>;
 // functions below that have always answered for it: `new Todos(objects)`.
 prodrome_wasm_exports::schema!(Todos = Event, priced);
 
+// Any schema declared as data, given at construction and admitted when its
+// laws hold: `new Declared(schemaText, objects)`.
+prodrome_wasm_exports::schema!(Declared, declared);
+
 /// A refusal, as the exception a JS caller catches. Every entry point returns
 /// one rather than panicking: a browser that aborts inside the Wasm leaves the
 /// module poisoned for the rest of the session, and the SubtleCrypto fallback
@@ -369,7 +373,8 @@ fn object_of(envelope: &Object) -> Result<String, JsError> {
 fn event_of(event: Option<String>) -> Result<Option<Event>, JsError> {
     event
         .map(|print| {
-            prodrome::event::parse_event(&print).map_err(|e| refused(format!("event: {e}")))
+            prodrome::event::parse_event(&Default::default(), &print)
+                .map_err(|e| refused(format!("event: {e}")))
         })
         .transpose()
 }

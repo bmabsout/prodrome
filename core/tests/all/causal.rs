@@ -177,7 +177,7 @@ proptest! {
         }
         for (_, stream) in state.entities() {
             let registers = folds::read(stream, None, &Everything);
-            for register in <Event as Schema>::REGISTERS {
+            for register in &<Event as Schema>::registers(&Default::default()) {
                 prop_assert_eq!(
                     registers.frontier(*register).names(),
                     superseded_per_register(stream, *register),

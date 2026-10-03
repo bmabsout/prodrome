@@ -416,6 +416,30 @@ as, the reading priced as `Least` over them, their meet (law 34); for the
 todo, a candidate is a world (4). An entity whose schema has no price has
 none at all, which is not `Absent`.
 
+**A schema may be declared.** A schema is a value a store is opened at, and
+no object carries it. Beside a schema written as code, one may arrive as
+TEXT, in the §2 grammar under the schema language's own closed vocabulary:
+`Schema(key, events, registers)`, each `Event(name, fields)` a constructor
+whose `Field(name, type)`s are in printed order, a type one of `Text()`,
+`Integer()`, `Instant()`, `Reference()` (a §3 name), `Enum(alternatives)`
+and `List(item)`, and each `Register(name, order, inflationary, writes)`
+ordered by one of `Discrete()`, `Total()` (over an integer),
+`Machine(covers)` (the reflexive and transitive closure of its `(lower,
+upper)` pairs over an enum's alternatives) and `Inclusion()` (a list read as
+a set), written by `Write(event, field)`s. It is ADMITTED only when, in this
+order: it parses; it is its own canonical print, every set (events and
+registers by name, alternatives, covers, writes) sorted, so its name is the
+hash of its text as an object's is; its names are unique, and no event's is
+an envelope's or the grammar's own; every event has the key field, a text;
+every event has `at`, an instant, and `actor`, a text; every register is
+written, by existing fields of one type, the type its order reads; every
+machine's covers are acyclic; and every inflationary register's order has a
+bottom. A refusal names the first law that fails. An admitted schema's
+events print as their constructor with every field in declared order, its
+registers are read as every register is (the maximal values of the
+frontier under the declared order), and an inflationary one is held to §3's
+refusal. A declared schema carries no price.
+
 Every fold is a projection of one entity's registers at a moment `t` under a
 §5 POLICY. A write joins its register when it is dated at or before `t` and
 the policy binds it — an event the schema does not ask about joins whoever
@@ -847,7 +871,9 @@ No stored byte moves: `Tended`, `Recur` and `Periodic` are new constructors
 parameter — an event vocabulary with its parse and print, the key, instant
 and actor of each event, the registers it writes, which events a policy is
 asked about, and an entity's registers as a product — carried by value and
-never as an existential, since one store holds one schema, and beside it,
+never as an existential, since one store holds one schema, its vocabulary
+a value the store is opened at (a unit for a schema written as code, its
+declaration for a declared one, §6), and beside it,
 each only where the schema has it, `Price`, the term each candidate of a
 reading prices as (§6), `History: Price`, the terms of each moment of a
 price that changes with its history (§6.4), `Bind`, what a `Ref` reads of an
@@ -1246,6 +1272,27 @@ two and three levels.
     `nest_histories.rs::three_levels_flatten_and_read_as_their_parts`,
     `nest_histories.rs::concurrent_pointers_read_as_the_union_of_their_histories`,
     `nest_histories.rs::the_memoised_fold_recomputes_only_the_spine_a_write_moved`.
+
+Law 40 is a schema declared as data (§6), against its twin written as
+code and on generated declarations.
+
+40. **A declared schema is its interpretation.** A declared schema
+    equivalent to one written as code prints every event alike, so holds
+    the same objects under the same names, and reads every register's
+    frontier and maximal writes alike, at every moment, over every
+    generated history; through a store it writes, refuses and answers as a
+    twin alike, and syncs as any replica. Each declared order is a partial
+    order over generated values. A lawful declaration is admitted in its
+    canonical print, which parses and prints back the same and is named by
+    its hash; a declaration with one defect is refused under exactly the
+    law the defect breaks.
+    `declared.rs::a_declared_schema_reads_every_history_as_its_rust_twin`,
+    `declared.rs::a_declared_store_appends_as_its_rust_twin`,
+    `declared.rs::a_declared_reading_is_a_function_of_the_object_set`,
+    `declared.rs::every_declared_order_is_a_partial_order`,
+    `declared.rs::a_lawful_schema_is_admitted_in_its_canonical_print`,
+    `declared.rs::a_broken_schema_is_refused_under_the_law_it_breaks`,
+    `nest_histories.rs::a_nest_of_declared_proposals_flattens_and_reads_as_its_parts`.
 
 ## 10. Non-goals
 

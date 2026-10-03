@@ -93,6 +93,7 @@
 //! Layout, one module per layer of the spec:
 //! - `literal`  — §2: the grammar, its printer (Python `repr` rules) and parser
 //! - `schema`   — §4–§6: a store's events, their entities and registers
+//! - `declared` — design §5, §6.0: a schema as data, admitted when its laws hold
 //! - `todo`     — the todo schema, the reference one: §4's kinds, §6's registers
 //! - `payload`  — §4: the record kind's fields, as a type parameter
 //! - `event`    — §4: the event kinds, envelopes, hashing (§3)
@@ -121,6 +122,7 @@ pub mod breaks;
 pub mod chain;
 pub mod change;
 pub mod dag;
+pub mod declared;
 pub mod event;
 pub mod fold;
 pub mod fpl;

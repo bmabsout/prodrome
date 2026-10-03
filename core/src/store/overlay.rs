@@ -119,7 +119,8 @@ impl<E: Schema, B: Replica<E>> Overlay<E, B> {
             let mut own = Vec::new();
             for (name, print) in layer.own.iter().filter(|(name, _)| !union.holds(name)) {
                 own.push((
-                    Verified::read(name, print).map_err(|why| why.refusal(name))?,
+                    Verified::read(self.base.schema(), name, print)
+                        .map_err(|why| why.refusal(name))?,
                     None,
                 ));
             }
@@ -132,6 +133,11 @@ impl<E: Schema, B: Replica<E>> Overlay<E, B> {
 }
 
 impl<E: Schema, B: Replica<E>> Replica<E> for Overlay<E, B> {
+    /// The base's: an overlay reads the union, so it parses as its base.
+    fn schema(&self) -> &E::Vocabulary {
+        self.base.schema()
+    }
+
     fn held(&self) -> Result<Held<E>, ProdromeError> {
         let mut layer = self.layer()?;
         let folded = layer.union.folded()?.clone();
@@ -171,7 +177,12 @@ impl<E: Schema, B: Replica<E>> Replica<E> for Overlay<E, B> {
         print_of: &dyn Fn(&Hash) -> Option<Vec<u8>>,
     ) -> Result<Vec<Hash>, ProdromeError> {
         let dag = self.layer()?.union.dag().clone();
-        let taken = memory::receive(|name| dag.get(name).is_some(), seeds, print_of)?;
+        let taken = memory::receive(
+            self.schema(),
+            |name| dag.get(name).is_some(),
+            seeds,
+            print_of,
+        )?;
         let mut layer = self.lock();
         let mut names = Vec::new();
         let mut fresh = Vec::new();

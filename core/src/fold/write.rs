@@ -50,6 +50,10 @@ impl<'e, P: Payload> Write<'e, P> {
 }
 
 impl Kind {
+    /// Every register a todo write supersedes in, in the order a reading
+    /// lists them.
+    pub const ALL: [Kind; 3] = [Kind::State, Kind::Spec, Kind::Content];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::State => "state",

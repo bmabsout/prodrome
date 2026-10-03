@@ -19,6 +19,7 @@ use crate::schema::Schema;
 /// [`super::sync`].
 #[derive(Debug)]
 pub struct MemoryStore<E: Schema> {
+    schema: E::Vocabulary,
     objects: Mutex<Objects<E>>,
     genesis: Option<Hash>,
 }
@@ -29,9 +30,17 @@ struct Objects<E: Schema> {
     prints: BTreeMap<Hash, Vec<u8>>,
 }
 
-impl<E: Schema> Default for MemoryStore<E> {
+impl<E: Schema<Vocabulary: Default>> Default for MemoryStore<E> {
     fn default() -> Self {
+        MemoryStore::at(E::Vocabulary::default())
+    }
+}
+
+impl<E: Schema> MemoryStore<E> {
+    /// A store in memory holding nothing, opened at the schema `schema`.
+    pub fn at(schema: E::Vocabulary) -> Self {
         MemoryStore {
+            schema,
             objects: Mutex::new(Objects {
                 memory: Memory::empty(),
                 prints: BTreeMap::new(),
@@ -39,9 +48,7 @@ impl<E: Schema> Default for MemoryStore<E> {
             genesis: None,
         }
     }
-}
 
-impl<E: Schema> MemoryStore<E> {
     /// This store, writing into the prodrome `genesis` begins; without one
     /// it writes into its only genesis.
     #[must_use]
@@ -62,6 +69,10 @@ impl<E: Schema> MemoryStore<E> {
 }
 
 impl<E: Schema> Replica<E> for MemoryStore<E> {
+    fn schema(&self) -> &E::Vocabulary {
+        &self.schema
+    }
+
     fn held(&self) -> Result<Held<E>, ProdromeError> {
         let mut objects = self.objects();
         let folded = objects.memory.folded()?.clone();
@@ -99,7 +110,12 @@ impl<E: Schema> Replica<E> for MemoryStore<E> {
         print_of: &dyn Fn(&Hash) -> Option<Vec<u8>>,
     ) -> Result<Vec<Hash>, ProdromeError> {
         let dag = self.objects().memory.dag().clone();
-        let taken = memory::receive(|name| dag.get(name).is_some(), seeds, print_of)?;
+        let taken = memory::receive(
+            &self.schema,
+            |name| dag.get(name).is_some(),
+            seeds,
+            print_of,
+        )?;
         let mut objects = self.objects();
         let mut names = Vec::new();
         let mut fresh = Vec::new();
