@@ -421,6 +421,12 @@ and every vector and export reads as it did.
 
 ### Changed (breaking)
 
+- **`EventStore::fsck` sets aside every file failing its hash**, then
+  verifies, where `EventStore::quarantine(name)` set aside one named file;
+  `prodrome fsck` replaces `prodrome quarantine <name>`, and a read's
+  refusal names it. `verify` (and `prodrome verify`) still changes nothing.
+  Unreleased API only: `quarantine` never shipped in a release.
+
 - **`Dag::nodes_across_gaps` is gone**: a set of objects missing a parent
   reads as its `Dag::interior()`, whose `nodes()` never refuses one, and
   `EventStore::dag` answers that interior (SPEC §3, law 40).
@@ -542,6 +548,14 @@ and every vector and export reads as it did.
 
 ### Fixed
 
+- **`fsck` quarantines what fails its hash and loses no byte (SPEC §3,
+  law 40).** One damaged file stopped every read until someone named it to
+  `quarantine`; `fsck` now finds and moves every such file, durably and
+  under the lock, names each in its report, and never overwrites one set
+  aside before (a second file under one name lands beside it). The store
+  then reads the history without the object and everything resting on it.
+  Law: `quarantine_is_the_down_set_without_what_rests_on_it` in
+  `core/tests/all/down_set.rs`; `prodrome-cli`'s verbs.
 - **A store reads the largest down-set it holds (SPEC §3, law 40).** A
   store missing an object (set aside, or not arrived) read every other
   object across the gap: an object resting on the missing one was folded,

@@ -10,6 +10,11 @@
 //! history reads (its objects, its fold, its tips) exactly as a store holding
 //! only that subset's interior, whichever handle reads it and whatever it
 //! read before.
+//!
+//! And quarantine is that reading, said explicitly: `fsck` sets aside an
+//! object whose bytes do not hash to its name, names it in its report, keeps
+//! its bytes, and the store reads the down-set without it AND WITHOUT
+//! EVERYTHING RESTING ON IT, the history of a replica that never received it.
 
 use crate::common;
 use crate::memory::{copy_store, replicas, Scratch};
@@ -17,7 +22,7 @@ use crate::memory::{copy_store, replicas, Scratch};
 use std::collections::BTreeSet;
 use std::fs;
 
-use prodrome::dag::Dag;
+use prodrome::dag::{Dag, Finding};
 use prodrome::event::{Hash, TodoEvent};
 use prodrome::reference::Todo;
 use prodrome::registers::fold;
@@ -177,5 +182,95 @@ proptest! {
         let store = legacy(&scratch, &log);
         let removed = chosen(&store.dag().expect("reads"), mask);
         reads_its_interior(&Scratch::new("down-set-legacy"), &store, &removed)?;
+    }
+}
+
+/// The quarantine law at one history and one object of it.
+fn quarantine_reads_without_it(
+    store: &Store,
+    pick: prop::sample::Index,
+) -> Result<(), TestCaseError> {
+    let whole = store.dag().expect("a history reads");
+    let names: Vec<&Hash> = whole.objects().keys().collect();
+    let damaged = (*pick.get(&names)).clone();
+    let resting: BTreeSet<Hash> = whole
+        .objects()
+        .keys()
+        .filter(|name| whole.closure([(*name).clone()]).contains(&damaged))
+        .cloned()
+        .collect();
+    let expected = without(&whole, &resting);
+    let file = format!("{}.py", damaged.as_str());
+    let path = store.root().join("objects").join(&file);
+    let mut bytes = fs::read(&path).expect("reads");
+    bytes.push(b' ');
+    fs::write(&path, &bytes).expect("damages");
+    prop_assert!(store.dag().is_err(), "a read refuses what fails its hash");
+
+    let report = store.fsck();
+    prop_assert!(
+        report.contains(&Finding::Quarantined(file.clone())),
+        "{:?}",
+        report
+    );
+    prop_assert!(
+        !report
+            .iter()
+            .any(|finding| matches!(finding, Finding::Unread { .. })),
+        "nothing failing its hash is left among the objects: {:?}",
+        report
+    );
+    let aside = store.root().join("quarantine");
+    prop_assert_eq!(fs::read(aside.join(&file)).expect("kept"), bytes.clone());
+    let folded = fold(&expected.nodes().expect("a down-set reads"));
+    let fresh = Store::new(store.root(), store.policy().clone());
+    for at in [store, &fresh] {
+        prop_assert_eq!(&*at.dag().expect("reads"), &expected);
+        prop_assert_eq!(&*at.folded().expect("folds"), &folded);
+        prop_assert_eq!(at.tips().expect("derives"), expected.tips());
+    }
+
+    // Damaged again under the same name: set aside beside the first, which
+    // is never overwritten.
+    let again = b"not an object".to_vec();
+    fs::write(&path, &again).expect("damages again");
+    let report = store.fsck();
+    let receipts: Vec<String> = fs::read_dir(&aside)
+        .expect("lists")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    prop_assert_eq!(receipts.len(), 2);
+    prop_assert_eq!(fs::read(aside.join(&file)).expect("kept"), bytes);
+    let second = receipts
+        .iter()
+        .find(|name| **name != file)
+        .expect("the second");
+    prop_assert!(second.starts_with(damaged.as_str()) && second.ends_with(".py"));
+    prop_assert_eq!(fs::read(aside.join(second)).expect("kept"), again);
+    prop_assert!(report.contains(&Finding::Quarantined(second.clone())));
+    prop_assert_eq!(&*store.dag().expect("reads"), &expected);
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Law 40, quarantine: over two writers' changes and over a legacy
+    /// chain, an object damaged on disk is set aside by `fsck`, named in its
+    /// report and kept byte for byte, and the store, through the handle that
+    /// read it whole and a fresh one, reads its objects, its fold and its
+    /// tips as the history without it and everything resting on it. Damaged
+    /// again, the second file is set aside beside the first.
+    #[test]
+    fn quarantine_is_the_down_set_without_what_rests_on_it(
+        logs in two_writers(),
+        log in a_log(),
+        pick in any::<prop::sample::Index>(),
+    ) {
+        prop_assume!(!log.is_empty());
+        let scratch = Scratch::new("quarantine");
+        quarantine_reads_without_it(&changes(&scratch, &logs), pick)?;
+        quarantine_reads_without_it(&legacy(&scratch, &log), pick)?;
     }
 }

@@ -298,11 +298,14 @@ fn verify_fails_a_tampered_object() {
     assert!(outcome.text.contains("does not hash"), "{}", outcome.text);
 }
 
-/// A damaged tip stops every write until `quarantine` sets it aside; then the
-/// store writes again, and `verify` fails on the receipt alone.
+/// A damaged tip stops every write until `fsck` sets it aside; then the store
+/// writes again, and `verify` fails on the receipt alone. A healthy store's
+/// `fsck` moves nothing and passes.
 #[test]
-fn quarantine_sets_a_damaged_object_aside_and_the_store_writes_again() {
+fn fsck_sets_a_damaged_object_aside_and_the_store_writes_again() {
     let root = seeded();
+    let healthy = prodrome(&root, &["fsck"]).expect("fsck answers");
+    assert!(healthy.ok, "{}", healthy.text);
     let store = Store::new(&root, Untrusted::none());
     // A tip that is neither the genesis nor what names a todo, so the store
     // still knows `publish` once it is set aside.
@@ -323,17 +326,18 @@ fn quarantine_sets_a_damaged_object_aside_and_the_store_writes_again() {
 
     let done = ["done", "publish", "--actor", "bassel"];
     let refusal = prodrome(&root, &done).expect_err("no honest tips");
-    assert!(
-        refusal
-            .to_string()
-            .contains(&format!("prodrome quarantine {}", tip.as_str())),
-        "{refusal}"
-    );
-    let healthy = prodrome(&root, &["quarantine", &"0".repeat(64)]);
-    assert!(healthy.is_err(), "no such object to set aside");
+    assert!(refusal.to_string().contains("prodrome fsck"), "{refusal}");
 
-    let said_aside = said(&root, &["quarantine", tip.as_str()]);
-    assert!(said_aside.contains("quarantine"), "{said_aside}");
+    let outcome = prodrome(&root, &["fsck"]).expect("fsck answers");
+    assert!(!outcome.ok, "the report names what it set aside");
+    assert_eq!(outcome.text.lines().count(), 1, "{}", outcome.text);
+    assert!(
+        outcome
+            .text
+            .starts_with(&format!("quarantine/{}.py", tip.as_str())),
+        "{}",
+        outcome.text
+    );
     assert!(!victim.exists());
     let outcome = prodrome(&root, &["verify"]).expect("verify answers");
     assert!(!outcome.ok);

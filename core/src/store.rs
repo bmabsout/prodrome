@@ -216,7 +216,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// are its heads", since the file it cannot read might name any of them.
     /// The refusal does not guess, and it does not leave the store stuck
     /// either: a file failing its hash is named, with the
-    /// [`EventStore::quarantine`] that sets it aside.
+    /// [`EventStore::fsck`] that sets it aside.
     /// Empty for an empty store. The tips are the memory's, so a steady store
     /// costs a directory listing.
     pub fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
@@ -607,45 +607,76 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         self.root.join("quarantine")
     }
 
-    fn quarantined_path(&self, digest: &Hash) -> PathBuf {
-        self.quarantine_dir()
-            .join(format!("{}.py", digest.as_str()))
+    /// Where a file failing its hash under `digest` is set aside:
+    /// `<name>.py`, or, where an earlier one already lies there,
+    /// `<name>.<random>.py`, so no set-aside bytes are ever overwritten.
+    fn aside_path(&self, digest: &Hash) -> PathBuf {
+        let first = self
+            .quarantine_dir()
+            .join(format!("{}.py", digest.as_str()));
+        let mut path = first;
+        while path.exists() {
+            path = self
+                .quarantine_dir()
+                .join(format!("{}.{:016x}.py", digest.as_str(), random()));
+        }
+        path
     }
 
-    /// SET ASIDE AN OBJECT FILE THAT FAILS ITS HASH: move it from `objects/`
-    /// to `quarantine/`, so the store answers again. Answers where it went.
+    /// FULL FSCK: set aside every object file that fails its hash, then
+    /// [`EventStore::verify`]. An empty result means healthy.
     ///
     /// A file whose bytes are not the hash of its name has no honest reading,
-    /// and [`EventStore::tips`] refuses to guess one — so one damaged file
-    /// would stop every write. Moving it out makes the store read the
-    /// largest down-set it holds (law 40): the history WITHOUT the object
-    /// and without everything resting on it, which a replica that never
-    /// received the object would hold. The tips derive, an append writes
-    /// over that history, and `verify` still says what is missing, as the
-    /// receipt for the quarantined file. Bringing the object back from a
-    /// replica (an `adopt`, or a copy of its file) is the repair, and what
-    /// rested on it rejoins the history with it; the move only stops the
-    /// damage from spreading to every reader.
+    /// and every read refuses to guess one, so one damaged file would stop
+    /// every write. This moves each such file to `quarantine/` (durably,
+    /// under the store's lock, never overwriting a file already there and
+    /// never deleting one), and the store then reads the largest down-set
+    /// it holds (law 40): the history WITHOUT the object and without
+    /// everything resting on it, which a replica that never received the
+    /// object holds. The report names each set-aside file
+    /// ([`Finding::Quarantined`]) until the object is restored from a
+    /// replica (an `adopt`, or a copy of its file) and the receipt deleted;
+    /// what rested on the object rejoins the history with it.
     ///
     /// ONLY A FILE THAT FAILS ITS HASH. One that hashes to its name is that
-    /// object, whatever it holds — one this reader cannot parse may be a newer
-    /// writer's — and setting it aside would be hiding it, so that is refused.
-    /// Moved under the store's lock, and both directories synced after.
-    pub fn quarantine(&self, digest: &Hash) -> Result<PathBuf, ProdromeError> {
-        let _locked = self.lock()?;
-        let path = self.object_path(digest);
-        if Hash::of_bytes(&self.raw(digest)?) == *digest {
-            return Err(ProdromeError::Store(format!(
-                "object {} hashes to its name: there is nothing to quarantine",
-                digest.as_str()
-            )));
+    /// object, whatever it holds — one this reader cannot parse may be a
+    /// newer writer's — and setting it aside would be hiding it: it is
+    /// reported, and stays. Strays are reported, never moved or deleted.
+    pub fn fsck(&self) -> Vec<Finding> {
+        match self.quarantine() {
+            Ok(()) => self.verify(),
+            Err(error) => std::iter::once(Finding::Io(error))
+                .chain(self.verify())
+                .collect(),
         }
-        let aside = self.quarantine_dir();
-        make_dir(&aside)?;
-        let to = self.quarantined_path(digest);
-        rename_into(&path, &to)?;
-        sync_dir(&self.objects_dir())?;
-        Ok(to)
+    }
+
+    /// Every file of `objects/` failing its hash, moved to `quarantine/`
+    /// under the lock: the directory it lands in synced with each, and
+    /// `objects/` once after.
+    fn quarantine(&self) -> Result<(), ProdromeError> {
+        let _locked = self.lock()?;
+        let names: Vec<Hash> = self
+            .listing()?
+            .objects
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let read = self.read(&names);
+        let tampered: Vec<&Hash> = read
+            .unread()
+            .iter()
+            .filter(|(_, why)| matches!(why, Unread::Tampered(_)))
+            .map(|(name, _)| name)
+            .collect();
+        if tampered.is_empty() {
+            return Ok(());
+        }
+        make_dir(&self.quarantine_dir())?;
+        for name in tampered {
+            rename_into(&self.object_path(name), &self.aside_path(name))?;
+        }
+        sync_dir(&self.objects_dir())
     }
 
     /// Everything `digest` transitively rests on — STRICTLY: an object is not
@@ -720,9 +751,20 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 .filter(|file| self.root.join(file.trim_end_matches('/')).exists())
                 .map(Finding::Leftover),
         );
-        findings.extend(self.quarantined());
+        let aside = match self.aside() {
+            Ok(aside) => aside,
+            Err(error) => {
+                findings.push(Finding::Io(error));
+                Vec::new()
+            }
+        };
+        let receipts: BTreeSet<&str> = aside
+            .iter()
+            .filter_map(|file| file.split('.').next())
+            .collect();
+        findings.extend(aside.iter().cloned().map(Finding::Quarantined));
         findings.extend(graph.into_iter().filter(|finding| {
-            !matches!(finding, Finding::Broken { at, .. } if self.quarantined_path(at).exists())
+            !matches!(finding, Finding::Broken { at, .. } if receipts.contains(at.as_str()))
         }));
         findings
     }
@@ -742,19 +784,20 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         temps
     }
 
-    fn quarantined(&self) -> Vec<Finding> {
+    /// The files in `quarantine/`, sorted: none where it does not exist.
+    fn aside(&self) -> Result<Vec<String>, ProdromeError> {
         let dir = self.quarantine_dir();
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(error) => return vec![Finding::Io(io(&dir, error))],
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io(&dir, error)),
         };
         let mut files: Vec<String> = entries
             .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         files.sort();
-        files.into_iter().map(Finding::Quarantined).collect()
+        Ok(files)
     }
 }
 
@@ -1298,8 +1341,8 @@ mod tests {
                 ),
                 format!(
                     "chain broke at {digest}: object {digest} hashes to {} — tampered or \
-                     corrupt: `prodrome quarantine {digest}` (`EventStore::quarantine`) sets it \
-                     aside so the store answers again",
+                     corrupt: `prodrome fsck` (`EventStore::fsck`) sets it aside so the store \
+                     answers again",
                     Hash::of_bytes(&fs::read(&path).expect("reads")).as_str(),
                     digest = digest.as_str()
                 ),
@@ -1661,24 +1704,28 @@ mod tests {
         let fresh = Store::new(store.root(), roster());
         let refusal = fresh.tips().expect_err("no honest tips").to_string();
         assert!(refusal.contains(middle.as_str()), "{refusal}");
-        assert!(
-            refusal.contains(&format!("`prodrome quarantine {}`", middle.as_str())),
-            "{refusal}"
-        );
+        assert!(refusal.contains("`prodrome fsck`"), "{refusal}");
         assert!(fresh
             .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .is_err());
-        assert!(fresh.quarantine(&first).is_err(), "a healthy object stays");
 
-        let aside = fresh.quarantine(&middle).expect("sets it aside");
+        let receipt = format!(
+            "quarantine/{}.py failed its hash and was set aside (SPEC §3): restore the object \
+             from a replica, then delete this file",
+            middle.as_str()
+        );
+        let set_aside = vec![Finding::Quarantined(format!("{}.py", middle.as_str()))];
+        assert_eq!(fresh.fsck(), set_aside, "named in the report");
+        let aside = store
+            .root()
+            .join("quarantine")
+            .join(format!("{}.py", middle.as_str()));
         assert_eq!(
-            aside,
-            store
-                .root()
-                .join("quarantine")
-                .join(format!("{}.py", middle.as_str()))
+            fs::read_to_string(&aside).expect("set aside, never deleted"),
+            text.replace("alpha", "omega")
         );
         assert!(!path.exists());
+        assert!(store.object_path(&first).exists(), "a healthy object stays");
         // `last` rests on what the store lacks, so it is out of the history
         // until `middle` is back: the history is `first` alone.
         assert_eq!(tips(&fresh), [first.clone()].into_iter().collect());
@@ -1691,12 +1738,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![&first]
         );
-        let receipt = format!(
-            "quarantine/{}.py failed its hash and was set aside (SPEC §3): restore the object \
-             from a replica, then delete this file",
-            middle.as_str()
-        );
         assert_eq!(findings(&fresh), vec![receipt.clone()]);
+        assert_eq!(fresh.fsck(), set_aside, "a second fsck moves nothing");
         let next = fresh
             .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .expect("the store writes again");

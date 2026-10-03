@@ -71,8 +71,8 @@ impl Unread {
         match self {
             Unread::Io(error) | Unread::Unparsed(error) => error.clone(),
             Unread::Tampered(computed) => ProdromeError::Store(format!(
-                "object {name} hashes to {computed} — tampered or corrupt: `prodrome quarantine \
-                 {name}` (`EventStore::quarantine`) sets it aside so the store answers again"
+                "object {name} hashes to {computed} — tampered or corrupt: `prodrome fsck` \
+                 (`EventStore::fsck`) sets it aside so the store answers again"
             )),
             Unread::NotText => ProdromeError::Store(format!("object {name} is not UTF-8")),
         }
