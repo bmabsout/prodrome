@@ -20,6 +20,12 @@
 //! | `prices`   | §6.1, §6.4, `priced` only: the environment and every function |
 //! | `next_changes` | §7, `priced` only: when each entity's observed price next changes |
 //! | `append`   | §3: an event sealed into this replica, and the object to send |
+//! | `declaration` | `declared` only: the schema it was admitted at          |
+//!
+//! A SCHEMA DECLARED AS DATA ([`prodrome::declared`]) needs no crate of its
+//! own: `schema!(Name, declared)` is a class whose constructor takes the
+//! schema's text beside the objects, `new Name(schema, objects)`, admits it
+//! (a refusal names the law that failed) and reads the objects at it.
 //!
 //! A schema crosses the boundary by [`Json`]: the field its events
 //! name an entity by, each register's name, and each value's JSON, a function
@@ -40,6 +46,8 @@
 //! reference module. A module exports its classes and nothing of this
 //! crate's own.
 
+#[cfg(test)]
+mod declared;
 pub mod json;
 #[cfg(test)]
 mod review;
@@ -50,6 +58,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use prodrome::dag::{Dag, Finding, Unread};
+pub use prodrome::declared::Declared;
+use prodrome::declared::{Datum, Declaration, Slot};
 use prodrome::event::{canonical_envelope, parents_of, parse_event, Envelope, Hash, TodoEvent};
 use prodrome::fold::{Kind, Product};
 use prodrome::fpl::{datetime_of, instant_of, iso, print_term, Instant};
@@ -59,7 +69,7 @@ use prodrome::policy::Everything;
 use prodrome::registers::Node;
 use prodrome::schema::{self, Bind, History, Schema};
 use prodrome::store::{MemoryStore, Replica as _};
-use prodrome::todo;
+use prodrome::todo::{self, TodoVocabulary};
 use prodrome::view::{list_order, Entry};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -75,13 +85,16 @@ use wire::{
 ///
 /// An entity's key reads as a string (`Key: AsRef<str>`), since it is a key
 /// of a JSON object.
+///
+/// Both names are read off the schema VALUE, so a schema declared at run
+/// time names them as its declaration does, and a Rust one as its type does.
 pub trait Json: Schema<Key: AsRef<str>> {
     /// The field an event names its entity by, and so the field a row names
     /// it under: `"todo"` for the todo schema.
-    const KEY: &'static str;
+    fn key_field(schema: &Self::Vocabulary) -> &str;
 
     /// A register's name, the key its reading is under.
-    fn register(register: Self::Register) -> &'static str;
+    fn register(schema: &Self::Vocabulary, register: Self::Register) -> &str;
 
     /// The VALUE this event writes to `register`, one [`Schema::writes`]
     /// names, as JSON.
@@ -105,9 +118,11 @@ pub trait RowJson: Json + schema::Row {
 /// its todo. Here and not in a host, which could not implement this crate's
 /// trait for the core's type.
 impl<P: Payload> Json for TodoEvent<P> {
-    const KEY: &'static str = "todo";
+    fn key_field(_: &TodoVocabulary<P>) -> &str {
+        "todo"
+    }
 
-    fn register(kind: Kind) -> &'static str {
+    fn register(_: &TodoVocabulary<P>, kind: Kind) -> &str {
         kind.as_str()
     }
 
@@ -116,6 +131,37 @@ impl<P: Payload> Json for TodoEvent<P> {
     /// literal, by `wire::json_literal`'s one mapping.
     fn value(&self, _kind: Kind) -> Value {
         json_literal(&Schema::to_value(self))
+    }
+}
+
+/// A schema declared as data crosses as its declaration names it: each row
+/// under its key field, each register under its name, and a value as its
+/// register's order sees it (a list under inclusion as its set), each
+/// datum as JSON: text, an enum's alternative and a reference as strings,
+/// an integer as a number, an instant as ISO, a list as an array.
+impl Json for Declared {
+    fn key_field(schema: &Declaration) -> &str {
+        schema.key()
+    }
+
+    fn register(schema: &Declaration, slot: Slot) -> &str {
+        schema.register_name(slot)
+    }
+
+    fn value(&self, slot: Slot) -> Value {
+        self.written(slot).map_or(Value::Null, |datum| {
+            datum_json(&self.schema().value(slot, datum).value())
+        })
+    }
+}
+
+fn datum_json(datum: &Datum) -> Value {
+    match datum {
+        Datum::Text(text) | Datum::Alternative(text) => json!(text),
+        Datum::Reference(name) => json!(name.as_str()),
+        Datum::Integer(int) => json!(int),
+        Datum::Instant(at) => json!(iso(instant_of(*at))),
+        Datum::List(items) => Value::Array(items.iter().map(datum_json).collect()),
     }
 }
 
@@ -142,6 +188,7 @@ impl<P: Payload> RowJson for TodoEvent<P> {
 /// ```text
 /// prodrome_wasm_exports::schema!(Reviews = my_host::Review);
 /// prodrome_wasm_exports::schema!(Todos = prodrome::event::TodoEvent<my_host::Record>, priced);
+/// prodrome_wasm_exports::schema!(Plugins, declared);
 /// ```
 ///
 /// A macro because `#[wasm_bindgen]` exports no generic item: each method is
@@ -155,9 +202,7 @@ impl<P: Payload> RowJson for TodoEvent<P> {
 #[macro_export]
 macro_rules! schema {
     ($name:ident = $schema:ty) => {
-        #[doc = concat!("The exports of the schema `", stringify!($schema), "`.")]
-        #[wasm_bindgen::prelude::wasm_bindgen]
-        pub struct $name($crate::Replica<$schema>);
+        $crate::schema!(@class $name = $schema);
 
         #[wasm_bindgen::prelude::wasm_bindgen]
         impl $name {
@@ -168,7 +213,38 @@ macro_rules! schema {
                     .map($name)
                     .map_err(|refusal| wasm_bindgen::JsError::new(&refusal))
             }
+        }
+    };
+    ($name:ident, declared) => {
+        $crate::schema!(@class $name = $crate::Declared);
 
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        impl $name {
+            /// `schema`, a declared schema's text, admitted (a refusal
+            /// names the law that failed), and the objects, `[{hash,
+            /// text}]`, read once at it.
+            #[wasm_bindgen(constructor)]
+            pub fn new(schema: &str, objects: &str) -> Result<$name, wasm_bindgen::JsError> {
+                $crate::Replica::declared(schema, objects)
+                    .map($name)
+                    .map_err(|refusal| wasm_bindgen::JsError::new(&refusal))
+            }
+
+            /// The schema it was admitted at: `{name, text, key,
+            /// registers}`, its content name, canonical text, key field
+            /// and register names.
+            pub fn declaration(&self) -> Result<String, wasm_bindgen::JsError> {
+                $crate::thrown($crate::declaration(&self.0))
+            }
+        }
+    };
+    (@class $name:ident = $schema:ty) => {
+        #[doc = concat!("The exports of the schema `", stringify!($schema), "`.")]
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        pub struct $name($crate::Replica<$schema>);
+
+        #[wasm_bindgen::prelude::wasm_bindgen]
+        impl $name {
             /// §3: do these bytes hash to these names, form one DAG, and end
             /// at which tips. Every row names its entity under the schema's
             /// key.
@@ -372,12 +448,49 @@ impl<E: Schema> Replica<E> {
         dag.nodes().map_err(|e| e.to_string())
     }
 
+    /// The schema the objects are read at.
+    pub fn schema(&self) -> &E::Vocabulary {
+        &self.schema
+    }
+
     pub fn read(&self) -> Result<Read<'_, E>, Refusal> {
         self.nodes.as_ref().map_err(Clone::clone).map(|nodes| Read {
             dag: &self.dag,
             nodes,
         })
     }
+}
+
+impl Replica<Declared> {
+    /// [`Replica::at`] a schema declared as data: `schema` is its text,
+    /// admitted first.
+    ///
+    /// # Errors
+    ///
+    /// The law the schema does not keep, named; then [`Replica::at`]'s.
+    pub fn declared(schema: &str, objects: &str) -> Result<Replica<Declared>, Refusal> {
+        let schema = Declaration::admit(schema).map_err(|refusal| format!("schema: {refusal}"))?;
+        Replica::at(schema, objects)
+    }
+}
+
+/// What a declared replica was admitted at: its content name, canonical
+/// text, key field and register names.
+pub fn declaration(replica: &Replica<Declared>) -> Result<String, Refusal> {
+    let schema = &replica.schema;
+    printed(&object(vec![
+        ("name", json!(schema.name().as_str())),
+        ("text", json!(schema.text())),
+        ("key", json!(schema.key())),
+        (
+            "registers",
+            strings(
+                schema
+                    .registers()
+                    .map(|slot| schema.register_name(slot).to_owned()),
+            ),
+        ),
+    ]))
 }
 
 // --- §3: append ------------------------------------------------------------------
@@ -551,7 +664,7 @@ impl Row {
         }
     }
 
-    fn json<E: Json>(&self) -> Value {
+    fn json<E: Json>(&self, schema: &E::Vocabulary) -> Value {
         object(vec![
             ("hash", json!(self.hash)),
             ("computed", json!(self.computed)),
@@ -559,7 +672,7 @@ impl Row {
             ("reachable", json!(self.reachable)),
             ("depth", json!(self.depth)),
             ("kind", json!(self.kind)),
-            (E::KEY, json!(self.key)),
+            (E::key_field(schema), json!(self.key)),
             ("actor", json!(self.actor)),
             ("at", json!(self.at)),
             ("problem", json!(self.problem)),
@@ -682,7 +795,12 @@ pub fn verify<E: Json>(replica: &Replica<E>) -> Result<String, Refusal> {
         ("tips", strings(tips)),
         (
             "objects",
-            Value::Array(listed.iter().map(|at| rows[*at].json::<E>()).collect()),
+            Value::Array(
+                listed
+                    .iter()
+                    .map(|at| rows[*at].json::<E>(&replica.schema))
+                    .collect(),
+            ),
         ),
         ("walked", Value::from(order.len())),
         ("verified", Value::from(verified)),
@@ -743,7 +861,7 @@ pub fn since<E: Schema>(replica: &Replica<E>, tips: &str) -> Result<String, Refu
 /// At `at` (ISO, or `null` for every write the objects hold) and under
 /// `untrusted`, a list of actor names read as the reference policy (§5). Per
 /// entity in (genesis, key) order: `genesis` is the prodrome's, `null` for a
-/// legacy one, and the entity's key is under the schema's [`Json::KEY`].
+/// legacy one, and the entity's key is under the schema's [`Json::key_field`].
 pub fn readings<E: Json>(
     replica: &Replica<E>,
     at: Option<String>,
@@ -770,12 +888,15 @@ pub fn readings<E: Json>(
                             })
                         })
                         .collect();
-                    (E::register(register).to_owned(), Value::Array(reading))
+                    (
+                        E::register(&replica.schema, register).to_owned(),
+                        Value::Array(reading),
+                    )
                 })
                 .collect();
             rows.push(object(vec![
                 ("genesis", json!(genesis.as_ref().map(Hash::as_str))),
-                (E::KEY, json!(key.as_ref())),
+                (E::key_field(&replica.schema), json!(key.as_ref())),
                 ("registers", Value::Object(readings)),
             ]));
         }
@@ -791,10 +912,10 @@ fn moment<E: Schema>(read: &Read<'_, E>, at: Option<String>) -> Result<Datetime,
     read.moment(parse_moment("at", at)?)
 }
 
-fn json_entry<E: RowJson>(entry: &Entry<E>) -> Value {
+fn json_entry<E: RowJson>(schema: &E::Vocabulary, entry: &Entry<E>) -> Value {
     object(vec![
         ("genesis", json!(entry.genesis.as_ref().map(Hash::as_str))),
-        (E::KEY, json!(entry.key.as_ref())),
+        (E::key_field(schema), json!(entry.key.as_ref())),
         ("reading", E::reading_json(&entry.reading)),
         (
             "claim",
@@ -816,7 +937,9 @@ fn json_entry<E: RowJson>(entry: &Entry<E>) -> Value {
                 entry
                     .conflicts
                     .iter()
-                    .map(|(register, writes)| (E::register(*register).to_owned(), names(writes)))
+                    .map(|(register, writes)| {
+                        (E::register(schema, *register).to_owned(), names(writes))
+                    })
                     .collect(),
             ),
         ),
@@ -847,7 +970,11 @@ pub fn entries<E: RowJson + History + Bind>(
         ("at", Value::String(iso(instant_of(moment)))),
         (
             "entries",
-            Value::Array(rows.iter().map(json_entry).collect()),
+            Value::Array(
+                rows.iter()
+                    .map(|entry| json_entry(&replica.schema, entry))
+                    .collect(),
+            ),
         ),
     ]))
 }

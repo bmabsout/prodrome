@@ -82,6 +82,23 @@ pub struct Valued<'d> {
     pub(crate) datum: &'d Datum,
 }
 
+impl Valued<'_> {
+    /// The value the order compares, as a datum: itself, but under
+    /// inclusion a list's SET, its items sorted and each once. So two writes
+    /// the order cannot tell apart answer one datum, and anything printed of
+    /// a reading is a function of the reading.
+    #[must_use]
+    pub fn value(&self) -> Datum {
+        match (self.order, self.datum) {
+            (Interpreted::Inclusion, Datum::List(items)) => {
+                let set: BTreeSet<&Datum> = items.iter().collect();
+                Datum::List(set.into_iter().cloned().collect())
+            }
+            (_, datum) => datum.clone(),
+        }
+    }
+}
+
 /// Each order of the vocabulary IS the core's: discrete is [`Discrete`],
 /// total is [`Total`] on the integers, inclusion is the order on
 /// `BTreeSet`s, and a machine is its closure. Values of different shapes
