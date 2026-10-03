@@ -125,8 +125,20 @@ since this grammar has tuples and no mapping.
   it, and a move into `quarantine/` syncs both directories. So a crash
   leaves either no file or the whole one, never an empty file under a name
   that promises content, and at worst a temp that `verify` reports.
-- **Tips are derived.** `tips()` is the set of objects no object names as a
-  parent: a function of the object set alone, in any order it is listed. A
+- **A store reads the largest down-set it holds.** A history is a set of
+  objects closed under parents, and a store's files need not be one: an
+  object set aside (`quarantine`) or not yet arrived leaves what rests on
+  it naming a parent the store lacks. The store's HISTORY is the INTERIOR
+  of its objects, every object whose ancestors are all held; every read
+  (the objects, the fold, `tips()`, an append's deps) reads it and nothing
+  else. An object outside it is held, verified, and waits: no read sees it
+  until what it rests on arrives, and then it joins as any arrival does.
+  The interior is never more than the objects, idempotent and monotone, so
+  it is a function of the object set (law 40); of a store closed under
+  parents it is the store.
+- **Tips are derived.** `tips()` is the set of objects of the history no
+  object names as a parent: a function of the object set alone, in any
+  order it is listed. A
   store on disk is its `objects/` and nothing else, so two copies that each
   only added objects are merged by uniting the files — a `git merge` of two
   clones is this union and cannot conflict. A store under git needs
@@ -215,12 +227,14 @@ since this grammar has tuples and no mapping.
   file is the object, even one this reader cannot parse). A read refuses a
   file failing its hash rather than guess what it held — `tips()` among them,
   and so every append — and its refusal names the object and this operation
-  (`prodrome quarantine <name>`). Set aside, the store is what it holds
-  without it: `tips()` answers (the object's parents may be tips again), and
-  `verify` reports the receipt until the object is restored from a replica
-  and the quarantined file deleted. An append made meanwhile rests on the
-  heads of what was held; once the object is back, a head it puts beneath
-  another is reported as a redundant dep, which changes no ancestry.
+  (`prodrome quarantine <name>`). Set aside, the store reads the largest
+  down-set it holds: the history without the object AND WITHOUT
+  EVERYTHING RESTING ON IT, which is exactly what a replica that never
+  received the object holds (law 40). `tips()` answers (the object's
+  parents may be tips again), and `verify` reports the receipt until the
+  object is restored from a replica and the quarantined file deleted. An
+  append made meanwhile rests on the heads of that history; once the
+  object is back, what rested on it rejoins, concurrent with the append.
 - **`adopt(source, tip)`** copies in everything `tip` rests on that the store
   lacks, a change's or a snapshot's genesis included, verifying all of it
   before writing any, and writing parents before children, since an object
@@ -1146,6 +1160,18 @@ The design's law 7 is law 35: replicas, wherever each is held.
     `replica.rs::sync_is_the_join`,
     `replica.rs::a_store_in_memory_appends_what_a_disk_store_appends`,
     `replica.rs::an_overlay_reads_as_its_union_until_it_is_flushed`.
+
+Law 40 is §3's reading of a store that is not closed under parents, over
+two writers' changes and over legacy chains, with any objects removed.
+
+40. **A store reads the largest down-set it holds.** The interior of a set
+    of objects is exactly the objects no removed object is beneath; it is
+    never more than the set, idempotent, monotone, and the whole of a
+    history. A store holding any subset of a history, read cold or by a
+    handle that held more, reads its objects, its fold and its tips as a
+    store given only that subset's interior.
+    `down_set.rs::the_interior_is_the_largest_down_set`,
+    `down_set.rs::a_store_reads_its_largest_down_set`.
 
 Laws 36 and 37 are §3's deps and §6.6's supersession, on two writers whose
 replicas in memory sync in between and whose events are dated anywhere.

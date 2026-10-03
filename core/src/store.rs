@@ -207,8 +207,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         self.objects_dir().join(format!("{}.py", digest.as_str()))
     }
 
-    /// Every head: the objects no object in the store names as a parent —
-    /// [`Dag::tips`] over the store's objects, and nothing on disk besides.
+    /// Every head: the objects of the history no object of it names as a
+    /// parent — [`Dag::tips`] over [`EventStore::dag`], and nothing on disk
+    /// besides.
     ///
     /// FALLIBLE, because it reads every object it does not hold: a store
     /// holding a file that does not verify has no honest answer to "what
@@ -254,8 +255,12 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         Ok(listing)
     }
 
-    /// Every object the store holds, refusing the first file that is not an
-    /// object: what the memory holds, after reading what it does not.
+    /// THE STORE'S HISTORY: the largest down-set of its objects
+    /// ([`Dag::interior`]), refusing the first file that is not an object.
+    /// An object resting on one the store lacks (set aside, or not arrived)
+    /// is in it once what it rests on is; until then no read sees it, and
+    /// `verify` names what it lacks. What the memory holds, after reading
+    /// what it does not.
     ///
     /// Shared, not copied: the memory goes on from this value, and copies it
     /// only if a look extends it while the caller still holds this one.
@@ -265,10 +270,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         Ok(Arc::clone(memory.dag()))
     }
 
-    /// The fold of every object the store holds, across a parent set aside
-    /// (what an append decides on): `fold(&dag.nodes_across_gaps()?)` of
-    /// [`EventStore::dag`], extended by each object as it is read and never
-    /// refolded from the files. Shared as `dag` is: a caller holding it
+    /// The fold of the store's history (what an append decides on):
+    /// `fold(&dag.nodes()?)` of [`EventStore::dag`], extended by each object
+    /// as it is read and never refolded from the files. Shared as `dag` is: a caller holding it
     /// while the store extends its memory makes that extension copy it.
     pub fn folded(&self) -> Result<Arc<Folded<E>>, ProdromeError> {
         let mut memory = self.memory();
@@ -613,16 +617,15 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     ///
     /// A file whose bytes are not the hash of its name has no honest reading,
     /// and [`EventStore::tips`] refuses to guess one — so one damaged file
-    /// would stop every write. Moving it out makes the store what it holds
-    /// without it: the tips derive, an append writes, and `verify` still says
-    /// what is missing, as the receipt for the quarantined file. Bringing the
-    /// object back from a replica (an `adopt`, or a copy of its file) is the
-    /// repair; the move only stops the damage from spreading to every reader.
-    ///
-    /// ⚠️ What that answer is, stated: the tips of what the store HOLDS. The
-    /// set-aside object's parents are named by nothing readable, so they may
-    /// be tips again, and the next append writes over the heads of what is
-    /// held.
+    /// would stop every write. Moving it out makes the store read the
+    /// largest down-set it holds (law 40): the history WITHOUT the object
+    /// and without everything resting on it, which a replica that never
+    /// received the object would hold. The tips derive, an append writes
+    /// over that history, and `verify` still says what is missing, as the
+    /// receipt for the quarantined file. Bringing the object back from a
+    /// replica (an `adopt`, or a copy of its file) is the repair, and what
+    /// rested on it rejoins the history with it; the move only stops the
+    /// damage from spreading to every reader.
     ///
     /// ONLY A FILE THAT FAILS ITS HASH. One that hashes to its name is that
     /// object, whatever it holds — one this reader cannot parse may be a newer
@@ -1628,12 +1631,13 @@ mod tests {
     /// ONE BAD OBJECT DOES NOT STOP EVERYTHING. A chain of three whose middle
     /// file is damaged: a fresh handle's `tips` refuses, naming the object and
     /// the command that sets it aside, and so does every append. Once it is
-    /// quarantined the store answers again — the tips derive, the damaged
-    /// object's parent among them, and an append writes a change over what is
-    /// held, the parent among its heads — and after that append as before it, `verify` is clean but for the receipt,
-    /// which stands in for the "chain broke" the tip resting on it would be.
-    /// Restored, the object puts a head the append saw beneath another, and
-    /// `verify` reports that dep as redundant.
+    /// quarantined the store reads the largest down-set it holds: the chain
+    /// without the damaged object and without the object resting on it, so
+    /// the first object is the one tip and the only head an append sees.
+    /// `verify` is clean but for the receipt, which stands in for the "chain
+    /// broke" the waiting object would be. Restored, the object brings the
+    /// one resting on it back, a write concurrent with the append, and
+    /// `verify` is clean.
     /// A healthy object is not quarantined: that would be hiding it.
     #[test]
     fn after_quarantine_the_store_answers_and_verify_holds_the_receipt() {
@@ -1675,11 +1679,17 @@ mod tests {
                 .join(format!("{}.py", middle.as_str()))
         );
         assert!(!path.exists());
-        // Nothing the store can read names `first` any more, so it is a tip
-        // beside `last`: the tips of what the store holds, exactly.
+        // `last` rests on what the store lacks, so it is out of the history
+        // until `middle` is back: the history is `first` alone.
+        assert_eq!(tips(&fresh), [first.clone()].into_iter().collect());
         assert_eq!(
-            tips(&fresh),
-            [first.clone(), last.clone()].into_iter().collect()
+            fresh
+                .dag()
+                .expect("reads")
+                .objects()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec![&first]
         );
         let receipt = format!(
             "quarantine/{}.py failed its hash and was set aside (SPEC §3): restore the object \
@@ -1691,28 +1701,23 @@ mod tests {
             .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
             .expect("the store writes again");
         assert_eq!(change(&fresh, &next).genesis, first);
-        // `first` is a head of `alpha` again, as far as the store can see.
-        let mut heads = vec![first.clone(), last.clone()];
-        heads.sort();
-        assert_eq!(change(&fresh, &next).deps, heads);
+        // `first` is the head of `alpha` in the history the store holds.
+        assert_eq!(change(&fresh, &next).deps, vec![first.clone()]);
         assert_eq!(tips(&fresh), [next.clone()].into_iter().collect());
         assert_eq!(findings(&fresh), vec![receipt]);
 
         // The repair: the object back from a replica, the receipt deleted.
-        // `next` was written over what was held, and `first` looked like a
-        // head then; restored, `middle` puts it beneath `last`, and verify
-        // says so. True and harmless: `next`'s ancestry is the same.
+        // `last` rejoins with it, concurrent with `next`, which was written
+        // over the history without them: both are tips, and nothing is
+        // reported.
         fs::write(&path, text).expect("restores");
         fs::remove_dir_all(store.root().join("quarantine")).expect("deletes the receipt");
         assert_eq!(
-            findings(&fresh),
-            vec![format!(
-                "change {} depends on {}, which its dep {} already rests on (SPEC §3)",
-                next.as_str(),
-                first.as_str(),
-                last.as_str()
-            )]
+            tips(&fresh),
+            [last.clone(), next.clone()].into_iter().collect()
         );
+        assert!(fresh.concurrent(&last, &next).expect("both held"));
+        assert_eq!(findings(&fresh), Vec::<String>::new());
         let _ = fs::remove_dir_all(store.root());
     }
 
