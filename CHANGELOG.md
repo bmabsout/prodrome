@@ -538,6 +538,23 @@ and every vector and export reads as it did.
 
 ### Fixed
 
+- **Every file the store writes is written durably (SPEC §3).** One write
+  serves them all: a randomly named temp in the target's own directory,
+  synced, renamed, and the directory synced. A directory the store makes
+  (the root, `objects/`, `quarantine/`) was not synced into its parent, so
+  a crash could lose a fresh store's `objects/` with every object synced
+  inside it; each is now synced into its parent as it is made.
+- **The store writes its own `.gitattributes` (SPEC §3, README).** The
+  attribute that keeps git from rewriting an object's bytes was documented
+  and only this repository carried it, so a store elsewhere in a repository
+  was unprotected. A write to a store with no `.gitattributes` in its root
+  writes one, `objects/** -text -diff` and `quarantine/** -text -diff`, and
+  one that is there is never rewritten. `verify` names a temp the root's
+  write left (`Finding::Garbage` is now a path within the store). Tests:
+  `the_gitattributes_is_written_durably_and_never_rewritten`,
+  `a_directory_is_made_with_its_ancestors` and, now asserting the store
+  reads as it did, `a_crash_before_the_rename_leaves_only_a_temp`, in
+  `core/src/store.rs`.
 - **A mixed store reads each todo as one stream.** A caller folding a store
   of legacy objects and changes object by object (`Node::of`) split a todo
   whose changes name the legacy root into two prodromes; nodes now come

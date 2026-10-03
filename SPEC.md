@@ -115,13 +115,16 @@ since this grammar has tuples and no mapping.
   `(genesis, todo)` (§6). A `Change` may depend on legacy writes, whose
   global ancestry overstates what it depends on; that is safe, since a
   later write can only settle more than the chain says, never less.
-- **A write is durable.** The print goes to a randomly named temp file in
-  `objects/`, created exclusively (never a fixed `<name>.tmp`, which two
-  writers of one object would share), and is synced to disk before it is
-  renamed to `<name>.py`; the directory is synced once after a batch of
-  placements (one append, one adoption). So a crash leaves either no object
-  or the whole one, never an empty file under a name that promises content,
-  and at worst a temp that `verify` reports.
+- **A write is durable.** Every file the store writes goes to a randomly
+  named temp file in the directory it is written to, created exclusively
+  (never a fixed `<name>.tmp`, which two writers of one object would
+  share), and is synced to disk before it is renamed into place; the
+  directory is then synced, once after a batch of placements (one append,
+  one adoption). A directory the store makes (the root, `objects/`,
+  `quarantine/`) is synced into its parent before anything is written into
+  it, and a move into `quarantine/` syncs both directories. So a crash
+  leaves either no file or the whole one, never an empty file under a name
+  that promises content, and at worst a temp that `verify` reports.
 - **Tips are derived.** `tips()` is the set of objects no object names as a
   parent: a function of the object set alone, in any order it is listed. A
   store on disk is its `objects/` and nothing else, so two copies that each
@@ -129,7 +132,9 @@ since this grammar has tuples and no mapping.
   clones is this union and cannot conflict. A store under git needs
   `objects/** -text -diff` in the `.gitattributes` that governs it, so that
   no line-ending conversion or text merge rewrites the bytes a name is the
-  hash of. A store written before 0.9 also holds `HEAD` (one tip) and
+  hash of: a write to a store whose root holds no `.gitattributes` first
+  writes one, durably, marking `objects/**` and `quarantine/**` `-text
+  -diff`, and never rewrites one that is there. A store written before 0.9 also holds `HEAD` (one tip) and
   `refs/` (one file per head while there were several); nothing reads them,
   the objects derive exactly what they named (§9.17), and `verify` reports
   them as leftovers to delete.
