@@ -296,7 +296,7 @@ proptest! {
         halves in prop::collection::vec(any::<bool>(), 1..16),
     ) {
         let dag = history.dag();
-        let proven = required().at(&dag).expect("Proven reads the history");
+        let proven = required(&dag);
         let mut unproven = BTreeSet::new();
         for (name, object) in dag.objects() {
             let Some(event) = object.event() else {
@@ -321,7 +321,7 @@ proptest! {
         let names: Vec<Hash> = history.prints.keys().cloned().collect();
         for replica in [history.received(shuffled(&names, &draws)), history.joined(&halves)] {
             let held = replica.held().expect("reads").dag;
-            prop_assert_eq!(&read(&held, &required().at(&held).expect("Proven")), &whole);
+            prop_assert_eq!(&read(&held, &required(&held)), &whole);
         }
     }
 
@@ -344,7 +344,7 @@ proptest! {
             }
         }
         let signed = History { prints }.dag();
-        let proven = required().at(&signed).expect("Proven reads the history");
+        let proven = required(&signed);
         prop_assert_eq!(read(&signed, &proven), read(&signed, &roster()));
         prop_assert!(signed.verify(&proven).is_empty());
     }
@@ -355,9 +355,9 @@ fn roster() -> Untrusted {
     Untrusted::of([Actor::new("triage").expect("an actor")])
 }
 
-/// The roster, held to the actors' keys under the root.
-fn required() -> Proven<Untrusted> {
-    Proven::new(roster(), [root().public()])
+/// The roster, held to the actors' keys under the root, at `history`.
+fn required(history: &Dag<Event>) -> Proven<Untrusted> {
+    Proven::new(roster(), [root().public()], history)
 }
 
 /// The roster, with exactly `claimed` claims besides.
