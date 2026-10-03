@@ -35,6 +35,7 @@ use prodrome::literal;
 use prodrome::observe::{NextChange, Observation, Rounding};
 use prodrome::payload::Payload;
 use prodrome::policy::Untrusted;
+use prodrome::schedule::Schedule;
 use prodrome::term::Term;
 use prodrome::view::Entry;
 use serde::Deserialize;
@@ -275,7 +276,7 @@ struct HistoryIn {
 }
 
 pub struct History {
-    bindings: BTreeMap<String, Vec<(Instant, Candidates)>>,
+    bindings: BTreeMap<String, Schedule<Candidates>>,
     tended: BTreeMap<String, BTreeSet<Instant>>,
 }
 
@@ -294,6 +295,8 @@ impl History {
                 };
                 timeline.push((at, binding));
             }
+            let timeline = Schedule::new([None].into(), timeline)
+                .map_err(|e| format!("history.bindings[{todo:?}]: {e}"))?;
             bindings.insert(todo, timeline);
         }
         Ok(History {
@@ -307,8 +310,8 @@ impl History {
     pub fn at(&self, t: Instant) -> fpl::Env {
         let mut env = fpl::Env::new();
         for (todo, timeline) in &self.bindings {
-            let current = timeline.iter().rev().find(|(at, _)| *at <= t);
-            if let Some((_, candidates)) = current.filter(|(_, c)| *c != [None].into()) {
+            let candidates = timeline.at(t);
+            if *candidates != Candidates::from([None]) {
                 env.outcomes.insert(todo.clone(), candidates.clone());
             }
         }
