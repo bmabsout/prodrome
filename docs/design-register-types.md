@@ -752,8 +752,9 @@ make it supersede what its writer never superseded. So twins, one event
 over two placements, may differ in standing, which is the point.
 
 **Keys are history.** `KeyAdded(genesis, actor, key)` says, in a prodrome,
-that `key` speaks for `actor`; it has no parents, so registering a key is
-idempotent and a key may sign before its registration arrives.
+that `key` speaks for `actor`; it rests on its genesis alone, so
+registering a key is idempotent and a key may sign before its registration
+arrives.
 `KeyRevoked(genesis, deps, actor, key)` says it no longer does, EXCEPT for
 the signatures beneath its deps, which name what its writer stands behind
 as a change's deps name what its writer saw.
