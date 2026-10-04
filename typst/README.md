@@ -97,3 +97,9 @@ store by the viewer's own `viewer/src/view.ts`.
 shows them verbatim, because nothing promises a store's text is Typst. In HTML
 export each piece carries a class (`roadmap`, `price`, `price unpriced`, `marks`,
 `explanation`, …) for a stylesheet to find.
+
+The layouts are set in the design system's look: its serif in ink, headings
+in its display face on its type scale, toned as its jobs sample the identity
+ramp; a capsule rule under each title (an `hr class="capsule"` in HTML, for a
+stylesheet to draw); the facts, the crumbs and a closed item's state joined
+by its diamond; tables as rows on its quiet rules, under sans capitals.
