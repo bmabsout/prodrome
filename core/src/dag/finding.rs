@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::event::{Actor, Hash};
@@ -63,6 +64,17 @@ pub enum Finding {
         object: Hash,
         actor: Actor,
     },
+}
+
+/// A name the history of a set of prints lacks, and what it leaves out with
+/// it ([`crate::dag::Dag::excluded`]): `why` it is no object, a print that
+/// is not one or, `None`, a parent no print is; and every object held that
+/// rests on it, which the history lacks too (law 40).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Excluded {
+    pub name: Hash,
+    pub why: Option<Unread>,
+    pub resting: BTreeSet<Hash>,
 }
 
 /// Why a named print is not an object.
