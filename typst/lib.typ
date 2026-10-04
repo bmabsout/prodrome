@@ -20,7 +20,8 @@
 //
 // Every layout works in paged export (PDF, PNG, SVG) and in HTML export
 // (`--features html`), where the marks become inline SVG through
-// `html.frame`.
+// `html.frame`; and in HTML from a library without `html` (typst-wasm's
+// restricted project), where the marks are left out and their words stay.
 
 // --- colour ------------------------------------------------------------------
 
@@ -96,20 +97,30 @@
 }
 
 
-// --- target-agnostic pieces --------------------------------------------------
+// --- targets ----------------------------------------------------------------
+
+/// Whether the library spells HTML elements. A world for markup whose author
+/// is not trusted (typst-wasm's `Project.restricted()`) has no `html` module
+/// under any name, and still exports HTML: text, and the elements Typst
+/// makes of it.
+#let _elements = "html" in dictionary(std)
+
+/// THE ONE COMBINATOR OVER TARGETS: content as a target holds it. `paged` on
+/// a page; in HTML, `html(std.html)`, given the module that spells elements;
+/// in HTML from a library without one, `text`, which is `paged` unless said.
+#let _on(paged, html: none, text: auto) = context if target() != "html" { paged } else if _elements {
+  html(std.html)
+} else if text == auto { paged } else { text }
 
 /// Drawn content: itself on a page, an inline SVG in HTML, sized in `em` of
-/// an 11pt text (so the 9pt pie is about 14px beside 17–18px text).
-#let _frame(body) = context if target() == "html" { box(html.frame(body)) } else { body }
+/// an 11pt text (so the 9pt pie is about 14px beside 17–18px text), and
+/// nothing where HTML cannot hold a drawing.
+#let _frame(body) = _on(body, html: html => box(html.frame(body)), text: none)
 
-/// A block a stylesheet can find by class in HTML; a plain block on a page.
-#let _div(class, body) = context if target() == "html" {
-  html.elem("div", attrs: (class: class), body)
-} else { block(body) }
+/// A block a stylesheet can find by class in HTML; a plain block otherwise.
+#let _div(class, body) = _on(block(body), html: html => html.elem("div", attrs: (class: class), body))
 
-#let _span(class, body) = context if target() == "html" {
-  html.elem("span", attrs: (class: class), body)
-} else { body }
+#let _span(class, body) = _on(body, html: html => html.elem("span", attrs: (class: class), body))
 
 /// A record's text: Typst markup when the host says its items hold Typst,
 /// verbatim otherwise.
@@ -313,7 +324,7 @@
 
 /// A span of hours in words: whole days as days, two days or more as about so
 /// many days, anything shorter as hours.
-#let _span(hours) = {
+#let _duration(hours) = {
   let h = calc.abs(hours)
   let unit(n, one) = str(n) + " " + one + if n == 1 { "" } else { "s" }
   if h > 0 and calc.rem(h, 24) == 0 { unit(int(h / 24), "day") } else if h >= 48 {
@@ -334,7 +345,7 @@
 #let _says(node) = {
   let kind = node.kind
   if kind == "flat" [flat] else if kind == "decay" {
-    [falling from #percent(node.start) to #percent(node.end) by #_short(node.endDate), over #_span(node.leadUpHours)]
+    [falling from #percent(node.start) to #percent(node.end) by #_short(node.endDate), over #_duration(node.leadUpHours)]
     if "startDate" in node [; 100% before #_short(node.startDate)]
   } else if kind == "curve" {
     let (first, last) = (node.points.first(), node.points.last())
@@ -351,27 +362,27 @@
       pulled #percent(-node.delta) of the way down to 0%
     ] else [its part, unchanged]
   } else if kind == "gate" [its own price, counted only as far as its gate is met] else if kind == "shift" {
-    if node.deltaHours > 0 [as its part will read in #_span(node.deltaHours)] else if node.deltaHours < 0 [
-      as its part read #_span(node.deltaHours) earlier
+    if node.deltaHours > 0 [as its part will read in #_duration(node.deltaHours)] else if node.deltaHours < 0 [
+      as its part read #_duration(node.deltaHours) earlier
     ] else [its part, unshifted]
   } else if kind == "within" [
-    #_mean(node.p) over the next #_span(node.windowHours)#if "peakAt" in node [, weighed most at #_short(node.peakAt)]
+    #_mean(node.p) over the next #_duration(node.windowHours)#if "peakAt" in node [, weighed most at #_short(node.peakAt)]
   ] else if kind == "importance" {
     if node.w > 1 [its part made more urgent, to the power #node.w] else if node.w < 1 [
       its part made less urgent, to the power #node.w
     ] else [its part, at its own weight]
   } else if kind == "after" {
     if node.bound == "pending" [
-      waiting on #raw(node.event)#if "needsHours" in node [, which needs #_span(node.needsHours) once it is done]
+      waiting on #raw(node.event)#if "needsHours" in node [, which needs #_duration(node.needsHours) once it is done]
     ] else if node.bound == "completed" [since #raw(node.event) was done, planned for #_short(node.anchor)] else [
       #raw(node.event) was cancelled, so this no longer waits on it
     ]
   } else if kind == "recur" {
     if node.bound == "pending" [a recurring #raw(node.todo), not done yet] else [
-      a recurring #raw(node.todo), last done #_short(node.tended), #_span(node.agoHours) ago
+      a recurring #raw(node.todo), last done #_short(node.tended), #_duration(node.agoHours) ago
     ]
   } else if kind == "periodic" [
-    repeating every #_span(node.periodHours)\; this cycle began #_short(node.cycleStart)
+    repeating every #_duration(node.periodHours)\; this cycle began #_short(node.cycleStart)
   ] else if kind == "piecewise" {
     let prices = node.pieces + 1
     if node.since == "" [the first of #prices dated prices] else [

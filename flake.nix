@@ -494,6 +494,14 @@
             grep -q '<svg' item.html
             touch $out
           '';
+          # The package compiles in typst-wasm's restricted project, whose
+          # library has no `html` and no `plugin`, as in an open one: a
+          # host may typeset a store with it for markup it does not trust.
+          prodrome-typst-restricted = pkgs.runCommand "prodrome-typst-restricted"
+            { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            node ${typstSrc}/tests/restricted.mjs ${prodrome-typst-wasm}/web ${typstPackages}
+            touch $out
+          '';
           # The wasm and the viewer as checks are the cheap wasm build: the
           # published pair differs only in the profile and in wasm-opt.
           prodrome-wasm = prodrome-wasm-check;
