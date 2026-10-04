@@ -20,6 +20,9 @@ pub mod terms;
 #[path = "cases.rs"]
 pub mod cases;
 
+#[path = "draw.rs"]
+pub mod draw;
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
