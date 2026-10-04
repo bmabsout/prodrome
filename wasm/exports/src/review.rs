@@ -107,23 +107,24 @@ fn a_set_that_is_not_objects_is_refused() {
     );
 }
 
-/// The tips are the objects nothing names as a parent: a change's parents
-/// are the writes it supersedes, so the genesis, the opening nothing
-/// superseded, the merge and the close, and the other review. They are the
-/// genesis's heads too, the one prodrome.
+/// The tips are the objects nothing rests on: a change rests on its
+/// genesis and on the writes it supersedes, so the opening nothing
+/// superseded, the merge and the close, and the other review, and never the
+/// genesis. They are the genesis's heads too, the one prodrome.
 #[test]
 fn a_review_store_has_its_tips_and_heads() {
     let (replica, names) = replica();
     let tips = answer(replica.tips());
-    let mut expected: Vec<&str> = [0, 1, 3, 4, 5].iter().map(|i| names[*i].as_str()).collect();
+    let mut expected: Vec<&str> = [1, 3, 4, 5].iter().map(|i| names[*i].as_str()).collect();
     expected.sort_unstable();
     assert_eq!(tips["tips"], json!(expected));
     assert_eq!(tips["heads"], json!({ names[0].as_str(): expected }));
 }
 
-/// A replica that holds the move to review, which rests on nothing, lacks
-/// the rest; one that holds nothing lacks everything, in causal order, the
-/// merge and the close after the move they supersede.
+/// A replica that holds the move to review, which rests on its genesis
+/// alone, lacks the rest and not the genesis; one that holds nothing lacks
+/// everything, in causal order, the genesis first and the merge and the
+/// close after the move they supersede.
 #[test]
 fn a_replica_is_sent_what_its_tips_do_not_hold() {
     let (replica, names) = replica();
@@ -135,7 +136,7 @@ fn a_replica_is_sent_what_its_tips_do_not_hold() {
         .iter()
         .map(|name| name.as_str().expect("a name"))
         .collect();
-    let mut expected: Vec<&str> = [0, 1, 3, 4, 5].iter().map(|i| names[*i].as_str()).collect();
+    let mut expected: Vec<&str> = [1, 3, 4, 5].iter().map(|i| names[*i].as_str()).collect();
     expected.sort_unstable();
     let mut got = sent.clone();
     got.sort_unstable();
@@ -144,6 +145,7 @@ fn a_replica_is_sent_what_its_tips_do_not_hold() {
     let order = everything["since"].as_array().expect("names");
     let at = |i: usize| order.iter().position(|name| *name == names[i].as_str());
     assert_eq!(order.len(), 6);
+    assert_eq!(at(0), Some(0), "{everything}");
     assert!(at(2) < at(3) && at(2) < at(4), "{everything}");
     assert!(crate::since(&replica.0, r#"["not a name"]"#).is_err());
 }

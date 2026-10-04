@@ -1088,7 +1088,11 @@ mod tests {
             "Created writes no register, and the writer saw it"
         );
         assert_eq!(change(&store, &third).deps, std::slice::from_ref(&second));
-        assert_eq!(tips(&store), [genesis, third.clone()].into_iter().collect());
+        assert_eq!(
+            tips(&store),
+            [third.clone()].into_iter().collect(),
+            "the genesis is beneath its changes"
+        );
         assert_eq!(
             fs::read_dir(store.root())
                 .expect("the store is a directory")
@@ -1110,7 +1114,10 @@ mod tests {
         assert_eq!(store.events().expect("reads").len(), 3);
         assert_eq!(
             store.ancestors(&third).expect("walks"),
-            [first.clone(), second.clone()].into_iter().collect()
+            [genesis, first.clone(), second.clone()]
+                .into_iter()
+                .collect(),
+            "a change rests on its genesis"
         );
         let held = order(&store).expect("reads");
         assert_eq!(store.append(done).expect("replays"), second);
@@ -1192,7 +1199,7 @@ mod tests {
         let mut both = vec![mine, theirs];
         both.sort();
         assert_eq!(change(&here, &settled).deps, both);
-        assert_eq!(tips(&here), [genesis, settled].into_iter().collect());
+        assert_eq!(tips(&here), [settled].into_iter().collect());
         assert_eq!(findings(&here), Vec::<String>::new());
         let _ = fs::remove_dir_all(here.root());
         let _ = fs::remove_dir_all(there.root());

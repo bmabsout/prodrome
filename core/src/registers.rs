@@ -186,9 +186,11 @@ impl<E: Schema> Folded<E> {
         self.index.contains_key(name) || self.attestations.contains(name)
     }
 
-    /// Does every object folded rest only on objects of its own scope? Then
-    /// each scope's order is decided within it, and [`Folded::insert`] can
-    /// place an object without the rest. True of every store an append
+    /// Does every object folded rest only on objects of its own scope and
+    /// on its genesis? Then each scope's order is decided within it, and
+    /// [`Folded::insert`] can place an object without the rest: every
+    /// object of a scope rests on its genesis, which rests on nothing, so
+    /// the genesis orders nothing within one. True of every store an append
     /// wrote: a change's deps never leave its entity, a legacy object's
     /// parents are legacy.
     pub fn local(&self) -> bool {
@@ -272,13 +274,17 @@ impl<E: Schema> Folded<E> {
         Ok(())
     }
 
-    /// Does every parent of `node` this state holds lie in `scope`?
+    /// Does every parent of `node` this state holds lie in `scope`, or is it
+    /// the genesis beneath all of it?
     fn within(&self, node: &Node<E>, scope: &Scope<E::Key>) -> bool {
         node.parents
             .iter()
             .all(|parent| match self.index.get(parent) {
                 Some(place) => place.scope == *scope,
-                None => !self.attestations.contains(parent),
+                None => {
+                    !self.attestations.contains(parent)
+                        || scope.as_ref().is_some_and(|(genesis, _)| genesis == parent)
+                }
             })
     }
 

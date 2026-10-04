@@ -26,6 +26,8 @@
 //! is NOT a shipped string — `Sealed.prev` at genesis, `Woven.event` — it is an
 //! `Option`, and the printer puts the `''`/`None` back.
 
+use std::collections::BTreeSet;
+
 use sha2::{Digest, Sha256};
 
 use crate::change::Change;
@@ -420,8 +422,13 @@ impl<E> Envelope<E> {
     }
 }
 
+/// What an object RESTS ON (§3), sorted and distinct: the edges it names
+/// and the genesis it names. This is the causal order, the one every
+/// reader of it reads (tips, the linearisation, closure, the interior, a
+/// replica's walk): a change rests on its genesis as on its deps, so no
+/// genesis is a head of a prodrome holding anything begun from it.
 pub fn parents_of<E>(envelope: &Envelope<E>) -> Vec<Hash> {
-    match envelope {
+    let edges = match envelope {
         Envelope::Sealed { prev, .. } => prev.iter().cloned().collect(),
         Envelope::Woven { parents, .. } => parents.clone(),
         Envelope::Genesis(_) | Envelope::KeyAdded(_) => Vec::new(),
@@ -429,7 +436,12 @@ pub fn parents_of<E>(envelope: &Envelope<E>) -> Vec<Hash> {
         Envelope::Snapshot(snapshot) => snapshot.parents(),
         Envelope::Signed(signed) => vec![signed.object.clone()],
         Envelope::KeyRevoked(revoked) => revoked.deps.clone(),
-    }
+    };
+    let parents: BTreeSet<Hash> = edges
+        .into_iter()
+        .chain(envelope.genesis().cloned())
+        .collect();
+    parents.into_iter().collect()
 }
 
 // --- smart constructors ------------------------------------------------------
