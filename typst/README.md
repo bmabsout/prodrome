@@ -1,8 +1,12 @@
 # prodrome-typst
 
 A Typst package that lays out a Prodrome: the roadmap list ordered by
-fulfillment, one item's page, and the two FPL marks: a value's pie and a
-todo's thirty days.
+fulfillment, and one item's page with its price and its thirty days, in the
+look of the design system it imports.
+
+| The list | An item |
+| --- | --- |
+| ![The roadmap example](examples/roadmap.png) | ![The item example](examples/item.png) |
 
 **An optional extra.** The Prodrome's core (`core/`, `cli/`) never depends on
 Typst and never assumes an item's text is Typst. This package is for a host

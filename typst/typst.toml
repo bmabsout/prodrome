@@ -4,6 +4,6 @@ version = "0.1.0"
 entrypoint = "lib.typ"
 authors = ["The prodrome contributors"]
 license = "MIT OR Apache-2.0"
-description = "Layouts for a Prodrome read as Typst: the list, an item, and the two FPL marks."
+description = "Layouts for a Prodrome read as Typst: the list and an item, in the typst-design look."
 compiler = "0.15.1"
 exclude = ["examples", "tests"]
