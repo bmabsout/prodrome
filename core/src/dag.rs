@@ -145,7 +145,8 @@ impl<E> Dag<E> {
         }
     }
 
-    /// Every object no object names as a parent.
+    /// Every object no object rests on: the maximal objects of the causal
+    /// order ([`parents_of`]).
     pub fn tips(&self) -> BTreeSet<Hash> {
         let graph: Vec<(&Hash, Vec<Hash>)> = self
             .objects
