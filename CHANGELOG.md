@@ -756,7 +756,9 @@ and every vector and export reads as it did.
   exports' `tips`, `since` and `verify`. The fold's incremental insert
   counts a scope's genesis as inside it, since it orders nothing within
   one; `verify` reports an edge to a stranger genesis once, as the
-  stranger. Laws: `core/tests/all/rests_on.rs`.
+  stranger. `Snapshot::parents`, a snapshot's edges without its genesis,
+  is gone: `parents_of` is the one answer. Laws:
+  `core/tests/all/rests_on.rs`.
 - **`fsck` quarantines what fails its hash and loses no byte (SPEC §3,
   law 40).** One damaged file stopped every read until someone named it to
   `quarantine`; `fsck` now finds and moves every such file, durably and

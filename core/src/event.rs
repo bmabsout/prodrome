@@ -433,7 +433,12 @@ pub fn parents_of<E>(envelope: &Envelope<E>) -> Vec<Hash> {
         Envelope::Woven { parents, .. } => parents.clone(),
         Envelope::Genesis(_) | Envelope::KeyAdded(_) => Vec::new(),
         Envelope::Change(change) => change.deps.clone(),
-        Envelope::Snapshot(snapshot) => snapshot.parents(),
+        Envelope::Snapshot(snapshot) => snapshot
+            .tips
+            .iter()
+            .chain(&snapshot.previous)
+            .cloned()
+            .collect(),
         Envelope::Signed(signed) => vec![signed.object.clone()],
         Envelope::KeyRevoked(revoked) => revoked.deps.clone(),
     };
