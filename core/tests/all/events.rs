@@ -265,7 +265,11 @@ fn the_new_objects_print_as_declared() {
             canonical(&event)
         )
     );
-    assert_eq!(parents_of(&change), vec![name('a'), name('b')]);
+    assert_eq!(
+        parents_of(&change),
+        vec![name('0'), name('a'), name('b')],
+        "a change rests on its genesis and its deps"
+    );
     assert_eq!(change.event(), Some(&event));
 
     let snapshot: Envelope<TodoEvent<Todo>> = Envelope::Snapshot(
@@ -293,16 +297,25 @@ fn the_new_constructors_refuse_what_section_3_forbids() {
     assert!(mk_snapshot(name('0'), vec![name('a'), name('a')], None).is_err());
 }
 
-/// A snapshot's parents are its tips and its previous, each once.
+/// A snapshot's parents are its genesis, its tips and its previous, each
+/// once.
 #[test]
-fn a_snapshot_rests_on_its_tips_and_its_previous() {
-    let on = |previous| {
+fn a_snapshot_rests_on_its_genesis_its_tips_and_its_previous() {
+    let on = |tips: Vec<Hash>, previous| {
         parents_of::<TodoEvent<Todo>>(&Envelope::Snapshot(
-            mk_snapshot(name('0'), vec![name('b'), name('a')], previous).expect("a snapshot"),
+            mk_snapshot(name('0'), tips, previous).expect("a snapshot"),
         ))
     };
-    assert_eq!(on(Some(name('c'))), vec![name('a'), name('b'), name('c')]);
-    assert_eq!(on(Some(name('a'))), vec![name('a'), name('b')]);
+    let tips = || vec![name('b'), name('a')];
+    assert_eq!(
+        on(tips(), Some(name('c'))),
+        vec![name('0'), name('a'), name('b'), name('c')]
+    );
+    assert_eq!(
+        on(tips(), Some(name('a'))),
+        vec![name('0'), name('a'), name('b')]
+    );
+    assert_eq!(on(vec![name('0')], None), vec![name('0')]);
 }
 
 /// An event's id is the hash of its print, whichever object carries it.

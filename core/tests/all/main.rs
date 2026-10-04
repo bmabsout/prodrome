@@ -33,6 +33,7 @@ mod order_laws;
 mod recur_vectors;
 mod registers;
 mod replica;
+mod rests_on;
 mod review;
 mod schedule;
 mod schema_laws;

@@ -178,8 +178,8 @@ impl<E: Schema> Memory<E> {
             wanted: dag
                 .objects()
                 .values()
-                .flat_map(named)
-                .filter(|named| dag.get(named).is_none())
+                .flat_map(parents_of)
+                .filter(|parent| dag.get(parent).is_none())
                 .collect(),
             files: dag
                 .objects()
@@ -376,8 +376,8 @@ impl<E: Schema> Memory<E> {
                 self.wanted = dag
                     .objects()
                     .values()
-                    .flat_map(named)
-                    .filter(|named| dag.get(named).is_none())
+                    .flat_map(parents_of)
+                    .filter(|parent| dag.get(parent).is_none())
                     .collect();
                 return;
             }
@@ -389,9 +389,9 @@ impl<E: Schema> Memory<E> {
             }
             self.tips.insert(name.clone());
             self.wanted.extend(
-                named(object)
+                parents_of(object)
                     .into_iter()
-                    .filter(|named| dag.get(named).is_none()),
+                    .filter(|parent| dag.get(parent).is_none()),
             );
             match object {
                 Envelope::Genesis(_) => {
@@ -467,18 +467,11 @@ pub fn receive<E: Schema>(
             )));
         };
         let verified = Verified::read(schema, &name, &print).map_err(|why| why.refusal(&name))?;
-        let names = named(verified.object());
+        let names = parents_of(verified.object());
         pending.push(Visit::Leave(verified, print));
         pending.extend(names.into_iter().map(Visit::Enter));
     }
     Ok(taken)
-}
-
-/// What an object names: its parents, and the genesis of its prodrome.
-fn named<E>(object: &Envelope<E>) -> Vec<Hash> {
-    let mut names = parents_of(object);
-    names.extend(object.genesis().cloned());
-    names
 }
 
 /// Counts, not contents: a memory is the whole store.
