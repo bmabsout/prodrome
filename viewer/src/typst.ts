@@ -1,12 +1,12 @@
 // The documents the viewer typesets, and the one door into typst-wasm.
 //
 // Each page is a two-line Typst document that imports `prodrome-typst` and
-// hands it the data; the package's files are bundled into the app, and the
-// data is passed as a virtual file, so a document compiled here is the same
-// document `typst compile` reads from `typst/examples/`.
+// hands it the data; the package path's files (`prodrome-typst` and the
+// design system it imports) are bundled into the app, and the data is passed
+// as a virtual file, so a document compiled here is the same document
+// `typst compile` reads from `typst/examples/`.
 
-import libTyp from "../../typst/lib.typ";
-import packageToml from "../../typst/typst.toml";
+import { PACKAGES } from "typst-packages";
 import type { View } from "./view";
 
 /** The part of typst-wasm this reads — the glue module satisfies it. */
@@ -36,13 +36,9 @@ const PACKAGE = "@local/prodrome-typst:0.1.0";
 
 export const IMPORT = `#import "${PACKAGE}": *`;
 
-/** The package's files and the data, keyed the way typst-wasm finds them. */
+/** The packages' files and the data, keyed the way typst-wasm finds them. */
 export function files(view: View): Record<string, string> {
-  return {
-    [`${PACKAGE}/typst.toml`]: packageToml,
-    [`${PACKAGE}/lib.typ`]: libTyp,
-    "/data.json": JSON.stringify(view),
-  };
+  return { ...PACKAGES, "/data.json": JSON.stringify(view) };
 }
 
 export function listDocument(markup: boolean): string {

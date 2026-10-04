@@ -1,11 +1,11 @@
 // The package compiles in typst-wasm's restricted project, whose library has
 // no `html` and no `plugin`, as it does in an open one.
 //
-//   node typst/tests/restricted.mjs TYPST_WEB PACKAGES
+//   node typst/tests/restricted.mjs TYPST_WEB PACKAGES EXAMPLES
 //
 // TYPST_WEB is the `web/` directory of `nix build .#prodrome-typst-wasm`;
 // PACKAGES a package path, `local/<name>/<version>/…`, holding this package
-// and every package it imports. Each package file is set at the key
+// and every package it imports; EXAMPLES is `typst/examples`. Each package file is set at the key
 // typst-wasm reads it by, each example at its own path beside its data, and
 // each example is compiled in both projects. `checks.prodrome-typst-restricted`
 // runs this.
@@ -14,7 +14,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const [web, packages] = process.argv.slice(2);
+const [web, packages, examples] = process.argv.slice(2);
 const glue = await import(pathToFileURL(join(web, "typst.js")).href);
 glue.initSync({ module: readFileSync(join(web, "typst_bg.wasm")) });
 
@@ -34,7 +34,6 @@ for (const name of readdirSync(join(packages, "local"))) {
     }
   }
 }
-const examples = join(packages, "local", "prodrome-typst", "0.1.0", "examples");
 files.set("/examples/data.json", readFileSync(join(examples, "data.json"), "utf8"));
 
 let failed = false;
