@@ -487,19 +487,29 @@ and every vector and export reads as it did.
 - **`typst/`**, the `prodrome-typst` package: the roadmap list ordered by
   fulfillment, an item's page, and two marks: a value's pie beside its
   percentage, and a todo's thirty days (fifteen back, fifteen ahead) as one
-  thick line, the past faded, in a 0–100% frame. Every value is drawn in
-  `colour(v)`, a sample of one continuous OKLCH gradient from red to green;
-  Problem, Watch and Fine are words only. Instants read as dates, and an item's
+  thick line, the past faded, in a 0–100% frame. Its look is the design
+  system `typst-design` (a flake input, `@local/typst-design`): the
+  fulfillment scale, the pie, the trace and the words for a value are
+  imported from it, and the layouts are set in its faces, type scale,
+  tones, capsule rules and diamond separators; the package keeps only the
+  laying out of a store's reading. Problem, Watch and Fine are words only.
+  Instants read as dates, and an item's
   price in words ("42% now, falling from 55% to 5% by Sep 29, 17:00, over 3
   days"), with its explanation's parts beneath it. It reads the core's JSON
   and computes nothing about fulfillment. `checks.prodrome-typst` compiles
-  its examples to PDF and HTML, and its laws (`tests/laws.typ`).
+  its examples to PDF and HTML, and its laws (`tests/laws.typ`), and
+  compares the examples' committed pictures with a fresh render;
+  `checks.prodrome-typst-restricted` compiles them in typst-wasm's
+  restricted project, whose library has no `html` and no `plugin`.
 - **`viewer/`**, the static web app (`nix build .#prodrome-viewer`), with
   routes `#/` and `#/todo/<id>`, a Typst editor demo on the item page, and a
   service worker that caches the shell per build and the objects forever. It
   never scrolls sideways at a phone's width, and its smoke test checks the
   list against `prodrome list`'s order at 420px.
-  `viewer/assemble.sh` puts any store's objects beside it.
+  `viewer/assemble.sh` puts any store's objects beside it. It bundles the
+  whole Typst package path (`prodrome-typst` and `typst-design`), and its
+  stylesheet's colours and faces are read from the design system by
+  `viewer/tokens.typ` at build time.
 - **`.github/workflows/pages.yml`** deploys it on pushes to `main`, by hand,
   and after `roadmap-data`'s `verify` succeeds on a push (`workflow_run`: a
   push trigger for that orphan branch would never fire from `main`).
