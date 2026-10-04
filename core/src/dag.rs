@@ -32,6 +32,17 @@ impl<E> FromIterator<(Hash, Envelope<E>)> for Dag<E> {
     }
 }
 
+/// The union with more objects, the join of replicas (design §1): an object
+/// is held once, and a name it is held under is no longer unread.
+impl<E> Extend<(Hash, Envelope<E>)> for Dag<E> {
+    fn extend<I: IntoIterator<Item = (Hash, Envelope<E>)>>(&mut self, objects: I) {
+        for (name, object) in objects {
+            self.unread.remove(&name);
+            self.objects.insert(name, object);
+        }
+    }
+}
+
 /// A stored print, rehashed against its name before it is parsed at the
 /// schema `schema`.
 pub fn decode<E: Schema>(
