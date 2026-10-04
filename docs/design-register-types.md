@@ -400,6 +400,18 @@ that writes through, and an overlay does not have it.
 A third tier never syncs: in-memory registers of the same types over events
 too local or too frequent to be objects (a keystroke, a streaming answer).
 
+**A reading is total over what a replica holds.** A replica in a page is
+handed prints, and a print may not be an object at the schema the page
+reads at: a constructor the schema has since changed, bytes that do not
+hash to their name. The page's history is then what a store's is (SPEC law
+40), the largest down-set of the objects, and the print is left out with
+everything resting on it, which is the history of a replica that never
+received it. Nothing is left out silently: what is left out is a function
+of the prints, `Dag::excluded`, each name with why and the objects above
+it, the one `verify` reports by, and every reading answers it beside what
+it read (SPEC law 44). So adding an unreadable print, and what rests on
+it, changes no reading of an object that does not rest on it.
+
 ### 6.2 Caches are tabulations of pure functions
 
 Once a view is a pure function of a reading (§6.0), every cache in the
