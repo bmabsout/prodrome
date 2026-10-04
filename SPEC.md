@@ -1488,6 +1488,25 @@ implementation's `parents_of`.
     `rests_on.rs::a_genesis_is_beneath_its_first_change`,
     `rests_on.rs::a_snapshot_naming_its_genesis_as_a_tip_attests_as_it_did`.
 
+Law 44 is law 40 read in a replica that is not a store, over generated
+histories of the declared proposal schema read at a newer schema under
+which every `Tagged` fails to parse, as a store migrated away from does.
+
+44. **A reading is total over what a replica holds.** What a set of
+    prints leaves out of its history is every name it holds or its
+    objects rest on that is no object there, a print that is not one or a
+    parent no print is, each with exactly the objects resting on it; the
+    history is the objects none of those names. The wasm exports read
+    that history: adding unparseable prints, and what rests on them, to a
+    held set changes no reading of the objects that do not rest on them;
+    every reading answers what it left out, naming exactly the unparseable
+    prints and everything above them; and a store on disk holding the same
+    bytes reports as unread exactly those prints, in the same words.
+    `down_set.rs::the_interior_is_the_largest_down_set`,
+    `wasm/exports/src/unread.rs::an_unreadable_print_changes_no_reading_of_what_does_not_rest_on_it`,
+    `unread.rs::what_is_left_out_is_exactly_the_unreadable_and_what_rests_on_them`,
+    `unread.rs::a_store_and_a_page_name_the_same_unreadable_objects`.
+
 ## 10. Non-goals
 
 A clock in the merge; a second evaluator; a rendering as a source of truth;
