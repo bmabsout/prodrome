@@ -5,9 +5,16 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
+    # THE OWNER'S DESIGN SYSTEM, a Typst package (`@local/typst-design`):
+    # the Typst package and the viewer take their look from it. Its source
+    # only, so its own flake's inputs never enter this lock.
+    typst-design = {
+      url = "github:bmabsout/typst-design";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, crane }:
+  outputs = { self, nixpkgs, flake-utils, crane, typst-design }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         inherit (nixpkgs) lib;
@@ -286,6 +293,32 @@
           description = "Typst 0.15.1 as WebAssembly for a views editor: the views module and completion";
         };
 
+        # THE TYPST PACKAGES ON A PACKAGE PATH, as `typst compile
+        # --package-path` and typst-wasm find them: `local/<name>/<version>`,
+        # the Prodrome's beside the design system it imports. Each is as
+        # Typst installs it, its name, version and contents read from its own
+        # manifest: its source without what the manifest excludes (examples,
+        # tests, a gallery, a flake). The pictures of the Prodrome's examples
+        # are not in its source at all: they are made from it.
+        typstSrc = lib.fileset.toSource {
+          root = ./typst;
+          fileset = lib.fileset.difference ./typst (lib.fileset.fileFilter (file: file.hasExt "png") ./typst);
+        };
+        typstPackage = src:
+          let
+            manifest = (builtins.fromTOML (builtins.readFile "${src}/typst.toml")).package;
+          in
+          {
+            name = "local/${manifest.name}/${manifest.version}";
+            path = pkgs.runCommand "${manifest.name}-${manifest.version}" { } ''
+              cp -r ${src} $out
+              chmod -R u+w $out
+              cd $out
+              rm -rf ${lib.escapeShellArgs (manifest.exclude or [ ])}
+            '';
+          };
+        typstPackages = pkgs.linkFarm "typst-packages" (map typstPackage [ typstSrc typst-design ]);
+
         # THE VIEWER (`nix build .#prodrome-viewer`): the static app — no
         # data in it — that folds a store with prodrome-wasm and typesets it
         # with prodrome-typst-wasm and the `typst/` package. An EXAMPLE host.
@@ -295,14 +328,11 @@
         viewer = { pname, wasm }: pkgs.stdenv.mkDerivation {
           inherit pname;
           version = "0.1.0";
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [ ./viewer ./typst ];
-          };
-          nativeBuildInputs = [ pkgs.esbuild pkgs.typescript ];
+          src = lib.fileset.toSource { root = ./.; fileset = ./viewer; };
+          nativeBuildInputs = [ pkgs.esbuild pkgs.typescript pkgs.typst pkgs.jq ];
           buildPhase = ''
             runHook preBuild
-            sh viewer/build.sh "$out" ${wasm}/web ${prodrome-typst-wasm}/web \
+            sh viewer/build.sh "$out" ${wasm}/web ${prodrome-typst-wasm}/web ${typstPackages} \
               ${pkgs.libertinus}/share/fonts ${pkgs.source-serif}/share/fonts
             runHook postBuild
           '';
@@ -314,6 +344,31 @@
         };
 
         prodrome-viewer = viewer { pname = "prodrome-viewer"; wasm = prodrome-wasm; };
+
+        # Every Typst compilation here: no system font, so a picture is the
+        # same on every machine, but the design system's faces (`faces` in
+        # its `type.typ`: Source Serif 4, Crimson Pro, Source Sans 3), and
+        # the packages on their path.
+        typstCompile = ''
+          typst compile --ignore-system-fonts --package-path ${typstPackages} \
+            ${lib.concatMapStringsSep " " (font: "--font-path ${font}/share/fonts")
+              [ pkgs.source-serif pkgs.crimson-pro pkgs.source-sans ]}'';
+
+        # THE EXAMPLES AS PICTURES (`nix build .#prodrome-typst-examples`):
+        # each example's one page as a PNG. `typst/examples/*.png` are these
+        # bytes, committed so a reader sees the layouts without compiling,
+        # and `checks.prodrome-typst` recomputes them: a picture is a cache
+        # of a compilation, verified by compiling again (design §6.2).
+        prodrome-typst-examples = pkgs.runCommand "prodrome-typst-examples"
+          { nativeBuildInputs = [ pkgs.typst ]; } ''
+          mkdir -p $out
+          cp -r ${typstSrc}/examples examples
+          chmod -R u+w examples
+          cd examples
+          for doc in roadmap item; do
+            ${typstCompile} --ppi 144 "$doc.typ" "$out/$doc.png"
+          done
+        '';
 
         # THE CORE AND THE CLI IN RELEASE, COMPILED ONCE. `prodrome-github`
         # links the same two crates with the same features, so both packages
@@ -361,7 +416,7 @@
       {
         packages = {
           inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-typst-wasm-views
-            prodrome-typst-wasm-editor prodrome-viewer;
+            prodrome-typst-wasm-editor prodrome-typst-examples prodrome-viewer;
           default = prodrome-cli;
         };
 
@@ -430,25 +485,35 @@
           # pinned nixpkgs ships — 0.15.1, the version typst-wasm pins — to
           # PDF and to HTML, so a layout that breaks either target fails here,
           # and compiles its laws (`tests/laws.typ`), which fail the compile
-          # when an assert does not hold.
+          # when an assert does not hold. The committed pictures of the
+          # examples must be what they render, byte for byte.
           prodrome-typst = pkgs.runCommand "prodrome-typst-check"
-            {
-              nativeBuildInputs = [ pkgs.typst ];
-              src = lib.fileset.toSource { root = ./typst; fileset = ./typst; };
-            } ''
-            mkdir -p pkgs/local/prodrome-typst
-            cp -r "$src" pkgs/local/prodrome-typst/0.1.0
-            chmod -R u+w pkgs
-            cd pkgs/local/prodrome-typst/0.1.0
-            typst compile --package-path "$NIX_BUILD_TOP/pkgs" tests/laws.typ "$NIX_BUILD_TOP/laws.pdf"
+            { nativeBuildInputs = [ pkgs.typst ]; } ''
+            cp -r ${typstSrc} typst
+            chmod -R u+w typst
+            cd typst
+            ${typstCompile} tests/laws.typ "$NIX_BUILD_TOP/laws.pdf"
             cd examples
             for doc in roadmap item; do
-              typst compile --package-path "$NIX_BUILD_TOP/pkgs" "$doc.typ" "$doc.pdf"
-              typst compile --package-path "$NIX_BUILD_TOP/pkgs" --features html --format html "$doc.typ" "$doc.html"
+              ${typstCompile} "$doc.typ" "$doc.pdf"
+              ${typstCompile} --features html --format html "$doc.typ" "$doc.html"
+              cmp ${prodrome-typst-examples}/$doc.png ${./typst/examples}/$doc.png || {
+                echo "typst/examples/$doc.png is not what $doc.typ renders:" >&2
+                echo "  nix build .#prodrome-typst-examples && cp result/*.png typst/examples/" >&2
+                exit 1
+              }
             done
             grep -q 'href="#/todo/ship-the-viewer"' roadmap.html
             grep -q '<strong>the viewer</strong>' roadmap.html
             grep -q '<svg' item.html
+            touch $out
+          '';
+          # The package compiles in typst-wasm's restricted project, whose
+          # library has no `html` and no `plugin`, as in an open one: a
+          # host may typeset a store with it for markup it does not trust.
+          prodrome-typst-restricted = pkgs.runCommand "prodrome-typst-restricted"
+            { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            node ${typstSrc}/tests/restricted.mjs ${prodrome-typst-wasm}/web ${typstPackages} ${typstSrc}/examples
             touch $out
           '';
           # The wasm and the viewer as checks are the cheap wasm build: the

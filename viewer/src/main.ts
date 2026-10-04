@@ -20,7 +20,10 @@ import { read, type Entry, type ObjectIn, type View } from "./view";
 
 declare const __BUILD__: string;
 
-/** The fonts the site bundles for Typst — Libertinus and Source Serif, OFL. */
+/**
+ * The fonts the site bundles for Typst and the page — Source Serif, the
+ * design system's serif, and Libertinus behind it, OFL.
+ */
 const FONTS = [
   "LibertinusSerif-Regular.otf",
   "LibertinusSerif-Italic.otf",
@@ -28,6 +31,7 @@ const FONTS = [
   "LibertinusMath-Regular.otf",
   "SourceSerif4-Regular.otf",
   "SourceSerif4-It.otf",
+  "SourceSerif4-Bold.otf",
 ];
 
 /** An instant as a reader says it; a naive instant's digits read as UTC (see time.ts). */

@@ -11,7 +11,8 @@
     "baseUrl": ".",
     "paths": {
       "prodrome-wasm": ["./vendor/prodrome/prodrome"],
-      "typst-wasm": ["./vendor/typst/typst"]
+      "typst-wasm": ["./vendor/typst/typst"],
+      "typst-packages": ["./vendor/packages"]
     }
   },
   "files": ["src/main.ts", "src/modules.d.ts"]
