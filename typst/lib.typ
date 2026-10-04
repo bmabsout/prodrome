@@ -5,8 +5,11 @@
 // and its marks typeset. It reads DATA — the JSON the core's WebAssembly
 // module answers (`entries`, `explain`, a todo's `stream`), with the marks'
 // samples beside it — and computes nothing about fulfillment itself: every
-// number it draws was produced by the one evaluator (SPEC §1). What it adds
-// is the one reading a picture needs, the colour of a value.
+// number it draws was produced by the one evaluator (SPEC §1).
+//
+// ITS LOOK IS THE DESIGN SYSTEM'S (`@local/typst-design`): the fulfillment
+// scale, the pie and the trace, and the words for a value are imported, not
+// drawn here. What is the Prodrome's is laying out a store's reading.
 //
 // The data (see README.md for the whole shape):
 //
@@ -23,53 +26,8 @@
 // `html.frame`; and in HTML from a library without `html` (typst-wasm's
 // restricted project), where the marks are left out and their words stay.
 
-// --- colour ------------------------------------------------------------------
-
-/// THE ONE SCALE. A fulfillment in [0, 1] is drawn in `colour(v)`, a sample
-/// of this gradient: red at 0, through orange and yellow, to green at 1,
-/// linear in each OKLCH channel. LOW IS URGENT: a value is how well things go
-/// if nothing changes. The colour is continuous; it has no states.
-#let fulfillment = gradient.linear(color.oklch(color.red), color.oklch(color.green), space: oklch)
-
-/// The colour of a value in [0, 1].
-#let colour(value) = fulfillment.sample(value * 100%)
-
-/// The scale laid bottom (0) to top (1) over the nearest container, so a
-/// stroke drawn in a box whose height is the 0–100% range is `colour(v)` at
-/// every point, `v` its own height. `alpha` fades it.
-#let _upward(alpha: 100%) = gradient.linear(
-  ..fulfillment.stops().map(((c, at)) => (c.transparentize(100% - alpha), at)),
-  space: fulfillment.space(),
-  dir: btt,
-  relative: "parent",
-)
-
-/// No value at all — `∅`, a todo with no price, or one that does not link.
-/// Absence is not a zero, so it is never a colour of the scale.
-#let unpriced = rgb("#9b9b9b")
-#let ink = rgb("#222222")
-#let _faint = luma(205)
-#let _quiet = luma(125)
-
-/// The words for a value, "Problem" below 0.5, "Watch" below 0.7, "Fine" from
-/// there, "Unpriced" for no number: `"absent"` (a row reading `∅`) or `none`
-/// (a mark or a node reading `∅`, or a row that does not link). Words only;
-/// the colour is `colour`'s.
-#let state-of(value) = if value == none or value == "absent" {
-  "Unpriced"
-} else if value < 0.5 {
-  "Problem"
-} else if value < 0.7 {
-  "Watch"
-} else {
-  "Fine"
-}
-
-/// A value as the percentage the CLI prints (`0.42` is `42%`), `∅` for
-/// absent, `—` for none.
-#let percent(value) = if value == "absent" { "∅" } else if value == none { "—" } else {
-  str(int(calc.round(value * 100))) + "%"
-}
+#import "@local/typst-design:0.1.0" as design
+#import design: percent, state-of
 
 // --- instants ----------------------------------------------------------------
 
@@ -107,14 +65,14 @@
 
 /// THE ONE COMBINATOR OVER TARGETS: content as a target holds it. `paged` on
 /// a page; in HTML, `html(std.html)`, given the module that spells elements;
-/// in HTML from a library without one, `text`, which is `paged` unless said.
-#let _on(paged, html: none, text: auto) = context if target() != "html" { paged } else if _elements {
-  html(std.html)
+/// in HTML from a library without one, `text`. Each is `paged` unless said.
+#let _on(paged, html: auto, text: auto) = context if target() != "html" { paged } else if _elements {
+  if html == auto { paged } else { html(std.html) }
 } else if text == auto { paged } else { text }
 
 /// Drawn content: itself on a page, an inline SVG in HTML, sized in `em` of
-/// an 11pt text (so the 9pt pie is about 14px beside 17–18px text), and
-/// nothing where HTML cannot hold a drawing.
+/// an 11pt text, and nothing where HTML cannot hold a drawing. Inside the
+/// frame the target is a page, so a mark drawn there never asks for `html`.
 #let _frame(body) = _on(body, html: html => box(html.frame(body)), text: none)
 
 /// A block a stylesheet can find by class in HTML; a plain block otherwise.
@@ -128,114 +86,15 @@
   eval(body, mode: "markup")
 } else { body }
 
-// --- the two marks -----------------------------------------------------------
+// --- the marks ----------------------------------------------------------------
 
-/// THE PIE: a value's share of a disc, from twelve o'clock clockwise, in
-/// `colour(value)` on a faint track of the same colour, with a thin outline
-/// in it too. `value` is a number in [0, 1].
-#let pie(value, size: 9pt) = {
-  let c = colour(value)
-  let r = size / 2
-  let edge = 0.6pt
-  let at(angle) = (r + r * calc.sin(angle), r - r * calc.cos(angle))
-  // One vertex every 5°, so the arc is round at any size this is drawn at.
-  let steps = calc.max(1, calc.ceil(value * 72))
-  _frame(box(width: size, height: size, baseline: 12%, {
-    place(circle(radius: r, fill: c.transparentize(78%)))
-    if value >= 1 {
-      place(circle(radius: r, fill: c))
-    } else if value > 0 {
-      place(polygon(fill: c, (r, r), ..range(steps + 1).map(i => at(360deg * value * i / steps))))
-    }
-    place(dx: edge / 2, dy: edge / 2, circle(radius: r - edge / 2, stroke: edge + c))
-  }))
-}
-
-/// A value as a list or a page shows it: its pie and its percentage in ink.
-/// No number — `"absent"` or `none` — is no pie, only a quiet "unpriced".
+/// A value as a list or a page shows it: the design's `price`, its pie and
+/// its percentage, or a quiet "unpriced", found by class in HTML. Where HTML
+/// cannot hold a drawing, its words alone.
 #let price(value) = if value == none or value == "absent" {
-  _span("price unpriced", text(fill: unpriced)[unpriced])
+  _span("price unpriced", design.price(value))
 } else {
-  _span("price", [#pie(value)~#text(fill: ink, strong(percent(value)))])
-}
-
-/// Runs of consecutive samples that have a value: `∅` breaks the line, and
-/// no line is drawn to or from it.
-#let _runs(points) = {
-  let runs = ((),)
-  for point in points {
-    if point.at(1) == none {
-      if runs.last().len() > 0 { runs.push(()) }
-    } else {
-      runs.last().push(point)
-    }
-  }
-  runs.filter(run => run.len() > 0)
-}
-
-/// THE TRACE: a todo's fulfillment over the days around now, one thick line
-/// coloured at every point by `colour` of its own value, in a 0–100% frame.
-/// `values` are evenly spaced from `back` days before `at` to `ahead` days
-/// after it, both ends included, with one sample falling at `at` itself; a
-/// `none` is `∅`, a gap in the line. The past is faded; now is a thin ink
-/// line with a dot at now's value.
-#let trace(values, at: "", back: 15, ahead: 15, width: 280pt, height: 108pt) = {
-  let n = values.len()
-  let now = int(calc.round((n - 1) * back / (back + ahead)))
-  let gutter = 16pt
-  let (top, margin, foot) = (4pt, 18pt, 16pt)
-  let (w, h) = (width - gutter - margin, height - top - foot)
-  let point((i, value)) = (w * i / (n - 1), h * (1 - value))
-  let thick = 3pt
-  let line-of(run, paint) = if run.len() == 1 {
-    let (x, y) = point(run.first())
-    place(dx: x - thick / 2, dy: y - thick / 2, circle(radius: thick / 2, fill: colour(run.first().at(1))))
-  } else {
-    place(curve(
-      stroke: (paint: paint, thickness: thick, cap: "round", join: "round"),
-      curve.move(point(run.first())),
-      ..run.slice(1).map(p => curve.line(point(p))),
-    ))
-  }
-  let indexed = values.enumerate()
-  let past = _runs(indexed.slice(0, now + 1))
-  let future = _runs(indexed.slice(now))
-  let label(body, fill: _quiet) = text(size: 6.5pt, fill: fill, body)
-  let x-of(day) = gutter + w * (day + back) / (back + ahead)
-  let date(day) = if at == "" { [] } else {
-    (_instant(at.slice(0, 10)) + duration(days: day)).display("[month repr:short] [day padding:none]")
-  }
-
-  _frame(box(width: width, height: height, {
-    // The frame, its three levels, and the dashed half.
-    place(dx: gutter, dy: top, rect(width: w, height: h, stroke: 0.5pt + _faint))
-    place(dx: gutter, dy: top + h / 2, line(length: w, stroke: (paint: _faint, thickness: 0.5pt, dash: "dashed")))
-    for (level, name) in ((1, "100"), (0.5, "50"), (0, "0")) {
-      place(dx: 0pt, dy: top + h * (1 - level) - 4pt, box(width: gutter - 3pt, height: 8pt, align(right + horizon, label(name))))
-    }
-    // The line, past faded, in a box the height of 0–100% so its gradient
-    // spans exactly that range.
-    place(dx: gutter, dy: top, box(width: w, height: h, {
-      for run in past { line-of(run, _upward(alpha: 35%)) }
-      for run in future { line-of(run, _upward()) }
-    }))
-    // Now.
-    let x = x-of(0)
-    place(dx: x - 0.35pt, dy: top, rect(width: 0.7pt, height: h, fill: ink))
-    let v = values.at(now)
-    if v != none {
-      let r = 3.2pt
-      place(dx: x - r, dy: top + h * (1 - v) - r, circle(radius: r, fill: colour(v), stroke: 0.8pt + white))
-    }
-    // The dates: the ends, a week either side, and now.
-    let dy = top + h + 4pt
-    place(dx: gutter, dy: dy, label(date(-back)))
-    place(dx: gutter + w - 40pt, dy: dy, box(width: 40pt, align(right, label(date(ahead)))))
-    for day in (-7, 7).filter(day => -back < day and day < ahead) {
-      place(dx: x-of(day) - 20pt, dy: dy, box(width: 40pt, align(center, label(date(day)))))
-    }
-    place(dx: x - 20pt, dy: dy, box(width: 40pt, align(center, label(fill: ink, strong(date(0))))))
-  }))
+  _span("price", _on(design.price(value), text: strong(percent(value))))
 }
 
 // --- reading the data --------------------------------------------------------
@@ -273,10 +132,13 @@
 /// order is the core's, so this package never sorts by value itself.
 #let listed(data) = data.order.map(todo => data.entries.find(e => e.todo == todo))
 
-#let _trace-of(data, todo) = {
+/// THE THIRTY DAYS: a todo's marks (`data.marks`), drawn as the design's
+/// `trace` around the instant the data was read at. Nothing for a todo with
+/// no marks, or where HTML cannot hold a drawing.
+#let trace-of(data, todo) = {
   let marks = data.at("marks", default: (:)).at(todo, default: none)
   if marks != none {
-    trace(marks.values, at: data.at, back: marks.back, ahead: marks.ahead)
+    _frame(design.trace(marks.values, at: _instant(data.at), back: marks.back, ahead: marks.ahead))
   }
 }
 
@@ -458,7 +320,7 @@
     #if entry.unconfirmed [ · unconfirmed]
     #if entry.at not in (none, "") [ · since #when(entry.at)]
   ])
-  _div("marks", _trace-of(data, todo))
+  _div("marks", trace-of(data, todo))
 
   let detail = _field(record, "detail")
   if detail != "" { _div("detail", _text(detail, markup)) }
