@@ -6,3 +6,4 @@ authors = ["The prodrome contributors"]
 license = "MIT OR Apache-2.0"
 description = "Layouts for a Prodrome read as Typst: the list, an item, and the two FPL marks."
 compiler = "0.15.1"
+exclude = ["examples", "tests"]

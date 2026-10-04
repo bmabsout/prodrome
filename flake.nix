@@ -293,6 +293,32 @@
           description = "Typst 0.15.1 as WebAssembly for a views editor: the views module and completion";
         };
 
+        # THE TYPST PACKAGES ON A PACKAGE PATH, as `typst compile
+        # --package-path` and typst-wasm find them: `local/<name>/<version>`,
+        # the Prodrome's beside the design system it imports. Each is as
+        # Typst installs it, its name, version and contents read from its own
+        # manifest: its source without what the manifest excludes (examples,
+        # tests, a gallery, a flake). The pictures of the Prodrome's examples
+        # are not in its source at all: they are made from it.
+        typstSrc = lib.fileset.toSource {
+          root = ./typst;
+          fileset = lib.fileset.difference ./typst (lib.fileset.fileFilter (file: file.hasExt "png") ./typst);
+        };
+        typstPackage = src:
+          let
+            manifest = (builtins.fromTOML (builtins.readFile "${src}/typst.toml")).package;
+          in
+          {
+            name = "local/${manifest.name}/${manifest.version}";
+            path = pkgs.runCommand "${manifest.name}-${manifest.version}" { } ''
+              cp -r ${src} $out
+              chmod -R u+w $out
+              cd $out
+              rm -rf ${lib.escapeShellArgs (manifest.exclude or [ ])}
+            '';
+          };
+        typstPackages = pkgs.linkFarm "typst-packages" (map typstPackage [ typstSrc typst-design ]);
+
         # THE VIEWER (`nix build .#prodrome-viewer`): the static app — no
         # data in it — that folds a store with prodrome-wasm and typesets it
         # with prodrome-typst-wasm and the `typst/` package. An EXAMPLE host.
@@ -302,14 +328,11 @@
         viewer = { pname, wasm }: pkgs.stdenv.mkDerivation {
           inherit pname;
           version = "0.1.0";
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [ ./viewer ./typst ];
-          };
+          src = lib.fileset.toSource { root = ./.; fileset = ./viewer; };
           nativeBuildInputs = [ pkgs.esbuild pkgs.typescript ];
           buildPhase = ''
             runHook preBuild
-            sh viewer/build.sh "$out" ${wasm}/web ${prodrome-typst-wasm}/web \
+            sh viewer/build.sh "$out" ${wasm}/web ${prodrome-typst-wasm}/web ${typstPackages} \
               ${pkgs.libertinus}/share/fonts ${pkgs.source-serif}/share/fonts
             runHook postBuild
           '';
@@ -321,19 +344,6 @@
         };
 
         prodrome-viewer = viewer { pname = "prodrome-viewer"; wasm = prodrome-wasm; };
-
-        # THE TYPST PACKAGES ON A PACKAGE PATH, as `typst compile
-        # --package-path` and typst-wasm find them: `local/<name>/<version>`,
-        # the Prodrome's beside the design system it imports. The pictures
-        # of its examples are not in the Prodrome's: they are made from it.
-        typstSrc = lib.fileset.toSource {
-          root = ./typst;
-          fileset = lib.fileset.difference ./typst (lib.fileset.fileFilter (file: file.hasExt "png") ./typst);
-        };
-        typstPackages = pkgs.linkFarm "prodrome-typst-packages" [
-          { name = "local/prodrome-typst/0.1.0"; path = typstSrc; }
-          { name = "local/typst-design/0.1.0"; path = typst-design; }
-        ];
 
         # Every Typst compilation here: no system font, so a picture is the
         # same on every machine, and the package on its path.
@@ -499,7 +509,7 @@
           # host may typeset a store with it for markup it does not trust.
           prodrome-typst-restricted = pkgs.runCommand "prodrome-typst-restricted"
             { nativeBuildInputs = [ pkgs.nodejs ]; } ''
-            node ${typstSrc}/tests/restricted.mjs ${prodrome-typst-wasm}/web ${typstPackages}
+            node ${typstSrc}/tests/restricted.mjs ${prodrome-typst-wasm}/web ${typstPackages} ${typstSrc}/examples
             touch $out
           '';
           # The wasm and the viewer as checks are the cheap wasm build: the
