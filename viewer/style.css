@@ -1,19 +1,16 @@
 /* The viewer's page. Typeset content arrives as plain HTML with a few
-   classes from prodrome-typst (roadmap, price, marks, explanation, ...). */
+   classes from prodrome-typst (roadmap, price, marks, explanation, ...).
+   Every colour and face is a token of the design system, read by
+   tokens.typ into the :root rule above this file; none is picked here. */
 
+@font-face { font-family: "Source Serif 4"; src: url("fonts/SourceSerif4-Regular.otf"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Source Serif 4"; src: url("fonts/SourceSerif4-It.otf"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Source Serif 4"; src: url("fonts/SourceSerif4-Bold.otf"); font-weight: 700; font-style: normal; font-display: swap; }
 @font-face { font-family: "Libertinus Serif"; src: url("fonts/LibertinusSerif-Regular.otf"); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: "Libertinus Serif"; src: url("fonts/LibertinusSerif-Italic.otf"); font-weight: 400; font-style: italic; font-display: swap; }
 @font-face { font-family: "Libertinus Serif"; src: url("fonts/LibertinusSerif-Bold.otf"); font-weight: 700; font-style: normal; font-display: swap; }
 
-:root {
-  --ink: #222;
-  --muted: #666;
-  --rule: #ddd;
-  --paper: #fdfcf9;
-  --unpriced: #9b9b9b;
-  --error: #c0392b;
-  color-scheme: light;
-}
+:root { color-scheme: light; }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -23,30 +20,44 @@ body {
   padding: 0 16px 3rem;
   background: var(--paper);
   color: var(--ink);
-  font: 18px/1.5 "Libertinus Serif", "Source Serif 4", Georgia, serif;
+  font: 17px/1.55 var(--serif);
 }
 header { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: baseline; padding: 1rem 0 .5rem; border-bottom: 1px solid var(--rule); }
-header .home { font-weight: 700; color: var(--ink); text-decoration: none; }
+header .home { font: 600 1.2rem var(--display); color: var(--primary); text-decoration: none; }
 #status { color: var(--muted); font-size: .8rem; }
 footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .8rem; }
-a { color: #1d5d8c; }
-code, pre, textarea { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: .85em; }
-h1, h2, h3 { line-height: 1.2; }
+a { color: var(--primary); text-decoration-color: var(--mark-line); }
+a:hover { text-decoration-color: currentColor; }
+code, pre, textarea { font-family: var(--mono); font-size: .85em; }
+h1, h2, h3 { line-height: 1.2; font-family: var(--display); font-weight: 600; }
+/* The type scale, ×1.2 a step: a title three steps up, a section one. */
+.typst h2 { font-size: 1.728em; color: var(--primary); margin: .6em 0 .2em; }
+.typst h3 { font-size: 1.2em; color: var(--secondary); margin: 1.4em 0 .4em; }
+/* The capsule rule: round-capped dots, 3pt thick and 6pt apart, in the
+   quiet rule tone. */
+hr.capsule {
+  border: 0; height: 3pt; margin: .4em 0 .8em;
+  background: radial-gradient(circle, var(--rule) 1.5pt, transparent 1.55pt) 0 0 / 6pt 3pt repeat-x;
+}
 
 /* Typeset pages */
 .typst table { border-collapse: collapse; width: 100%; }
 .typst th, .typst td { text-align: left; vertical-align: middle; padding: .35rem .5rem; border-bottom: 1px solid var(--rule); }
-.typst th { font-weight: 400; color: var(--muted); font-size: .8rem; }
+.typst th { font: 600 .72rem var(--sans); letter-spacing: .14em; color: var(--muted); }
 /* Typst sizes an SVG inline, in em; a narrow screen shrinks it, keeping its shape. */
 .typst svg { vertical-align: middle; max-width: 100%; height: auto !important; }
 .typst h1, .typst td, .crumbs { overflow-wrap: anywhere; }
 .roadmap, .history { overflow-x: auto; }
 .roadmap td:first-child { width: 1%; white-space: nowrap; }
-.summary, .crumbs, .facts { color: var(--muted); }
+.summary, .crumbs { color: var(--muted); font-size: .833em; }
 .facts { margin: .5rem 0 1rem; }
 .marks { margin: 0 0 1rem; }
 .price { white-space: nowrap; }
 .price svg { vertical-align: -.1em; max-width: none; }
+.price strong { color: var(--ink); }
+/* The diamond, the only inline separator, 0.4em either side. */
+.diamond { display: inline-block; margin: 0 .4em; }
+.diamond svg { vertical-align: .05em; }
 .price.unpriced { color: var(--unpriced); font-size: .85em; font-style: italic; }
 .explanation ul { margin: .2rem 0; }
 .history td:first-child { white-space: nowrap; }
@@ -67,29 +78,31 @@ h1, h2, h3 { line-height: 1.2; }
   width: 100%; min-height: 12rem; line-height: 1.45; font-size: 14px;
   white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
 }
-.editor .shade { position: absolute; inset: 0; overflow: hidden; pointer-events: none; background: #fff; color: var(--ink); }
+.editor .shade { position: absolute; inset: 0; overflow: hidden; pointer-events: none; background: var(--paper); color: var(--ink); }
 .editor textarea { position: relative; resize: vertical; background: transparent; color: transparent; caret-color: var(--ink); }
-.editor .completions { list-style: none; margin: .2rem 0; padding: .2rem; border: 1px solid var(--rule); background: #fff; max-height: 14rem; overflow-y: auto; font-size: 14px; }
+.editor .completions { list-style: none; margin: .2rem 0; padding: .2rem; border: 1px solid var(--rule); background: var(--paper); max-height: 14rem; overflow-y: auto; font-size: 14px; }
 .editor .completions li { padding: .1rem .4rem; cursor: pointer; }
-.editor .completions li[aria-selected="true"] { background: #e8f0f7; }
+.editor .completions li[aria-selected="true"] { background: var(--mark-fill); }
 .editor .completions .detail { color: var(--muted); }
 .editor .hover { min-height: 1.4em; color: var(--muted); font-size: .8rem; white-space: pre-wrap; }
 .editor .problems { margin: .2rem 0; padding-left: 1.2rem; font-size: .8rem; white-space: pre-wrap; }
-.editor .problems .error { color: var(--error); }
+.editor .problems .error { color: var(--notice); }
 .editor .problems .warning { color: var(--muted); }
 .editor .preview { border: 1px dashed var(--rule); padding: .5rem 1rem; }
 .editor .preview.stale { opacity: .5; }
 
-/* Typst's highlighting classes */
-.typ-comment { color: #8a8a8a; font-style: italic; }
-.typ-key, .typ-marker { color: #a44554; }
-.typ-str { color: #2f7a4f; }
-.typ-num { color: #b35c00; }
-.typ-func { color: #1d5d8c; }
+/* Typst's highlighting classes, in the design system's role and chart
+   colours: keys and markers in the acted rose, strings in the valued teal,
+   calls in the observed blue, numbers and raw text in chart colours. */
+.typ-comment { color: var(--muted); font-style: italic; }
+.typ-key, .typ-marker { color: var(--acted); }
+.typ-str { color: var(--valued); }
+.typ-num { color: var(--chart-4); }
+.typ-func { color: var(--observed); }
 .typ-heading, .typ-strong { font-weight: 700; }
 .typ-emph { font-style: italic; }
-.typ-raw, .typ-escape { color: #6b4fa0; }
-.typ-label, .typ-ref, .typ-link { color: #1d5d8c; text-decoration: underline; }
-.typ-punct, .typ-op, .typ-math-delim, .typ-math-op { color: #555; }
-.typ-pol { color: #444; }
-.typ-error { color: var(--error); text-decoration: wavy underline; }
+.typ-raw, .typ-escape { color: var(--chart-5); }
+.typ-label, .typ-ref, .typ-link { color: var(--observed); text-decoration: underline; }
+.typ-punct, .typ-op, .typ-math-delim, .typ-math-op { color: var(--muted); }
+.typ-pol { color: var(--ink); }
+.typ-error { color: var(--notice); text-decoration: wavy underline; }
