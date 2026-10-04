@@ -11,48 +11,51 @@ viewer in `viewer/` is one such host, and an example of how to use it.
 
 **It computes nothing about fulfillment.** Every number it draws was answered
 by the core (compiled to WebAssembly, or any other implementation of SPEC.md).
-The one reading it adds is a value's colour.
 
-**The colour is continuous.** A fulfillment `v` in [0, 1] is drawn in
-`colour(v)`, a sample of one gradient, `fulfillment`:
-
-```typst
-#let fulfillment = gradient.linear(color.oklch(color.red), color.oklch(color.green), space: oklch)
-#let colour(value) = fulfillment.sample(value * 100%)
-```
-
-It is linear in each OKLCH channel, `oklch(65.95 + 8.01·v %, 0.227 − 0.007·v,
-28.44 + 115.85·v)`, and runs red, orange, yellow, green. Low is urgent: a
-value says how well things go if nothing changes. `∅`, or a todo that does
-not link, has no value and no colour of the scale; it reads "unpriced" in
-grey. Problem (below 0.5), Watch (below 0.7) and Fine are words
-(`state-of`), never colours. `tests/laws.typ` holds the scale to that formula.
+**Its look is the design system's.** The package imports
+[`typst-design`](https://github.com/bmabsout/typst-design)
+(`@local/typst-design:0.1.0`) for everything that is a look rather than a
+layout: the fulfillment scale (`fulfillment-color(v)`, continuous, low is
+urgent, readable on paper and by red–green colour-blind readers), the pie,
+the trace, the words for a value (`state-of`: Problem below 0.5, Watch below
+0.7, Fine) and `percent`. `∅`, or a todo that does not link, has no value
+and no colour of the scale; it reads "unpriced". The design system's own
+laws hold its scale and marks; `tests/laws.typ` holds what the layouts rely
+on of them, and the layouts themselves.
 
 ## Use
 
 ```typst
-#import "@local/prodrome-typst:0.1.0": roadmap, item, pie, trace
+#import "@local/prodrome-typst:0.1.0": roadmap, item, price, trace-of
 
 #let data = json("data.json")
 #roadmap(data)                         // the list, links to #/todo/<id>
 #item(data, "ship-the-viewer")         // one item's page
-#pie(0.42)                             // a value's pie
-#let m = data.marks.at("ship-the-viewer")
-#trace(m.values, at: data.at, back: m.back, ahead: m.ahead)
+#price(0.42)                           // a value's pie and percentage
+#trace-of(data, "ship-the-viewer")     // its thirty days
 ```
 
-Every layout works in paged export (PDF, PNG, SVG) and in HTML export
+Every layout works in paged export (PDF, PNG, SVG), in HTML export
 (`typst compile --features html --format html`), where the marks become inline
-SVG. The examples compile both ways:
+SVG, and in HTML from a library without `html` (typst-wasm's
+`Project.restricted()`, for markup whose author is not trusted), where the
+marks are left out and their words stay. The examples compile every way, with
+the design system on the package path beside this package:
 
 ```console
-$ mkdir -p pkgs/local/prodrome-typst && ln -s "$PWD/typst" pkgs/local/prodrome-typst/0.1.0
+$ mkdir -p pkgs/local/prodrome-typst pkgs/local/typst-design
+$ ln -s "$PWD/typst" pkgs/local/prodrome-typst/0.1.0
+$ git clone https://github.com/bmabsout/typst-design pkgs/local/typst-design/0.1.0
 $ typst compile --package-path pkgs typst/examples/roadmap.typ
 $ typst compile --package-path pkgs --features html --format html typst/examples/item.typ
 ```
 
-`nix flake check` does the same (`checks.prodrome-typst`), and compiles
-`tests/laws.typ`, whose asserts are the package's laws.
+`nix flake check` does the same (`checks.prodrome-typst`, with the design
+system the flake pins), compiles `tests/laws.typ`, whose asserts are the
+package's laws, and compiles the examples in typst-wasm's restricted project
+(`checks.prodrome-typst-restricted`). `examples/roadmap.png` and
+`examples/item.png` are the examples rendered, and the check renders them
+again (`nix build .#prodrome-typst-examples`) and fails if they differ.
 
 ## The data
 
@@ -81,19 +84,16 @@ store by the viewer's own `viewer/src/view.ts`.
   thirty days, detail, the price in words ("42% now, falling from 55% to 5%
   by Sep 29, 17:00, over 3 days") with the explanation's parts beneath it,
   and the history, each event dated and linked to its object file.
-- `pie(value, size:)`: the value's share of a disc from twelve o'clock
-  clockwise, in `colour(value)` on a faint track, with a thin outline.
-- `trace(values, at:, back:, ahead:, width:, height:)`: one thick line, each
-  point in `colour` of its own value, in a 0–100% frame with a dashed half;
-  the past faded, now a thin ink line and a dot, dated at the ends, a week
-  either side, and now.
-- `fulfillment`, `colour`, `state-of`, `percent`, `price` (a pie and the
-  percentage, or "unpriced"), `when` (an instant as a reader says it),
-  `explanation` (a tree of prices in words, every kind of term said with
-  percentages, spans and dates and never a field's name), `listed`, and the
-  colours `unpriced` and `ink`.
+- `price(value)`: the design's pie and the percentage, or "unpriced".
+- `trace-of(data, todo)`: the todo's thirty days, `data.marks` drawn as the
+  design's trace around `data.at`; the past faded, now a thin ink line and a
+  dot, dated at the ends, a week either side, and now.
+- `when` (an instant as a reader says it), `explanation` (a tree of prices
+  in words, every kind of term said with percentages, spans and dates and
+  never a field's name), `listed`, and, from the design system, `state-of`
+  and `percent`.
 
 `markup: true` reads an item's body and detail as Typst markup; the default
 shows them verbatim, because nothing promises a store's text is Typst. In HTML
-export each piece carries a class (`roadmap`, `price problem`, `marks`,
+export each piece carries a class (`roadmap`, `price`, `price unpriced`, `marks`,
 `explanation`, …) for a stylesheet to find.
