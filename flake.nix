@@ -329,7 +329,7 @@
           inherit pname;
           version = "0.1.0";
           src = lib.fileset.toSource { root = ./.; fileset = ./viewer; };
-          nativeBuildInputs = [ pkgs.esbuild pkgs.typescript ];
+          nativeBuildInputs = [ pkgs.esbuild pkgs.typescript pkgs.typst pkgs.jq ];
           buildPhase = ''
             runHook preBuild
             sh viewer/build.sh "$out" ${wasm}/web ${prodrome-typst-wasm}/web ${typstPackages} \

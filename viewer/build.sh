@@ -7,9 +7,11 @@
 # `nix build .#prodrome-wasm` and `.#prodrome-typst-wasm`; PACKAGES is a
 # Typst package path, `local/<name>/<version>/…`, holding `prodrome-typst`
 # and every package it imports, each of whose Typst files is bundled; each
-# FONT_DIR is searched for the fonts main.ts lists. Needs `esbuild` and `tsc` on PATH and
-# nothing from npm: the TypeScript is typechecked against the glues' own
-# `.d.ts` and bundled by esbuild. `nix build .#prodrome-viewer` runs this.
+# FONT_DIR is searched for the fonts main.ts lists. Needs `esbuild`, `tsc`,
+# `typst` and `jq` on PATH and nothing from npm: the TypeScript is
+# typechecked against the glues' own `.d.ts` and bundled by esbuild, and the
+# stylesheet's tokens are read from the design system by typst.
+# `nix build .#prodrome-viewer` runs this.
 set -eu
 
 out=$1 prodrome=$2 typst=$3 packages=$4
@@ -61,7 +63,14 @@ for font in $fonts; do
   cp "$found" "$out/fonts/$font"
 done
 cp "$here"/fonts/*.md "$here"/fonts/*.txt "$out/fonts/"
-cp "$here/index.html" "$here/style.css" "$out/"
+# THE STYLESHEET'S TOKENS ARE THE DESIGN SYSTEM'S: `tokens.typ` reads each
+# colour and face from `typst-design` on the package path, and its rule
+# heads `style.css`, so no colour of the page is picked by hand.
+tokens=$(typst eval --ignore-system-fonts --package-path "$packages" \
+  'query(<tokens>).first().value' --in "$here/tokens.typ" | jq -r .)
+case $tokens in ":root {"*) ;; *) echo "tokens.typ: no :root rule" >&2; exit 1 ;; esac
+printf '/* From typst-design, by viewer/tokens.typ. */\n%s\n\n' "$tokens" | cat - "$here/style.css" > "$out/style.css"
+cp "$here/index.html" "$out/"
 
 # THE BUILD'S NAME: a hash of everything the app is made of, so a change to any
 # of it is a new service-worker cache and new URLs for the shell.

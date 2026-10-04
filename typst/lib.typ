@@ -109,12 +109,13 @@
 #let _rule = _on(design.capsule-rule(), html: html => html.elem("hr", attrs: (class: "capsule")), text: none)
 
 /// Items joined by the design's diamond, the only inline separator; framed
-/// in HTML, and a middle dot where HTML cannot hold a drawing.
+/// in HTML in a `span.diamond` a stylesheet spaces, and a middle dot where
+/// HTML cannot hold a drawing.
 #let _sep(..items) = design.sep(
   ..items.pos().filter(item => item != none),
   diamond: () => _on(
     design.diamond(),
-    html: html => [ #box(html.frame(design.diamond(spacing: 0pt))) ],
+    html: html => html.elem("span", attrs: (class: "diamond"), html.frame(design.diamond(spacing: 0pt))),
     text: [ · ],
   ),
 )
