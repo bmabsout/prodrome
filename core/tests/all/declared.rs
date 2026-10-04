@@ -39,12 +39,13 @@ use prodrome::store::{sync, EventStore, MemoryStore, Replica};
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 
-use crate::schema_laws::{a_draw, free, history, routed, Draw};
+use crate::common::draw::{a_draw, history, Draw};
+use crate::schema_laws::{free, routed};
 
 #[path = "../schemas/proposal.rs"]
 mod proposal;
 
-use proposal::{Field, Id, Proposal, Says, State, DECLARED, FIELDS, STATES};
+use proposal::{a_proposal, Field, Id, Proposal, Says, State, DECLARED, FIELDS, STATES};
 
 fn declaration() -> Declaration {
     proposals().clone()
@@ -82,22 +83,6 @@ fn day(day: u32) -> Datetime {
 /// The same event at the declared schema: its print, parsed there.
 fn declared(schema: &Declaration, event: &Proposal) -> Declared {
     Declared::from_value(schema, &event.to_value()).expect("a proposal event is a declared one")
-}
-
-fn a_proposal() -> impl Strategy<Value = Proposal> {
-    let says = prop_oneof![
-        (0..3u8).prop_map(|n| Says::Proposed(format!("text {n}"))),
-        prop::sample::select(STATES.to_vec()).prop_map(Says::Moved),
-        (-2..4i64).prop_map(Says::Attempted),
-        prop::collection::vec(prop::sample::select(vec!["a", "b", "c"]), 0..3)
-            .prop_map(|tags| Says::Tagged(tags.into_iter().map(str::to_owned).collect())),
-    ];
-    (0..2usize, 1..6u32, says).prop_map(|(p, d, says)| Proposal {
-        proposal: Id(["p-1", "p-2"][p].to_owned()),
-        at: day(d),
-        actor: Actor::new("ana").expect("an actor"),
-        says,
-    })
 }
 
 /// Every entity's registers, by key and register NAME: each frontier and

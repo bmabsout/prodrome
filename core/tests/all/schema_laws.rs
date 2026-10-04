@@ -19,15 +19,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use prodrome::change::mk_change;
 use prodrome::dag::Dag;
 use prodrome::event::{
-    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, mk_tended, seal_hash,
-    Envelope, Hash, TodoEvent,
+    mk_cancelled, mk_completed, mk_created, mk_reopened, mk_spec_revised, mk_tended, Hash,
+    TodoEvent,
 };
 use prodrome::fold::{price, read, Kind, Product, RegisterType};
 use prodrome::fpl::{self, mk_flat, Closed, Env};
-use prodrome::genesis::mk_genesis;
 use prodrome::literal::Datetime;
 use prodrome::policy::Everything;
 use prodrome::reference::{mk_authored, Todo};
@@ -36,45 +34,11 @@ use prodrome::schema::{History, Price, Schema};
 use prodrome::term::Term;
 use proptest::prelude::*;
 
+use crate::common::draw::{a_draw, history, Draw};
+
 use prodrome::todo::{Content, Spec, State};
 
 use crate::review::{self, Field, Phase, PhaseRegister, Review, PHASES};
-
-/// What one history is drawn as: each event with the earlier changes to its
-/// entity it supersedes (a bit per earlier change), a rank per object for
-/// the order it is folded in, the objects folded twice, and the objects one
-/// replica starts from.
-#[derive(Debug, Clone)]
-pub(crate) struct Draw<E> {
-    pub(crate) events: Vec<(E, u64)>,
-    pub(crate) ranks: Vec<u32>,
-    pub(crate) twice: Vec<usize>,
-    pub(crate) replica: u64,
-}
-
-/// The objects: a genesis, and one change per event over the earlier
-/// changes to its entity its bits name.
-pub(crate) fn history<E: Schema>(events: &[(E, u64)]) -> Vec<(Hash, Envelope<E>)> {
-    let genesis = Envelope::Genesis(mk_genesis("law 1", &"0".repeat(32)).expect("a genesis"));
-    let root = seal_hash(&genesis);
-    let mut objects = vec![(root.clone(), genesis)];
-    let mut changes: Vec<(Hash, &E)> = Vec::new();
-    for (event, bits) in events {
-        let deps: BTreeSet<Hash> = changes
-            .iter()
-            .enumerate()
-            .filter(|(i, (_, earlier))| bits >> (i % 64) & 1 == 1 && earlier.key() == event.key())
-            .map(|(_, (name, _))| name.clone())
-            .collect();
-        let change = mk_change(root.clone(), deps.into_iter().collect(), event.clone())
-            .expect("distinct deps");
-        let object = Envelope::Change(change);
-        let name = seal_hash(&object);
-        changes.push((name.clone(), event));
-        objects.push((name, object));
-    }
-    objects
-}
 
 /// Every register's frontier and its reading by name ([`Product::reading`]),
 /// for every entity: what the law is about, compared by object names because
@@ -306,21 +270,6 @@ fn a_review_event() -> impl Strategy<Value = Review> {
                 Some(phase) => review::moved(pr, review::day(1 + day), "ana", phase),
                 None => review::opened(pr, review::day(1 + day), "ana", "a change"),
             }
-        })
-}
-
-pub(crate) fn a_draw<E: Schema>(event: impl Strategy<Value = E>) -> impl Strategy<Value = Draw<E>> {
-    (
-        prop::collection::vec((event, any::<u64>()), 1..12),
-        prop::collection::vec(any::<u32>(), 13),
-        prop::collection::vec(0usize..13, 0..4),
-        any::<u64>(),
-    )
-        .prop_map(|(events, ranks, twice, replica)| Draw {
-            events,
-            ranks,
-            twice,
-            replica,
         })
 }
 

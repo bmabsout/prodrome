@@ -522,6 +522,7 @@ name = "prodrome-wasm-exports"
 version = "0.9.0"
 dependencies = [
  "prodrome-core",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",

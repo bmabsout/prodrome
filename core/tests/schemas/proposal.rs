@@ -19,6 +19,7 @@ use prodrome::literal::{Call, Datetime, ProdromeError, Signature, Table, Value, 
 use prodrome::payload::{datetime_field, required, string_field, strings, tuple_field};
 use prodrome::registers::Stamp;
 use prodrome::schema::Schema;
+use proptest::prelude::*;
 
 /// The proposal schema as data: the text a host would hand the store, in
 /// its canonical print.
@@ -350,4 +351,23 @@ impl Schema for Proposal {
             Says::Tagged(_) => Field::Tags,
         })
     }
+}
+
+/// A proposal event of either of two proposals, on one of five days, of
+/// any constructor: the generator `all/declared.rs` and the wasm exports
+/// draw histories of.
+pub fn a_proposal() -> impl Strategy<Value = Proposal> {
+    let says = prop_oneof![
+        (0..3u8).prop_map(|n| Says::Proposed(format!("text {n}"))),
+        prop::sample::select(STATES.to_vec()).prop_map(Says::Moved),
+        (-2..4i64).prop_map(Says::Attempted),
+        prop::collection::vec(prop::sample::select(vec!["a", "b", "c"]), 0..3)
+            .prop_map(|tags| Says::Tagged(tags.into_iter().map(str::to_owned).collect())),
+    ];
+    (0..2usize, 1..6u32, says).prop_map(|(p, d, says)| Proposal {
+        proposal: Id(["p-1", "p-2"][p].to_owned()),
+        at: Datetime::new(2026, 10, d, 12, 0, 0, 0).expect("a real instant"),
+        actor: Actor::new("ana").expect("an actor"),
+        says,
+    })
 }
