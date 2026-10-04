@@ -5,9 +5,16 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
+    # THE OWNER'S DESIGN SYSTEM, a Typst package (`@local/typst-design`):
+    # the Typst package and the viewer take their look from it. Its source
+    # only, so its own flake's inputs never enter this lock.
+    typst-design = {
+      url = "github:bmabsout/typst-design";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, crane }:
+  outputs = { self, nixpkgs, flake-utils, crane, typst-design }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         inherit (nixpkgs) lib;
@@ -315,15 +322,17 @@
 
         prodrome-viewer = viewer { pname = "prodrome-viewer"; wasm = prodrome-wasm; };
 
-        # THE TYPST PACKAGE ON A PACKAGE PATH, as `typst compile
-        # --package-path` and typst-wasm find it: `local/<name>/<version>`.
-        # The pictures of its examples are not in it: they are made from it.
+        # THE TYPST PACKAGES ON A PACKAGE PATH, as `typst compile
+        # --package-path` and typst-wasm find them: `local/<name>/<version>`,
+        # the Prodrome's beside the design system it imports. The pictures
+        # of its examples are not in the Prodrome's: they are made from it.
         typstSrc = lib.fileset.toSource {
           root = ./typst;
           fileset = lib.fileset.difference ./typst (lib.fileset.fileFilter (file: file.hasExt "png") ./typst);
         };
         typstPackages = pkgs.linkFarm "prodrome-typst-packages" [
           { name = "local/prodrome-typst/0.1.0"; path = typstSrc; }
+          { name = "local/typst-design/0.1.0"; path = typst-design; }
         ];
 
         # Every Typst compilation here: no system font, so a picture is the
