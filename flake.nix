@@ -346,9 +346,13 @@
         prodrome-viewer = viewer { pname = "prodrome-viewer"; wasm = prodrome-wasm; };
 
         # Every Typst compilation here: no system font, so a picture is the
-        # same on every machine, and the package on its path.
+        # same on every machine, but the design system's faces (`faces` in
+        # its `type.typ`: Source Serif 4, Crimson Pro, Source Sans 3), and
+        # the packages on their path.
         typstCompile = ''
-          typst compile --ignore-system-fonts --package-path ${typstPackages}'';
+          typst compile --ignore-system-fonts --package-path ${typstPackages} \
+            ${lib.concatMapStringsSep " " (font: "--font-path ${font}/share/fonts")
+              [ pkgs.source-serif pkgs.crimson-pro pkgs.source-sans ]}'';
 
         # THE EXAMPLES AS PICTURES (`nix build .#prodrome-typst-examples`):
         # each example's one page as a PNG. `typst/examples/*.png` are these

@@ -86,6 +86,45 @@
   eval(body, mode: "markup")
 } else { body }
 
+// --- the look -----------------------------------------------------------------
+
+/// THE DESIGN SYSTEM'S LOOK over a layout: its serif in ink for the text,
+/// its display face on the type scale for headings, toned as its jobs sample
+/// the identity ramp (a title strong, a section medium), and structure from
+/// its marks and space rather than boxes: a table is rows on quiet rules. Set
+/// rules only, so in HTML every element stays the element it is, for a
+/// stylesheet to dress in the same tokens.
+#let _look(body) = {
+  let tone(job) = design.ramps.maroon.sample(design.jobs.at(job))
+  set text(font: design.faces.serif, fill: design.palette.ink)
+  show raw: set text(font: design.faces.mono)
+  show heading: set text(font: design.faces.display, weight: 600)
+  show heading.where(level: 1): set text(size: design.scale(3), fill: tone("heading-1"))
+  show heading.where(level: 2): set text(size: design.scale(1), fill: tone("heading-2"))
+  set table(stroke: (_, y) => (bottom: 0.5pt + design.palette.rule), inset: (x: 0.3em, y: 0.45em))
+  body
+}
+
+/// A capsule rule under a title, in HTML an `hr` a stylesheet draws.
+#let _rule = _on(design.capsule-rule(), html: html => html.elem("hr", attrs: (class: "capsule")), text: none)
+
+/// Items joined by the design's diamond, the only inline separator; framed
+/// in HTML, and a middle dot where HTML cannot hold a drawing.
+#let _sep(..items) = design.sep(
+  ..items.pos().filter(item => item != none),
+  diamond: () => _on(
+    design.diamond(),
+    html: html => [ #box(html.frame(design.diamond(spacing: 0pt))) ],
+    text: [ · ],
+  ),
+)
+
+/// A column's name: the design's sans capitals, muted.
+#let _label(body) = design.label-text(body, fill: design.palette.ink-muted)
+
+/// What is said beside a title, a step down the scale and muted.
+#let _aside(class, body) = _div(class, text(size: design.scale(-1), fill: design.palette.ink-muted, body))
+
 // --- the marks ----------------------------------------------------------------
 
 /// A value as a list or a page shows it: the design's `price`, its pie and
@@ -152,16 +191,17 @@
   title: [Roadmap],
   href: todo => "#/todo/" + todo,
   markup: false,
-) = {
+) = _look({
   let open = listed(data).filter(e => e.state == "open" and _existed(data, e))
   let closed = data.entries.filter(e => e.state != "open").sorted(key: e => e.todo)
 
   heading(level: 1, title)
-  _div("summary", [#open.len() open on #when(data.at) — most urgent first.])
+  _rule
+  _aside("summary", [#open.len() open on #when(data.at) — most urgent first.])
 
   _div("roadmap", table(
     columns: 2,
-    table.header([Price], [Item]),
+    table.header(_label[Price], _label[Item]),
     ..open
       .map(e => (
         price(e.value),
@@ -172,11 +212,13 @@
 
   if closed.len() > 0 {
     heading(level: 2)[Closed]
-    list(..closed.map(e => [
-      #link(href(e.todo), raw(e.todo)) — #e.state #if e.at != "" [since #when(e.at)]
-    ]))
+    list(..closed.map(e => _sep(
+      link(href(e.todo), raw(e.todo)),
+      [#e.state],
+      if e.at != "" [since #when(e.at)],
+    )))
   }
-}
+})
 
 // --- one item ----------------------------------------------------------------
 
@@ -301,50 +343,54 @@
   markup: false,
   objects: "objects/",
   back: "#/",
-) = {
+) = _look({
   let entry = data.entries.find(e => e.todo == todo)
   if entry == none {
     heading(level: 1)[No item #raw(todo)]
+    _rule
     [Nothing in this store mentions #raw(todo). #link(back)[Back to the list.]]
-    return
-  }
-  let record = _record(data, entry)
-  let body = _body(data, entry)
+  } else {
+    let record = _record(data, entry)
+    let body = _body(data, entry)
 
-  _div("crumbs", [#link(back)[← Roadmap] · #raw(todo)])
-  heading(level: 1, if body == "" { raw(todo) } else { _text(body, markup) })
+    _aside("crumbs", _sep(link(back)[← Roadmap], raw(todo)))
+    heading(level: 1, if body == "" { raw(todo) } else { _text(body, markup) })
+    _rule
 
-  _div("facts", [
-    #price(entry.value) · #state-of(entry.value) · #entry.state
-    #if entry.claimed != "" [ · claimed #entry.claimed]
-    #if entry.unconfirmed [ · unconfirmed]
-    #if entry.at not in (none, "") [ · since #when(entry.at)]
-  ])
-  _div("marks", trace-of(data, todo))
-
-  let detail = _field(record, "detail")
-  if detail != "" { _div("detail", _text(detail, markup)) }
-
-  heading(level: 2)[Price]
-  let tree = data.at("explain", default: (:)).at(todo, default: none)
-  if tree != none { _div("explanation", explanation(tree)) }
-  if entry.value == "absent" [Absent: this item has no value, which is not a zero.]
-  if entry.unlinked != none [Not priced: #entry.unlinked]
-
-  let events = data.at("history", default: (:)).at(todo, default: ())
-  if events.len() > 0 {
-    heading(level: 2)[History]
-    _div("history", table(
-      columns: 4,
-      table.header([When], [Event], [By], [Object]),
-      ..events
-        .map(e => (
-          when(e.at),
-          e.kind,
-          e.actor,
-          link(objects + e.hash + ".py", raw(e.hash.slice(0, 12))),
-        ))
-        .flatten(),
+    _div("facts", _sep(
+      price(entry.value),
+      state-of(entry.value),
+      entry.state,
+      if entry.claimed != "" [claimed #entry.claimed],
+      if entry.unconfirmed [unconfirmed],
+      if entry.at not in (none, "") [since #when(entry.at)],
     ))
+    _div("marks", trace-of(data, todo))
+
+    let detail = _field(record, "detail")
+    if detail != "" { _div("detail", _text(detail, markup)) }
+
+    heading(level: 2)[Price]
+    let tree = data.at("explain", default: (:)).at(todo, default: none)
+    if tree != none { _div("explanation", explanation(tree)) }
+    if entry.value == "absent" [Absent: this item has no value, which is not a zero.]
+    if entry.unlinked != none [Not priced: #entry.unlinked]
+
+    let events = data.at("history", default: (:)).at(todo, default: ())
+    if events.len() > 0 {
+      heading(level: 2)[History]
+      _div("history", table(
+        columns: 4,
+        table.header(_label[When], _label[Event], _label[By], _label[Object]),
+        ..events
+          .map(e => (
+            when(e.at),
+            e.kind,
+            e.actor,
+            link(objects + e.hash + ".py", raw(e.hash.slice(0, 12))),
+          ))
+          .flatten(),
+      ))
+    }
   }
-}
+})
