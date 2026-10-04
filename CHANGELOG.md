@@ -109,6 +109,15 @@ is one or a function of one, with one fold over time where there were two.
 A MINOR change under this file's rule: no stored byte, vector or export
 answer moves; the API breaks where a `Piecewise` layer had two fields.
 
+And a change rests on its genesis (SPEC §3, law 43): what an object rests
+on is the edges it names and the genesis it names, so a genesis is no
+longer a head forever beside the changes begun from it, and no
+linearisation puts a change before its genesis. A MINOR change under this
+file's rule: no shipped field changes and no stored object moves or reads
+differently; `snapshot()` over a prodrome holding anything writes a
+different object than before, since its tips no longer hold the genesis,
+and `conformance/change.py`'s snapshot chain is derived again for it.
+
 ### Added
 
 - **Schedules (design §6.2):** `schedule::Schedule<A>`, a head and knots at
@@ -735,6 +744,21 @@ and every vector and export reads as it did.
 
 ### Fixed
 
+- **A change rests on its genesis (SPEC §3, law 43).** `parents_of`, the
+  one definition of what an object rests on, left out the genesis a
+  change, a snapshot or a key object names, so every `Genesis`-rooted
+  store's heads held its genesis, `ancestors` and `closure` stopped short
+  of it, and the linearisation could put a change before it. It now
+  answers the genesis beside the edges, and every reader moved with it:
+  `Dag::tips` and `tips_in`, `linearise`, `closure`, `interior`,
+  `ancestors`, a store's memory and `receive` (whose second definition,
+  parents plus genesis, is gone), `verify`'s missing parent, and the wasm
+  exports' `tips`, `since` and `verify`. The fold's incremental insert
+  counts a scope's genesis as inside it, since it orders nothing within
+  one; `verify` reports an edge to a stranger genesis once, as the
+  stranger. `Snapshot::parents`, a snapshot's edges without its genesis,
+  is gone: `parents_of` is the one answer. Laws:
+  `core/tests/all/rests_on.rs`.
 - **`fsck` quarantines what fails its hash and loses no byte (SPEC §3,
   law 40).** One damaged file stopped every read until someone named it to
   `quarantine`; `fsck` now finds and moves every such file, durably and

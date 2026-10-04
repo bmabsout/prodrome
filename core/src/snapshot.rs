@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::event::{field, hashes, hashes_value, optional_hash, sorted_distinct, Hash};
 use crate::literal::{Call, ProdromeError, Value};
 use crate::payload::string_field;
@@ -29,12 +27,6 @@ pub fn mk_snapshot(
 }
 
 impl Snapshot {
-    /// The tips and the previous snapshot, sorted and distinct.
-    pub fn parents(&self) -> Vec<Hash> {
-        let parents: BTreeSet<&Hash> = self.tips.iter().chain(&self.previous).collect();
-        parents.into_iter().cloned().collect()
-    }
-
     pub fn to_value(&self) -> Value {
         Value::call(
             "Snapshot",

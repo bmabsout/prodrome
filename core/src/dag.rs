@@ -145,7 +145,8 @@ impl<E> Dag<E> {
         }
     }
 
-    /// Every object no object names as a parent.
+    /// Every object no object rests on: the maximal objects of the causal
+    /// order ([`parents_of`]).
     pub fn tips(&self) -> BTreeSet<Hash> {
         let graph: Vec<(&Hash, Vec<Hash>)> = self
             .objects
@@ -418,7 +419,7 @@ impl<E: Schema> Dag<E> {
     }
 
     /// §3: an object names a genesis the store holds, and rests on
-    /// nothing of another.
+    /// nothing of another. The edge to a stranger is that finding alone.
     fn genesis_findings(&self, name: &Hash, object: &Envelope<E>) -> Vec<Finding> {
         let stranger = object.genesis().filter(|genesis| {
             !self.is_root(genesis)
@@ -426,9 +427,11 @@ impl<E: Schema> Dag<E> {
         });
         let prodrome = self.prodrome(name, object);
         let crossings = parents_of(object).into_iter().filter(|parent| {
-            self.objects
-                .get(parent)
-                .is_some_and(|held| self.prodrome(parent, held) != prodrome)
+            Some(parent) != stranger
+                && self
+                    .objects
+                    .get(parent)
+                    .is_some_and(|held| self.prodrome(parent, held) != prodrome)
         });
         stranger
             .map(|genesis| Finding::Stranger {

@@ -82,7 +82,8 @@ since this grammar has tuples and no mapping.
   - `Genesis(label, nonce)` begins a prodrome. `label` is the host's name for
     it and `nonce` is 32 lowercase hex characters drawn once, so two
     prodromes a host labels alike are two. It has no parents and no event,
-    and its name is the prodrome's identity.
+    its name is the prodrome's identity, and every object that names it
+    rests on it.
   - `Change(genesis, deps, event)` is an event, named by its prodrome and by
     the writes it supersedes. `deps` are object names, sorted, distinct and
     possibly empty; `event` is required, since a change without one would be
@@ -108,20 +109,30 @@ since this grammar has tuples and no mapping.
     `Signed`, byte for byte, however often it signs. Its prodrome is its
     object's, which is why it names no genesis.
   - `KeyAdded(genesis, actor, key)` registers `key` for `actor` in the
-    prodrome `genesis`. It has no parents, so registering a key twice is one
-    object and a key may sign before it is registered (a device signs what
-    it wrote offline and is registered when next seen).
+    prodrome `genesis`. It rests on its genesis alone, so registering a key
+    twice is one object and a key may sign before it is registered (a device
+    signs what it wrote offline and is registered when next seen).
   - `KeyRevoked(genesis, deps, actor, key)` revokes `key` for `actor` in
     `genesis`, except for the signatures beneath it: `deps` are object
     names, sorted, distinct and possibly empty, and name what its writer
     stands behind, as a change's deps name what its writer saw (§5 reads
     it).
 
-  `parents_of` is a `Change`'s `deps`, a `Snapshot`'s `tips` plus a non-empty
-  `previous`, a `Sealed`'s `prev` (none at a root), a `Woven`'s `parents`, a
-  `Signed`'s `object`, a `KeyRevoked`'s `deps`, and nothing for a `Genesis`
-  or a `KeyAdded`. Every rule below that reads parents reads
-  these.
+  WHAT AN OBJECT RESTS ON, `parents_of`, is the edges it names and the
+  genesis it names, sorted and distinct: a `Change`'s `deps` and `genesis`,
+  a `Snapshot`'s `tips`, a non-empty `previous` and `genesis`, a
+  `KeyRevoked`'s `deps` and `genesis`, a `KeyAdded`'s `genesis`, a
+  `Sealed`'s `prev` (none at a root), a `Woven`'s `parents`, a `Signed`'s
+  `object`, and nothing for a `Genesis`. A change rests on its genesis as on
+  its deps: an object names its genesis because it is in that prodrome, and
+  cannot be held without it. This is the causal order, and every rule below
+  that reads parents reads these and nothing else: the tips, the
+  linearisation, `ancestors`, the interior, `verify`'s missing parent, and
+  `adopt`'s and `receive`'s parents-first walk. So a genesis is beneath
+  everything begun from it, and a head only of a prodrome that holds
+  nothing else. (Before 2026-10-04 `parents_of` left out the genesis, so
+  every prodrome's heads held its genesis and the linearisation could put a
+  change before it; no stored object's bytes or reading changed with it.)
 - An object's **name** is `sha256(utf8(print(object)))` in lowercase hex.
   The file `objects/<name>.py` holds exactly that print, and a loader
   re-hashes the bytes before parsing them. `event_id(e) =
@@ -214,12 +225,15 @@ since this grammar has tuples and no mapping.
   superseding only what its own deps reach, and a register reads them as
   one candidate (§6).
 - **`snapshot()`** writes `Snapshot(genesis, tips, previous)`: the genesis's
-  tips, and as `previous` the last snapshot among them; with nothing written
+  tips (never the genesis, once anything rests on it), and as `previous`
+  the last snapshot among them; with nothing written
   since that one, it is the answer and nothing is written. Its closure is
   exactly what it attests: an object is in it iff it existed when the
   snapshot was written, because a name cannot be computed before what it
-  hashes, and on a `previous` chain each closure contains the one before. No
-  fold reads a snapshot, and no change depends on one. When to write one is
+  hashes, and on a `previous` chain each closure contains the one before. A
+  snapshot written before 2026-10-04 may name its genesis among its tips;
+  it attests the same down-set. No fold reads a snapshot, and no change
+  depends on one. When to write one is
   the host's call.
 - **Linearisation** is Kahn's algorithm over parents with a min-heap on the
   name: deterministic, causal first, and arbitrary only between incomparable
@@ -240,8 +254,9 @@ since this grammar has tuples and no mapping.
   whose stamp the host forces cannot legitimately be dated behind what it was
   written on top of, where a backfill can; a change's ancestors are what its
   deps rest on, so it cannot be dated behind what it was written OVER. It
-  also reports an object naming a genesis the store does not hold, an edge
-  between geneses, a dep another dep of the same change rests on, a dep that
+  also reports an object naming a genesis the store does not hold as a
+  genesis (an edge to it is that finding, never also an edge between
+  geneses), an edge between geneses, a dep another dep of the same change rests on, a dep that
   is not a write to its change's entity, an object a snapshot attests
   that the store lacks, a `Signed` that does not verify, and an object
   whose actor has a key in its prodrome and which no key of that actor's
@@ -268,7 +283,7 @@ since this grammar has tuples and no mapping.
   append made meanwhile rests on the heads of that history; once the
   object is back, what rested on it rejoins, concurrent with the append.
 - **`adopt(source, tip)`** copies in everything `tip` rests on that the store
-  lacks, a change's or a snapshot's genesis included, verifying all of it
+  lacks, its genesis among it, verifying all of it
   before writing any, and writing parents before children, since an object
   belongs to the store as soon as its file exists. Placement falls out of the
   derivation: a tip already contained changes nothing; a tip containing every
@@ -1451,6 +1466,27 @@ by nobody, and honest, unregistered and forged signatures of any object.
     `sign.rs::a_forged_signature_proves_nothing`,
     `sign.rs::a_revocation_keeps_exactly_what_it_rests_on`,
     `sign.rs::under_roots_a_key_counts_where_a_root_signed_it`.
+
+Law 43 is what an object rests on (§3), over generated histories of
+several prodromes holding changes, snapshots, keys added and revoked, and
+signatures, with the order stated from the objects' fields apart from the
+implementation's `parents_of`.
+
+43. **Every reader reads one causal order.** An object rests on the edges
+    it names and the genesis it names. The tips of a history, of each of
+    its prodromes and of a store in memory that received its objects in
+    any order are exactly the objects nothing rests on, so a genesis is a
+    head only when nothing is begun from it; the linearisation and a
+    replica's parents-first walk are linear extensions of the order; the
+    closure of an object is its down-set; and the history a set lacking a
+    genesis holds is everything that does not rest on it. A snapshot that
+    names its genesis among its tips verifies and attests what one naming
+    only its heads attests.
+    `rests_on.rs::the_heads_are_what_nothing_rests_on`,
+    `rests_on.rs::every_order_puts_what_an_object_rests_on_first`,
+    `rests_on.rs::a_closure_is_the_down_set_and_a_genesis_bears_its_prodrome`,
+    `rests_on.rs::a_genesis_is_beneath_its_first_change`,
+    `rests_on.rs::a_snapshot_naming_its_genesis_as_a_tip_attests_as_it_did`.
 
 ## 10. Non-goals
 

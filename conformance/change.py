@@ -13,6 +13,9 @@
 # `cargo test` writes this file. 2026-10-01: a change's deps became its
 # entity's heads (§3), so the steps' answers and written objects were derived
 # again under that rule; every base, verify and price row is as it was.
+# 2026-10-04: a change rests on its genesis (§3), so a genesis is no tip
+# beside its changes and the snapshot chain's snapshots, which attest the
+# genesis's tips, were derived again; every other row is as it was.
 Changes(cases=(
 ChangeCase(name='a small store of changes', dag=None, base=(
 Object(name='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', literal="Genesis(label='conformance', nonce='0123456789abcdef0123456789abcdef')"),
@@ -97,15 +100,15 @@ ChangeCase(name='a snapshot chain', dag=None, base=(
 Object(name='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', literal="Genesis(label='conformance', nonce='0123456789abcdef0123456789abcdef')"),
 ), steps=(
 Step(op='append', genesis='', event="Completed(todo='alpha', at=datetime(2026, 9, 1, 12, 0, 0), actor='bassel', note='')", answer='5e01aa2840edd8a35c33f3ddbc6ed9672adc5f2ea41722b6b5f636c4a5a6fcab', writes=True),
-Step(op='snapshot', genesis='', event='', answer='7621ae40957e3986c53d07d5662984ebf88d2a40e3783a1633be0de865b045dc', writes=True),
-Step(op='snapshot', genesis='', event='', answer='7621ae40957e3986c53d07d5662984ebf88d2a40e3783a1633be0de865b045dc', writes=False),
+Step(op='snapshot', genesis='', event='', answer='88579d6b3d5e0cab49b1474dfc01a3cc7f9bfb21ca3f81628939c9ef155cb11b', writes=True),
+Step(op='snapshot', genesis='', event='', answer='88579d6b3d5e0cab49b1474dfc01a3cc7f9bfb21ca3f81628939c9ef155cb11b', writes=False),
 Step(op='append', genesis='', event="Reopened(todo='alpha', at=datetime(2026, 9, 2, 12, 0, 0), actor='bassel', note='')", answer='65490c9992f61fcb4def0cf215e80fde80d160ec8bf01742f54782a01d36b5b3', writes=True),
-Step(op='snapshot', genesis='', event='', answer='40b7ea8bc9032f05e315b4c214157a58be5d5465cec9159018be51ef27f4f9eb', writes=True),
+Step(op='snapshot', genesis='', event='', answer='8c790b546c94bba2b9545d4c735574e7d3ce711968a59cea6ba40f64ca6b5afe', writes=True),
 ), objects=(
-Object(name='40b7ea8bc9032f05e315b4c214157a58be5d5465cec9159018be51ef27f4f9eb', literal="Snapshot(genesis='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', tips=('65490c9992f61fcb4def0cf215e80fde80d160ec8bf01742f54782a01d36b5b3',), previous='7621ae40957e3986c53d07d5662984ebf88d2a40e3783a1633be0de865b045dc')"),
 Object(name='5e01aa2840edd8a35c33f3ddbc6ed9672adc5f2ea41722b6b5f636c4a5a6fcab', literal="Change(genesis='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', deps=(), event=Completed(todo='alpha', at=datetime(2026, 9, 1, 12, 0, 0), actor='bassel', note=''))"),
 Object(name='65490c9992f61fcb4def0cf215e80fde80d160ec8bf01742f54782a01d36b5b3', literal="Change(genesis='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', deps=('5e01aa2840edd8a35c33f3ddbc6ed9672adc5f2ea41722b6b5f636c4a5a6fcab',), event=Reopened(todo='alpha', at=datetime(2026, 9, 2, 12, 0, 0), actor='bassel', note=''))"),
-Object(name='7621ae40957e3986c53d07d5662984ebf88d2a40e3783a1633be0de865b045dc', literal="Snapshot(genesis='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', tips=('5e01aa2840edd8a35c33f3ddbc6ed9672adc5f2ea41722b6b5f636c4a5a6fcab', 'd079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6'), previous='')"),
+Object(name='88579d6b3d5e0cab49b1474dfc01a3cc7f9bfb21ca3f81628939c9ef155cb11b', literal="Snapshot(genesis='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', tips=('5e01aa2840edd8a35c33f3ddbc6ed9672adc5f2ea41722b6b5f636c4a5a6fcab',), previous='')"),
+Object(name='8c790b546c94bba2b9545d4c735574e7d3ce711968a59cea6ba40f64ca6b5afe', literal="Snapshot(genesis='d079727b853e56c77dce07c3a355aa925267473706b3c767df12ad2adfe222d6', tips=('65490c9992f61fcb4def0cf215e80fde80d160ec8bf01742f54782a01d36b5b3',), previous='88579d6b3d5e0cab49b1474dfc01a3cc7f9bfb21ca3f81628939c9ef155cb11b')"),
 ), verify=(), at=datetime(2026, 9, 3, 12, 0, 0), prices=(
 )),
 ChangeCase(name='a mixed store over a dag.py one', dag=27, base=(
