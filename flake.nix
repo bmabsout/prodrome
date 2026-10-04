@@ -315,6 +315,38 @@
 
         prodrome-viewer = viewer { pname = "prodrome-viewer"; wasm = prodrome-wasm; };
 
+        # THE TYPST PACKAGE ON A PACKAGE PATH, as `typst compile
+        # --package-path` and typst-wasm find it: `local/<name>/<version>`.
+        # The pictures of its examples are not in it: they are made from it.
+        typstSrc = lib.fileset.toSource {
+          root = ./typst;
+          fileset = lib.fileset.difference ./typst (lib.fileset.fileFilter (file: file.hasExt "png") ./typst);
+        };
+        typstPackages = pkgs.linkFarm "prodrome-typst-packages" [
+          { name = "local/prodrome-typst/0.1.0"; path = typstSrc; }
+        ];
+
+        # Every Typst compilation here: no system font, so a picture is the
+        # same on every machine, and the package on its path.
+        typstCompile = ''
+          typst compile --ignore-system-fonts --package-path ${typstPackages}'';
+
+        # THE EXAMPLES AS PICTURES (`nix build .#prodrome-typst-examples`):
+        # each example's one page as a PNG. `typst/examples/*.png` are these
+        # bytes, committed so a reader sees the layouts without compiling,
+        # and `checks.prodrome-typst` recomputes them: a picture is a cache
+        # of a compilation, verified by compiling again (design §6.2).
+        prodrome-typst-examples = pkgs.runCommand "prodrome-typst-examples"
+          { nativeBuildInputs = [ pkgs.typst ]; } ''
+          mkdir -p $out
+          cp -r ${typstSrc}/examples examples
+          chmod -R u+w examples
+          cd examples
+          for doc in roadmap item; do
+            ${typstCompile} --ppi 144 "$doc.typ" "$out/$doc.png"
+          done
+        '';
+
         # THE CORE AND THE CLI IN RELEASE, COMPILED ONCE. `prodrome-github`
         # links the same two crates with the same features, so both packages
         # start from this target directory: the CLI's binary is already built
@@ -361,7 +393,7 @@
       {
         packages = {
           inherit prodrome-cli prodrome-github prodrome-wasm prodrome-typst-wasm prodrome-typst-wasm-views
-            prodrome-typst-wasm-editor prodrome-viewer;
+            prodrome-typst-wasm-editor prodrome-typst-examples prodrome-viewer;
           default = prodrome-cli;
         };
 
@@ -430,21 +462,23 @@
           # pinned nixpkgs ships — 0.15.1, the version typst-wasm pins — to
           # PDF and to HTML, so a layout that breaks either target fails here,
           # and compiles its laws (`tests/laws.typ`), which fail the compile
-          # when an assert does not hold.
+          # when an assert does not hold. The committed pictures of the
+          # examples must be what they render, byte for byte.
           prodrome-typst = pkgs.runCommand "prodrome-typst-check"
-            {
-              nativeBuildInputs = [ pkgs.typst ];
-              src = lib.fileset.toSource { root = ./typst; fileset = ./typst; };
-            } ''
-            mkdir -p pkgs/local/prodrome-typst
-            cp -r "$src" pkgs/local/prodrome-typst/0.1.0
-            chmod -R u+w pkgs
-            cd pkgs/local/prodrome-typst/0.1.0
-            typst compile --package-path "$NIX_BUILD_TOP/pkgs" tests/laws.typ "$NIX_BUILD_TOP/laws.pdf"
+            { nativeBuildInputs = [ pkgs.typst ]; } ''
+            cp -r ${typstSrc} typst
+            chmod -R u+w typst
+            cd typst
+            ${typstCompile} tests/laws.typ "$NIX_BUILD_TOP/laws.pdf"
             cd examples
             for doc in roadmap item; do
-              typst compile --package-path "$NIX_BUILD_TOP/pkgs" "$doc.typ" "$doc.pdf"
-              typst compile --package-path "$NIX_BUILD_TOP/pkgs" --features html --format html "$doc.typ" "$doc.html"
+              ${typstCompile} "$doc.typ" "$doc.pdf"
+              ${typstCompile} --features html --format html "$doc.typ" "$doc.html"
+              cmp ${prodrome-typst-examples}/$doc.png ${./typst/examples}/$doc.png || {
+                echo "typst/examples/$doc.png is not what $doc.typ renders:" >&2
+                echo "  nix build .#prodrome-typst-examples && cp result/*.png typst/examples/" >&2
+                exit 1
+              }
             done
             grep -q 'href="#/todo/ship-the-viewer"' roadmap.html
             grep -q '<strong>the viewer</strong>' roadmap.html
