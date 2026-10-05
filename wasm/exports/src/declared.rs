@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 // The schema's whole surface is the core tests'; this reads part of it.
 #[allow(dead_code)]
 #[path = "../../../core/tests/schemas/proposal.rs"]
-mod schema;
+pub(crate) mod schema;
 
 use schema::{Id, Proposal, Says, State, DECLARED};
 

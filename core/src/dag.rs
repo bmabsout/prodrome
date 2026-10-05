@@ -6,7 +6,7 @@ mod finding;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-pub use finding::{Finding, Unread};
+pub use finding::{Excluded, Finding, Unread};
 
 use crate::change::Change;
 use crate::event::{parents_of, parse_envelope, Envelope, Hash};
@@ -28,6 +28,17 @@ impl<E> FromIterator<(Hash, Envelope<E>)> for Dag<E> {
         Dag {
             objects: objects.into_iter().collect(),
             unread: BTreeMap::new(),
+        }
+    }
+}
+
+/// The union with more objects, the join of replicas (design §1): an object
+/// is held once, and a name it is held under is no longer unread.
+impl<E> Extend<(Hash, Envelope<E>)> for Dag<E> {
+    fn extend<I: IntoIterator<Item = (Hash, Envelope<E>)>>(&mut self, objects: I) {
+        for (name, object) in objects {
+            self.unread.remove(&name);
+            self.objects.insert(name, object);
         }
     }
 }
@@ -172,6 +183,57 @@ impl<E> Dag<E> {
             found.insert(name);
         }
         found
+    }
+
+    /// `seeds` and every object resting on them: [`Dag::closure`]'s dual,
+    /// an up-set of the causal order. A seed this DAG lacks is in it, and
+    /// what names it as a parent is walked from.
+    #[must_use]
+    pub fn above(&self, seeds: impl IntoIterator<Item = Hash>) -> BTreeSet<Hash> {
+        up(&self.children(), seeds)
+    }
+
+    /// Each name the objects rest on, and the objects naming it as a parent.
+    fn children(&self) -> BTreeMap<Hash, Vec<&Hash>> {
+        let mut children: BTreeMap<Hash, Vec<&Hash>> = BTreeMap::new();
+        for (name, object) in &self.objects {
+            for parent in parents_of(object) {
+                children.entry(parent).or_default().push(name);
+            }
+        }
+        children
+    }
+
+    /// WHAT THE HISTORY LEAVES OUT, AND WHY: every name these prints hold
+    /// or their objects rest on that is no object here, a print that is not
+    /// one ([`Unread`]) or a parent no print is, in name order, each with
+    /// the objects resting on it ([`Dag::above`]). The history,
+    /// [`Dag::interior`], is exactly the objects no `resting` names (a
+    /// cycle aside, which only a hash collision makes): this says, object
+    /// by object, why the rest are not in it. A function of the prints, as
+    /// the interior is (law 40), and the one reading of "unreadable" that
+    /// [`Dag::verify`] reports and a replica's reading leaves out.
+    #[must_use]
+    pub fn excluded(&self) -> Vec<Excluded> {
+        let children = self.children();
+        let lacking: BTreeSet<&Hash> = self
+            .unread
+            .keys()
+            .chain(children.keys())
+            .filter(|name| !self.objects.contains_key(*name))
+            .collect();
+        lacking
+            .into_iter()
+            .map(|name| {
+                let mut resting = up(&children, [name.clone()]);
+                resting.remove(name);
+                Excluded {
+                    name: name.clone(),
+                    why: self.unread.get(name).cloned(),
+                    resting,
+                }
+            })
+            .collect()
     }
 
     /// Kahn's algorithm with a min-heap on the name: parents first, and
@@ -350,30 +412,32 @@ impl<E: Schema> Dag<E> {
     /// parent no object is, or else a cycle, or else the dating rule; then
     /// §3's genesis, deps and snapshot rules, object by object.
     pub fn verify(&self, policy: &impl Policy<E>) -> Vec<Finding> {
-        let mut findings: Vec<Finding> = self
-            .unread
+        let excluded = self.excluded();
+        let mut findings: Vec<Finding> = excluded
             .iter()
-            .map(|(name, why)| Finding::Unread {
-                name: name.clone(),
-                why: why.clone(),
+            .filter_map(|lacked| {
+                lacked.why.clone().map(|why| Finding::Unread {
+                    name: lacked.name.clone(),
+                    why,
+                })
             })
             .collect();
-        let missing: BTreeSet<Hash> = self
-            .objects
-            .values()
-            .flat_map(parents_of)
-            .filter(|parent| !self.objects.contains_key(parent))
+        // A name something rests on is a parent no object is.
+        let broken: Vec<Finding> = excluded
+            .into_iter()
+            .filter(|lacked| !lacked.resting.is_empty())
+            .map(|lacked| Finding::Broken {
+                at: lacked.name,
+                why: lacked.why,
+            })
             .collect();
-        if missing.is_empty() {
+        if broken.is_empty() {
             match self.linearise() {
                 Ok(order) => findings.extend(self.dated(&order, policy)),
                 Err(error) => findings.push(Finding::Cycle(error)),
             }
         }
-        findings.extend(missing.into_iter().map(|at| Finding::Broken {
-            why: self.unread.get(&at).cloned(),
-            at,
-        }));
+        findings.extend(broken);
         findings.extend(self.signature_findings());
         for (name, object) in &self.objects {
             findings.extend(self.genesis_findings(name, object));
@@ -528,10 +592,32 @@ pub(crate) fn tips_among<'a>(
         .collect()
 }
 
+/// `seeds` and everything above them, through each name's `children`.
+fn up(
+    children: &BTreeMap<Hash, Vec<&Hash>>,
+    seeds: impl IntoIterator<Item = Hash>,
+) -> BTreeSet<Hash> {
+    let mut found = BTreeSet::new();
+    let mut pending: Vec<Hash> = seeds.into_iter().collect();
+    while let Some(name) = pending.pop() {
+        if !found.contains(&name) {
+            pending.extend(
+                children
+                    .get(&name)
+                    .into_iter()
+                    .flatten()
+                    .map(|&child| child.clone()),
+            );
+            found.insert(name);
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{mk_created, mk_sealed, seal_hash, TodoEvent};
+    use crate::event::{canonical_envelope, mk_created, mk_sealed, seal_hash, TodoEvent};
     use crate::reference::Todo;
 
     #[test]
@@ -550,5 +636,45 @@ mod tests {
                 name.as_str()
             )
         );
+    }
+
+    /// A print that is not an object, and the chain on it: the history
+    /// leaves out the print and both objects above it, and `excluded` says
+    /// so, with the parse's own refusal, as `verify` reports it.
+    #[test]
+    fn excluded_names_an_unread_print_and_what_rests_on_it() {
+        let at = Datetime::new(2026, 9, 1, 12, 0, 0, 0).expect("a real instant");
+        let junk = b"Sealed(prev=None, event=Nonsense())".to_vec();
+        let unread = Hash::of_bytes(&junk);
+        let first: Envelope<TodoEvent<Todo>> = mk_sealed(
+            Some(unread.clone()),
+            mk_created("alpha", at, "bassel", "", "").expect("valid"),
+        );
+        let second: Envelope<TodoEvent<Todo>> = mk_sealed(
+            Some(seal_hash(&first)),
+            mk_created("beta", at, "bassel", "", "").expect("valid"),
+        );
+        let print = |object: &Envelope<TodoEvent<Todo>>| {
+            (
+                seal_hash(object),
+                Ok(canonical_envelope(object).into_bytes()),
+            )
+        };
+        let dag: Dag<TodoEvent<Todo>> = Dag::from_prints(
+            &crate::todo::TodoVocabulary::default(),
+            [(unread.clone(), Ok(junk)), print(&first), print(&second)],
+        );
+        let excluded = dag.excluded();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].name, unread);
+        assert!(matches!(excluded[0].why, Some(Unread::Unparsed(_))));
+        assert_eq!(
+            excluded[0].resting,
+            [seal_hash(&first), seal_hash(&second)].into()
+        );
+        assert!(dag.interior().objects().is_empty());
+        let findings = dag.verify(&crate::policy::Everything);
+        assert!(matches!(&findings[0], Finding::Unread { name, .. } if *name == unread));
+        assert!(matches!(&findings[1], Finding::Broken { at, why: Some(_) } if *at == unread));
     }
 }
