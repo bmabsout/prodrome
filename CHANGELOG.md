@@ -118,8 +118,30 @@ differently; `snapshot()` over a prodrome holding anything writes a
 different object than before, since its tips no longer hold the genesis,
 and `conformance/change.py`'s snapshot chain is derived again for it.
 
+And a reading is total over what a replica holds (SPEC law 44): a print
+that does not parse at the schema a page reads at leaves out itself and
+everything resting on it, as a store's largest down-set does (law 40), and
+every reading of the wasm exports' classes answers what it left out instead
+of refusing. A MINOR change under this file's rule: no stored byte moves; a
+reading that refused now answers, with one key more; the reference module's
+free functions answer and refuse as they did.
+
 ### Added
 
+- **What a history leaves out (SPEC law 44).** `Dag::excluded`: every
+  name a set of prints holds or its objects rest on that is no object
+  there, why (`Unread`, or `None` for a parent no print is), and the
+  objects resting on it, by `Dag::above`, the up-set dual of `closure`.
+  The interior is exactly the objects no `resting` names. `Dag::verify`'s
+  unread and broken findings are read off it, unchanged. `Dag` implements
+  `Extend`, the union with more objects. In the wasm exports, a class's
+  history is the interior of what it was sent, and `tips`, `since`,
+  `readings`, `proven`, `entries`, `prices` and `next_changes` each answer
+  `excluded: [{name, why, resting}]` beside what they read (`why` is
+  `"failed to parse: …"`, the parse's refusal); `Read::whole` refuses for
+  an answer with no room for it. Laws in `core/tests/all/down_set.rs` and
+  `wasm/exports/src/unread.rs`, over `common/draw.rs`, the history
+  generator the two crates now share.
 - **Schedules (design §6.2):** `schedule::Schedule<A>`, a head and knots at
   strictly increasing instants, meaning the function whose value at `t` is
   the last knot at or before `t` (`at`, `since`, `last`). `new` refuses

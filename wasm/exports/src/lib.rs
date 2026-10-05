@@ -25,6 +25,19 @@
 //! | `public_key` | §3, static: the public key of a device key's seed          |
 //! | `declaration` | `declared` only: the schema it was admitted at          |
 //!
+//! EVERY READING IS TOTAL OVER WHAT THE REPLICA HOLDS. A print that is not
+//! an object at the class's schema (one written under a constructor the
+//! schema has since changed, one whose bytes do not hash to its name) is
+//! left out of the history with everything resting on it, as a store's
+//! largest down-set leaves it (SPEC law 40), and every other object reads
+//! as it would had the print never arrived. So `tips`, `since`,
+//! `readings`, `proven`, `entries`, `prices` and `next_changes` each answer
+//! an object whose `excluded` is what was left out, `[{name, why,
+//! resting}]` in name order: the print's name, why it is no object (`"failed
+//! to parse: …"`, the parse's own refusal), and the names of the objects
+//! resting on it through deps or parents. `verify` reports the same prints
+//! as problems, by the same function ([`prodrome::dag::Dag::excluded`]).
+//!
 //! A SCHEMA DECLARED AS DATA ([`prodrome::declared`]) needs no crate of its
 //! own: `schema!(Name, declared)` is a class whose constructor takes the
 //! schema's text beside the objects, `new Name(schema, objects)`, admits it
@@ -54,13 +67,15 @@ mod declared;
 pub mod json;
 #[cfg(test)]
 mod review;
+#[cfg(test)]
+mod unread;
 pub mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use std::sync::Arc;
 
-use prodrome::dag::{Dag, Finding, Unread};
+use prodrome::dag::{Dag, Excluded, Finding, Unread};
 pub use prodrome::declared::Declared;
 use prodrome::declared::{Datum, Declaration, Slot};
 use prodrome::event::{
@@ -393,13 +408,29 @@ struct Sent {
 /// asks its question of. The bytes cross from JavaScript once, into the
 /// [`Dag`]; nothing here holds them twice until the first [`append`], when
 /// the replica becomes a [`MemoryStore`] holding them with their prints.
+///
+/// TOTAL OVER WHAT IT HOLDS. Its history is the largest down-set of the
+/// objects ([`Dag::interior`]), as a store's is (SPEC law 40): a print that
+/// is not an object at this schema (a migrated-away constructor, a tampered
+/// file) leaves out itself and everything resting on it, and every other
+/// object reads as it would had the print never arrived. What is left out
+/// is [`Dag::excluded`], the function `verify` reports by, and every
+/// reading answers it beside what it read.
 pub struct Replica<E: Schema> {
     /// The schema the objects are read at.
     schema: E::Vocabulary,
     sent: Vec<Sent>,
-    dag: Arc<Dag<E>>,
-    /// The objects in causal order, or why this set has no honest reading.
+    /// Every print sent, read at the schema, and every object written
+    /// since: what `verify` reports on.
+    prints: Arc<Dag<E>>,
+    /// The history `prints` holds, its largest down-set: what every reading
+    /// reads. The same value as `prints` while nothing is excluded.
+    history: Arc<Dag<E>>,
+    /// The history in causal order, or why this set has no honest reading.
     nodes: Result<Vec<Node<E>>, Refusal>,
+    /// What the history leaves out of `prints`, and why. An append writes
+    /// over the history, so nothing it writes rests on what is left out.
+    excluded: Vec<Excluded>,
     /// The store an append writes into, once one has.
     store: Option<MemoryStore<E>>,
 }
@@ -444,42 +475,35 @@ impl<E: Schema> Replica<E> {
                 twice,
             });
         }
-        let dag = Dag::from_prints(&schema, prints);
-        let nodes = Replica::order(&sent, &dag);
+        let prints = Arc::new(Dag::from_prints(&schema, prints));
+        let excluded = prints.excluded();
+        let history = if excluded.is_empty() {
+            Arc::clone(&prints)
+        } else {
+            Arc::new(prints.interior())
+        };
+        let nodes = Replica::order(&sent, &history);
         Ok(Replica {
             schema,
             sent,
-            dag: Arc::new(dag),
+            prints,
+            history,
             nodes,
+            excluded,
             store: None,
         })
     }
 
-    /// The objects in causal order. It REFUSES where [`verify`] REPORTS, and
-    /// the difference is the question each is asked: one is "is this store
-    /// healthy", whose answer is a list of findings; the other is "what does
-    /// this store believe", which has no honest answer over objects that do
-    /// not hash to their names. `EventStore::dag` draws the same line.
-    fn order(sent: &[Sent], dag: &Dag<E>) -> Result<Vec<Node<E>>, Refusal> {
+    /// The history in causal order. A claimed name that is no name at all
+    /// is refused, since no print is held under it to leave out: every
+    /// reading refuses where [`verify`] reports it.
+    fn order(sent: &[Sent], history: &Dag<E>) -> Result<Vec<Node<E>>, Refusal> {
         if let Some(Sent { hash, .. }) = sent.iter().find(|sent| !sent.named) {
             return Err(format!(
                 "object {hash} does not hash to its own name (tampered/corrupt)"
             ));
         }
-        if let Some((name, why)) = dag.unread().iter().next() {
-            return Err(match why {
-                Unread::Tampered(_) => format!(
-                    "object {} does not hash to its own name (tampered/corrupt)",
-                    name.as_str()
-                ),
-                _ => format!(
-                    "object {} failed to parse: {}",
-                    name.as_str(),
-                    why.refusal(name)
-                ),
-            });
-        }
-        dag.nodes().map_err(|e| e.to_string())
+        history.nodes().map_err(|e| e.to_string())
     }
 
     /// The schema the objects are read at.
@@ -487,10 +511,16 @@ impl<E: Schema> Replica<E> {
         &self.schema
     }
 
+    /// The history, read, with what it leaves out.
+    ///
+    /// # Errors
+    ///
+    /// A claimed name that is no name ([`Replica::order`]).
     pub fn read(&self) -> Result<Read<'_, E>, Refusal> {
         self.nodes.as_ref().map_err(Clone::clone).map(|nodes| Read {
-            dag: &self.dag,
+            dag: &self.history,
             nodes,
+            excluded: &self.excluded,
         })
     }
 }
@@ -637,7 +667,7 @@ pub fn proven<E: Schema>(replica: &Replica<E>, roots: Option<String>) -> Result<
         .iter()
         .map(Node::name)
         .filter(|name| proof.proves(name));
-    printed(&object(vec![("proven", names(proven))]))
+    read.answer(vec![("proven", names(proven))])
 }
 
 /// Seal what `write` writes into `replica`'s store, which holds what the
@@ -651,7 +681,7 @@ fn write<E: Schema>(
     let mut store = if let Some(store) = replica.store.take() {
         store
     } else {
-        let dag = &replica.dag;
+        let dag = &replica.history;
         let store = MemoryStore::at(replica.schema.clone());
         store
             .receive(dag.tips(), &|name| {
@@ -664,18 +694,28 @@ fn write<E: Schema>(
     if let Some(genesis) = genesis {
         store = store.in_genesis(genesis);
     }
-    // The store's objects are shared with this replica's; let go of them, so
-    // the write extends them where they are rather than copying them.
-    replica.dag = Arc::new(Dag::from_iter([]));
+    // The store's objects are shared with this replica's history; let go of
+    // them, so the write extends them where they are rather than copying.
+    let one = Arc::ptr_eq(&replica.prints, &replica.history);
+    replica.history = Arc::new(Dag::from_iter([]));
+    if one {
+        replica.prints = Arc::clone(&replica.history);
+    }
     let appended = write(&store);
-    let dag = store.held().map_err(|e| e.to_string())?.dag;
+    let history = store.held().map_err(|e| e.to_string())?.dag;
     replica.store = Some(store);
-    replica.nodes = dag.nodes().map_err(|e| e.to_string());
-    replica.dag = dag;
+    replica.nodes = history.nodes().map_err(|e| e.to_string());
+    replica.history = history;
+    if one {
+        replica.prints = Arc::clone(&replica.history);
+    }
     let name = appended?;
+    if let Some(object) = replica.history.get(&name).filter(|_| !one) {
+        Arc::make_mut(&mut replica.prints).extend([(name.clone(), object.clone())]);
+    }
     let mut objects = Vec::new();
     let sent = replica.sent.iter().any(|sent| sent.hash == name.as_str());
-    if let Some(object) = replica.dag.get(&name).filter(|_| !sent) {
+    if let Some(object) = replica.history.get(&name).filter(|_| !sent) {
         replica.sent.push(Sent {
             hash: name.as_str().to_owned(),
             computed: name.as_str().to_owned(),
@@ -691,14 +731,64 @@ fn write<E: Schema>(
     ]))
 }
 
-/// The objects, rehashed, parsed and put in causal order — what every fold
-/// reads.
+/// The history, rehashed, parsed and put in causal order — what every fold
+/// reads — and what it leaves out, which every answer says.
 pub struct Read<'r, E> {
     pub dag: &'r Dag<E>,
     pub nodes: &'r [Node<E>],
+    pub excluded: &'r [Excluded],
 }
 
 impl<E: Schema> Read<'_, E> {
+    /// This reading, for an answer with no room for what it excludes: such
+    /// an answer refuses, naming the first name left out, and never drops
+    /// it silently.
+    ///
+    /// # Errors
+    ///
+    /// The first name the history leaves out, and why.
+    pub fn whole(self) -> Result<Self, Refusal> {
+        match self.excluded.first() {
+            None => Ok(self),
+            Some(Excluded {
+                name, why: None, ..
+            }) => Err(format!("missing object {}", name.as_str())),
+            Some(Excluded {
+                name,
+                why: Some(why),
+                ..
+            }) => Err(format!("object {} {}", name.as_str(), unread(name, why))),
+        }
+    }
+
+    /// An answer of this reading: `fields`, and `excluded`, what the
+    /// history leaves out, `[{name, why, resting}]` in name order, which no
+    /// reading answers without. `why` is the parse's refusal of the print
+    /// (or that it does not hash to its name), or `"not held"` for a parent
+    /// no print is; `resting` the objects it leaves out with it, each
+    /// resting on it through deps or parents.
+    fn answer(&self, mut fields: Vec<(&str, Value)>) -> Result<String, Refusal> {
+        let excluded = self
+            .excluded
+            .iter()
+            .map(|out| {
+                object(vec![
+                    ("name", json!(out.name.as_str())),
+                    (
+                        "why",
+                        json!(out
+                            .why
+                            .as_ref()
+                            .map_or_else(|| "not held".to_owned(), |why| unread(&out.name, why))),
+                    ),
+                    ("resting", names(&out.resting)),
+                ])
+            })
+            .collect();
+        fields.push(("excluded", Value::Array(excluded)));
+        printed(&object(fields))
+    }
+
     /// The events, in the linearisation's order — merges dropped, since a
     /// merge is structure and carries no event to fold.
     pub fn events(&self) -> impl Iterator<Item = &E> {
@@ -820,7 +910,7 @@ impl Row {
 /// The walk from the tips gives each row its depth, and what it does not
 /// reach (only an object that is not one, or one caught in a cycle) is said.
 pub fn verify<E: Json>(replica: &Replica<E>) -> Result<String, Refusal> {
-    let dag = &replica.dag;
+    let dag = &replica.prints;
     let mut problems: Vec<String> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
     let mut index: BTreeMap<String, usize> = BTreeMap::new();
@@ -846,7 +936,7 @@ pub fn verify<E: Json>(replica: &Replica<E>) -> Result<String, Refusal> {
                 let row = &mut rows[index[name.as_str()]];
                 row.problem = match why {
                     Unread::Tampered(_) => row.tampered(),
-                    _ => format!("failed to parse: {}", why.refusal(&name)),
+                    _ => unread(&name, &why),
                 };
                 problems.push(format!("object {} {}", name.as_str(), row.problem));
             }
@@ -942,15 +1032,27 @@ pub fn verify<E: Json>(replica: &Replica<E>) -> Result<String, Refusal> {
 
 // --- §3: where a replica stands ------------------------------------------------
 
+/// Why the print under `name` is not an object, as a page words it.
+fn unread(name: &Hash, why: &Unread) -> String {
+    match why {
+        Unread::Tampered(computed) => format!(
+            "does not hash to its own name (tampered/corrupt): its bytes hash to {}",
+            computed.as_str()
+        ),
+        _ => format!("failed to parse: {}", why.refusal(name)),
+    }
+}
+
 fn names<'n>(names: impl IntoIterator<Item = &'n Hash>) -> Value {
     strings(names.into_iter().map(|name| name.as_str().to_owned()))
 }
 
 /// The objects' TIPS, those no object names as a parent, and each prodrome's
 /// HEADS, its own tips, by the name of its genesis (a legacy store's by its
-/// least root). Refused, like every reading, over objects that are not.
+/// least root): the history's, beside what it leaves out.
 pub fn tips<E: Schema>(replica: &Replica<E>) -> Result<String, Refusal> {
-    let dag = replica.read()?.dag;
+    let read = replica.read()?;
+    let dag = read.dag;
     let heads = dag
         .geneses()
         .into_iter()
@@ -959,10 +1061,10 @@ pub fn tips<E: Schema>(replica: &Replica<E>) -> Result<String, Refusal> {
             (genesis.into_string(), heads)
         })
         .collect();
-    printed(&object(vec![
+    read.answer(vec![
         ("tips", names(&dag.tips())),
         ("heads", Value::Object(heads)),
-    ]))
+    ])
 }
 
 /// The objects a replica that holds `tips` (a JSON array of names) and
@@ -977,7 +1079,7 @@ pub fn since<E: Schema>(replica: &Replica<E>, tips: &str) -> Result<String, Refu
         .iter()
         .map(Node::name)
         .filter(|name| !held.contains(*name));
-    printed(&object(vec![("since", names(since))]))
+    read.answer(vec![("since", names(since))])
 }
 
 // --- §6: the registers, read ---------------------------------------------------
@@ -1033,7 +1135,7 @@ pub fn readings<E: Json>(
             ]));
         }
     }
-    printed(&object(vec![("readings", Value::Array(rows))]))
+    read.answer(vec![("readings", Value::Array(rows))])
 }
 
 // --- §6.7 and §7: a schema's price -----------------------------------------------
@@ -1098,7 +1200,7 @@ pub fn entries<E: RowJson + History + Bind>(
     let mut rows =
         prodrome::view::entries(read.nodes, moment, &policy).map_err(|e| e.to_string())?;
     rows.sort_by(list_order);
-    printed(&object(vec![
+    read.answer(vec![
         ("at", Value::String(iso(instant_of(moment)))),
         (
             "entries",
@@ -1108,7 +1210,7 @@ pub fn entries<E: RowJson + History + Bind>(
                     .collect(),
             ),
         ),
-    ]))
+    ])
 }
 
 /// §6.1 and §6.4, per prodrome: the environment FPL's terms read at `at`
@@ -1142,10 +1244,10 @@ pub fn prices<E: History + Bind>(
             ("functions", Value::Object(functions)),
         ]));
     }
-    printed(&object(vec![
+    read.answer(vec![
         ("at", Value::String(iso(now))),
         ("prices", Value::Array(prices)),
-    ]))
+    ])
 }
 
 /// §7, per prodrome: when each entity's price, read through `observation`
@@ -1199,8 +1301,8 @@ pub fn next_changes<E: History + Bind>(
             ("next", Value::Object(next)),
         ]));
     }
-    printed(&object(vec![
+    read.answer(vec![
         ("at", Value::String(iso(now))),
         ("changes", Value::Array(changes)),
-    ]))
+    ])
 }

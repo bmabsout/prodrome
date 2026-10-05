@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use prodrome::dag::{Dag, Finding};
-use prodrome::event::{Hash, TodoEvent};
+use prodrome::event::{parents_of, Hash, TodoEvent};
 use prodrome::reference::Todo;
 use prodrome::registers::fold;
 use prodrome::store::EventStore;
@@ -100,6 +100,37 @@ fn is_interior(whole: &Dag<Event>, mask: u64, more: u64) -> Result<(), TestCaseE
         .collect();
     prop_assert_eq!(names(&interior), expected);
     prop_assert!(names(&interior).is_subset(&names(&set)), "deflationary");
+    // And what it leaves out is said: each name the set's objects rest on
+    // and lack, never one that is not a print here, with exactly the
+    // objects above it, which together are the set less its interior.
+    let excluded = set.excluded();
+    let lacked: BTreeSet<Hash> = excluded.iter().map(|out| out.name.clone()).collect();
+    let rested_on: BTreeSet<Hash> = set
+        .objects()
+        .values()
+        .flat_map(parents_of)
+        .filter(|parent| !set.objects().contains_key(parent))
+        .collect();
+    prop_assert_eq!(&lacked, &rested_on, "the names lacked");
+    let mut left_out = BTreeSet::new();
+    for out in &excluded {
+        prop_assert!(out.why.is_none(), "every print here is an object");
+        let above: BTreeSet<Hash> = names(&set)
+            .into_iter()
+            .filter(|name| set.closure([name.clone()]).contains(&out.name))
+            .collect();
+        prop_assert_eq!(&out.resting, &above, "exactly what rests on {}", out.name);
+        left_out.extend(out.resting.iter().cloned());
+    }
+    prop_assert_eq!(
+        left_out,
+        names(&set)
+            .difference(&names(&interior))
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        "the history is the objects nothing lacked is beneath"
+    );
+    prop_assert!(whole.excluded().is_empty(), "a history lacks nothing");
     prop_assert_eq!(&interior.interior(), &interior, "idempotent");
     prop_assert!(
         interior.nodes().is_ok(),

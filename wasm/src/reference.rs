@@ -113,7 +113,7 @@ fn streams(read: &Read<'_, Event>) -> BTreeMap<String, Vec<(Hash, Event)>> {
 #[wasm_bindgen]
 pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
     let replica = Replica::<Event>::of(objects).map_err(refused)?;
-    let read = replica.read().map_err(refused)?;
+    let read = replica.read().and_then(Read::whole).map_err(refused)?;
     let policy = parse_untrusted(untrusted).map_err(refused)?;
     let moment = read
         .moment(parse_moment("at", at).map_err(refused)?)
@@ -208,7 +208,7 @@ pub fn fold(objects: &str, at: Option<String>, untrusted: &str) -> Result<String
 #[wasm_bindgen]
 pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
     let replica = Replica::<Event>::of(objects).map_err(refused)?;
-    let read = replica.read().map_err(refused)?;
+    let read = replica.read().and_then(Read::whole).map_err(refused)?;
     let policy = parse_untrusted(untrusted).map_err(refused)?;
     let moment = parse_moment("at", at)
         .map_err(refused)?
@@ -268,7 +268,7 @@ pub fn registers(objects: &str, at: Option<String>, untrusted: &str) -> Result<S
 #[wasm_bindgen]
 pub fn entries(objects: &str, at: Option<String>, untrusted: &str) -> Result<String, JsError> {
     let replica = Replica::<Event>::of(objects).map_err(refused)?;
-    let read = replica.read().map_err(refused)?;
+    let read = replica.read().and_then(Read::whole).map_err(refused)?;
     let policy = parse_untrusted(untrusted).map_err(refused)?;
     let moment = read
         .moment(parse_moment("at", at).map_err(refused)?)
