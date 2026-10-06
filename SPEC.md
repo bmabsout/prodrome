@@ -1553,28 +1553,31 @@ cost, parents and measure are functions of its name.
     order and cost what their lines and summaries cost. A closing is a
     settled node with, leftward, the node at its level over each lower
     part before it that decay forces beside it, admissible when all are
-    summarised and together cost less than the parts they replace. A view
-    never costs more than its budget or its lines, whichever is more, and
-    fits its budget unless no closing is admissible; what it says is
-    waiting is pending, and writing what it names, round after round, ends
-    with the view in its budget or with every node it could close
-    summarised and no closing admissible. Its parts' levels never rise
-    toward the present. Zooming every part down to the lines reads the log
-    back. An appended line only coarsens the past, every part before it
-    lying within a part after it and none renamed, and, with lines of one
-    cost `b` and summaries of one cost `s ≤ b`, from a view that fitted
-    with nothing waiting, the new parts are at most `1 + ⌈b / s⌉`
-    stretches of adjacent parts at one level, the line and one per
-    closing. `pending` is exactly the settled nodes with no summary whose
-    children are lines or summarised. The measure folded through
-    `memo::fold` is the plain one, and `digest::read` is a sound key:
-    reads of one name answer alike, and a summary recorded or a line's
-    cost changed moves it.
+    summarised and every leftward prefix of it costs less than the parts
+    it replaces, so a forced node that would not lower the cost closes
+    only on the start's account. A view never costs more than its budget
+    or its lines, whichever is more, and fits its budget unless no closing
+    is admissible; it is greedy, and does not seek a fit that needs a
+    coarser node to the left; what it says is waiting is pending, and
+    writing what it names, round after round, ends with the view in its
+    budget or with every node it could close summarised and no closing
+    admissible. Its parts' levels never rise toward the present. Zooming
+    every part down to the lines reads the log back. An appended line only
+    coarsens the past, every part before it lying within a part after it
+    and none renamed, and, with lines of one cost `b` and summaries of one
+    cost `s ≤ b`, from a view that fitted with nothing waiting, the new
+    parts are at most `1 + ⌈b / s⌉` stretches of adjacent parts at one
+    level, the line and one per closing. `pending` is exactly the settled
+    nodes with no summary whose children are lines or summarised. The
+    measure folded through `memo::fold` is the plain one, and
+    `digest::read` is a sound key: reads of one name answer alike, and a
+    summary recorded or a line's cost changed moves it.
     `memo_balance.rs::an_append_renames_only_the_spine`,
     `digest.rs::a_view_tiles_the_log`,
     `digest.rs::a_view_fits_its_budget_unless_no_closing_lowers_it`,
     `digest.rs::a_summary_longer_than_its_lines_never_closes`,
     `digest.rs::a_closing_decay_forces_closes_with_it`,
+    `digest.rs::a_dear_start_does_not_close_on_a_forced_nodes_account`,
     `digest.rs::following_waiting_fits_the_budget_or_nothing_lowers`,
     `digest.rs::a_view_decays`,
     `digest.rs::zooming_every_part_reads_the_log`,
