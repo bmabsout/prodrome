@@ -117,8 +117,10 @@ pub enum Command {
     Verify,
 
     /// `verify`, after moving every object file that fails its hash out of
-    /// `objects/` into `quarantine/`, so the store answers again (§3). The
-    /// report names each one until it is restored from a replica.
+    /// `objects/` into `quarantine/`, so the store writes again (§3): its
+    /// reads answer throughout, leaving such a file out, but every write
+    /// refuses while one is there. The report names each one until it is
+    /// restored from a replica.
     Fsck,
 
     /// Attest the store: a `Snapshot` of its tips, chained to the last one,

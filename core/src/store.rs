@@ -1411,7 +1411,7 @@ mod tests {
                 format!(
                     "chain broke at {digest}: object {digest} hashes to {} — tampered or \
                      corrupt: `prodrome fsck` (`EventStore::fsck`) sets it aside so the store \
-                     answers again",
+                     writes again",
                     Hash::of_bytes(&fs::read(&path).expect("reads")).as_str(),
                     digest = digest.as_str()
                 ),
