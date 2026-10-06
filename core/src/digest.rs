@@ -2,9 +2,11 @@
 //! read through a view that fits a budget.
 //!
 //! A long log (a transcript, a journal) is too big to read whole. Its lines
-//! are the leaves of a tree ([`tree`]) whose shape is [`memo::balance`] over
-//! their names, so the shape is a function of the lines and not of when each
-//! arrived: two replicas holding one log build one tree, and a line that
+//! are a set, each resting on the lines its writer had seen, and they are
+//! the leaves of a tree ([`tree`]) whose shape is [`memo::balance`] over
+//! their names in the crate's one causal order, so the shape is a function
+//! of the set and not of when each line arrived: two replicas holding one
+//! log build one tree, and a line that
 //! arrives late renames one logarithmic spine. A node is named by
 //! [`memo::name`] over its children and carries the [`Measure`] of the lines
 //! it spans.
@@ -26,11 +28,12 @@
 #![warn(clippy::pedantic)]
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::event::Hash;
 use crate::memo::{self, Algebra};
+use crate::topo;
 
 /// What every node carries up the tree: a monoid, so a node's measure is
 /// the fold of its children's (their count, their tokens, the instants they
@@ -57,12 +60,19 @@ impl Measure for () {
     fn join(&self, (): &()) {}
 }
 
-/// A line of the log: its content name, its length in the view, and its
-/// measure. Both are functions of the line, so of its name.
+/// A line of the log: its content name, the lines it rests on, its length
+/// in the view, and its measure.
+///
+/// The name is the line's content, so everything else here is a function
+/// of it: two copies of a line are equal, and a tree, a [`read`] key and a
+/// [`Measured`] fold, all keyed by names, assume as much.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Leaf<M> {
     /// The line's content name.
     pub name: Hash,
+    /// The lines it rests on: what its writer had seen. A line given none,
+    /// or only lines the log does not hold, rests on nothing here.
+    pub parents: Vec<Hash>,
     /// What the line costs in a view.
     pub bytes: u32,
     /// What the line carries up the tree.
@@ -191,15 +201,38 @@ impl<M> Tree<M> {
     }
 }
 
-/// The tree over `leaves`, in the log's causal order as the caller gives
-/// it; `None` for none. A line given twice is the line once, at its first
-/// place, so the tree is a function of the lines' names in order.
-#[must_use]
-pub fn tree<M: Measure>(leaves: Vec<Leaf<M>>) -> Option<Tree<M>> {
-    let mut seen = BTreeSet::new();
-    let nodes = leaves
+/// A log whose lines rest on one another in a cycle, which no order of
+/// them puts each after what it rests on: the least line it leaves
+/// unplaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cycle(pub Hash);
+
+/// The tree over a set of `leaves`, given in any order and any number of
+/// times: the lines in the crate's one causal order ([`topo::linear`]),
+/// each after the lines it rests on and lines no order relates by name, so
+/// two replicas holding one set of lines build one tree. `None` for no
+/// lines.
+///
+/// # Errors
+///
+/// [`Cycle`] when the lines rest on one another in a cycle.
+pub fn tree<M: Measure>(leaves: Vec<Leaf<M>>) -> Result<Option<Tree<M>>, Cycle> {
+    let mut lines: BTreeMap<Hash, Leaf<M>> = BTreeMap::new();
+    for leaf in leaves {
+        lines.entry(leaf.name.clone()).or_insert(leaf);
+    }
+    let rests_on: BTreeMap<&Hash, Vec<&Hash>> = lines
+        .iter()
+        .map(|(name, leaf)| (name, leaf.parents.iter().collect()))
+        .collect();
+    let order: Vec<Hash> = topo::linear(&rests_on)
+        .map_err(|stuck| Cycle(stuck.clone()))?
         .into_iter()
-        .filter(|leaf| seen.insert(leaf.name.clone()))
+        .cloned()
+        .collect();
+    let nodes = order
+        .into_iter()
+        .filter_map(|name| lines.remove(&name))
         .enumerate()
         .map(|(at, leaf)| Node {
             name: leaf.name,
@@ -210,15 +243,15 @@ pub fn tree<M: Measure>(leaves: Vec<Leaf<M>>) -> Option<Tree<M>> {
             children: Vec::new(),
         })
         .collect();
-    let root = memo::balance(nodes, |children: Vec<Node<M>>| Node {
+    Ok(memo::balance(nodes, |children: Vec<Node<M>>| Node {
         name: memo::name(b"digest", children.iter().map(Node::name)),
         span: children[0].span.start..children[children.len() - 1].span.end,
         level: children[0].level + 1,
         bytes: children.iter().map(Node::bytes).sum(),
         measure: joined(children.iter().map(Node::measure)),
         children,
-    })?;
-    Some(Tree { root })
+    })
+    .map(|root| Tree { root }))
 }
 
 /// The measure as an algebra, for [`memo::fold`]: a line is its own, a chunk

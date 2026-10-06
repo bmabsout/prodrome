@@ -1,12 +1,13 @@
 //! SPEC law 46: a digest's view is a decaying cut of a tree that only grows.
 //!
-//! Over generated logs (lines named by a small range of ids, so a line may
-//! be given twice, of any cost) and generated summaries (each inner node
+//! Over generated logs (distinct lines of any cost, each resting on up to
+//! two before it, given in any order and any number of times) and
+//! generated summaries (each inner node
 //! summarised or not, of any cost, by a draw from its name): a view tiles
 //! the log; it fits its budget unless a run waits or none may close; its
 //! parts' levels never rise toward the present; zooming every part down to
-//! the lines reads the log back; the tree, `pending` and the view are
-//! functions of the lines' names in order, whatever was given twice; an
+//! the lines reads the log back in causal order; the tree, `pending` and
+//! the view are functions of the set of lines; an
 //! appended line only coarsens the past and, with lines of one cost and
 //! summaries of one no longer, changes at most `1 + ⌈line / summary⌉`
 //! parts; a line arriving late renames a logarithmic number of nodes; and
@@ -44,32 +45,82 @@ fn line_name(id: u16) -> Hash {
     memo::name(b"line", [&memo::name(&id.to_be_bytes(), [])])
 }
 
-fn leaf(id: u16, bytes: u32) -> Leaf<Ends> {
-    let name = line_name(id);
+/// A line of a generated log: its id, its cost, and the ids it rests on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Line {
+    id: u16,
+    bytes: u32,
+    parents: Vec<u16>,
+}
+
+fn leaf(line: &Line) -> Leaf<Ends> {
+    let name = line_name(line.id);
     Leaf {
         measure: Ends(Some((name.clone(), name.clone())), 1),
+        parents: line.parents.iter().map(|&id| line_name(id)).collect(),
         name,
-        bytes,
+        bytes: line.bytes,
     }
 }
 
-/// A log: lines by id and cost, ids drawn from a range small enough that
-/// some come twice.
-fn a_log(most: usize) -> impl Strategy<Value = Vec<(u16, u32)>> {
-    prop::collection::vec((0..(most as u16 * 2), 1..=64u32), 1..most)
+fn leaves(log: &[Line]) -> Vec<Leaf<Ends>> {
+    log.iter().map(leaf).collect()
 }
 
-fn leaves(log: &[(u16, u32)]) -> Vec<Leaf<Ends>> {
-    log.iter().map(|&(id, bytes)| leaf(id, bytes)).collect()
+/// A log: distinct lines, each resting on up to two lines before it, so
+/// some are concurrent and the order is the tree's to choose.
+fn a_log(most: usize) -> impl Strategy<Value = Vec<Line>> {
+    prop::collection::vec(
+        (
+            any::<u16>(),
+            1..=64u32,
+            prop::collection::vec(any::<prop::sample::Index>(), 0..3),
+        ),
+        1..most,
+    )
+    .prop_map(|drawn| {
+        let mut seen = BTreeSet::new();
+        let mut log: Vec<Line> = Vec::new();
+        for (id, bytes, parents) in drawn {
+            if !seen.insert(id) {
+                continue;
+            }
+            let parents = if log.is_empty() {
+                Vec::new()
+            } else {
+                parents
+                    .iter()
+                    .map(|at| log[at.index(log.len())].id)
+                    .collect()
+            };
+            log.push(Line { id, bytes, parents });
+        }
+        log
+    })
 }
 
-/// The log as its first copy of each line.
-fn first_copies(log: &[(u16, u32)]) -> Vec<(u16, u32)> {
-    let mut seen = BTreeSet::new();
-    log.iter()
-        .copied()
-        .filter(|(id, _)| seen.insert(*id))
-        .collect()
+/// The log's names in causal order, ties by name, worked out here apart
+/// from the crate's walk: the least line whose parents are all placed,
+/// again and again.
+fn causal_order(log: &[Line]) -> Vec<Hash> {
+    let mut placed: BTreeSet<u16> = BTreeSet::new();
+    let mut order = Vec::new();
+    while placed.len() < log.len() {
+        let next = log
+            .iter()
+            .filter(|line| !placed.contains(&line.id))
+            .filter(|line| line.parents.iter().all(|parent| placed.contains(parent)))
+            .min_by_key(|line| line_name(line.id))
+            .expect("a log with no cycle has a line to place");
+        placed.insert(next.id);
+        order.push(line_name(next.id));
+    }
+    order
+}
+
+/// The tree over a generated log.
+fn tree_of(log: &[Line]) -> Tree<Ends> {
+    tree(leaves(log)).expect("no cycle").expect("a line")
 }
 
 /// Which inner nodes have a summary, and how long: a draw from the name,
@@ -160,7 +211,7 @@ proptest! {
     /// part has a summary.
     #[test]
     fn a_view_tiles_the_log(log in a_log(300), summaries in summaries(), budget in a_budget()) {
-        let tree = tree(leaves(&log)).expect("a line");
+        let tree = tree_of(&log);
         let view = view(&tree, |name| summaries.of(name), budget);
         let mut at = 0;
         for part in &view.parts {
@@ -183,7 +234,7 @@ proptest! {
         summaries in summaries(),
         budget in a_budget(),
     ) {
-        let tree = tree(leaves(&log)).expect("a line");
+        let tree = tree_of(&log);
         let view = view(&tree, |name| summaries.of(name), budget);
         if view.waiting.is_empty() {
             prop_assert!(view.bytes <= budget || !a_settled_run(&tree, &view));
@@ -205,7 +256,7 @@ proptest! {
     /// Law 3, decay: toward the present, the parts' levels never rise.
     #[test]
     fn a_view_decays(log in a_log(400), summaries in summaries(), budget in a_budget()) {
-        let tree = tree(leaves(&log)).expect("a line");
+        let tree = tree_of(&log);
         let view = view(&tree, |name| summaries.of(name), budget);
         let levels: Vec<usize> = view
             .parts
@@ -219,7 +270,7 @@ proptest! {
     /// log back, line for line; a line does not open.
     #[test]
     fn zooming_every_part_reads_the_log(log in a_log(300), summaries in summaries(), budget in a_budget()) {
-        let tree = tree(leaves(&log)).expect("a line");
+        let tree = tree_of(&log);
         let view = view(&tree, |name| summaries.of(name), budget);
         let mut open = view.parts;
         let mut lines = Vec::new();
@@ -244,33 +295,29 @@ proptest! {
             }
             open = next;
         }
-        let expected: Vec<Hash> = first_copies(&log).iter().map(|&(id, _)| line_name(id)).collect();
         let read: Vec<Hash> = lines.into_iter().map(|part| part.node).collect();
-        prop_assert_eq!(read, expected);
+        prop_assert_eq!(read, causal_order(&log));
         prop_assert_eq!(zoom(&tree, &line_name(u16::MAX)), None);
     }
 
-    /// Law 5, free: the tree, `pending` and the view are the same for a log
-    /// and for its first copies, whatever cost or measure a second copy
-    /// carries; and two replicas that hold one log build one tree.
+    /// Law 5, free: the tree, `pending` and the view are functions of the
+    /// set of lines: the same however the lines are ordered and however
+    /// many times each is given, so two replicas that hold one log build
+    /// one tree.
     #[test]
-    fn a_digest_is_a_function_of_its_lines(
-        log in a_log(300),
-        again in prop::collection::vec((any::<prop::sample::Index>(), any::<prop::sample::Index>(), 1..=64u32), 0..40),
+    fn a_digest_is_a_function_of_the_set_of_lines(
+        (log, shuffled) in a_log(300).prop_flat_map(|log| (Just(log.clone()), Just(log).prop_shuffle())),
+        again in prop::collection::vec(any::<prop::sample::Index>(), 0..40),
         summaries in summaries(),
         budget in a_budget(),
     ) {
-        // Each copy of an earlier line, put anywhere after it.
-        let mut doubled = log.clone();
-        for (which, after, bytes) in again {
-            let at = which.index(doubled.len());
-            let (id, _) = doubled[at];
-            let to = at + 1 + after.index(doubled.len() - at);
-            doubled.insert(to, (id, bytes));
+        let mut given = shuffled;
+        for which in again {
+            let copy = given[which.index(given.len())].clone();
+            given.push(copy);
         }
-        let (once, twice) = (tree(leaves(&first_copies(&log))).expect("a line"), tree(leaves(&doubled)).expect("a line"));
+        let (once, twice) = (tree_of(&log), tree_of(&given));
         prop_assert_eq!(&once, &twice);
-        prop_assert_eq!(&once, &tree(leaves(&log)).expect("a line"));
         let of = |name: &Hash| summaries.of(name);
         prop_assert_eq!(pending(&once, of), pending(&twice, of));
         prop_assert_eq!(view(&once, of, budget), view(&twice, of, budget));
@@ -283,7 +330,7 @@ proptest! {
     /// every settled node.
     #[test]
     fn pending_is_what_can_be_summarised(log in a_log(300), summaries in summaries()) {
-        let tree = tree(leaves(&log)).expect("a line");
+        let tree = tree_of(&log);
         let of = |name: &Hash| summaries.of(name);
         let ready = pending(&tree, of);
         let expected: BTreeSet<Hash> = nodes(&tree)
@@ -328,18 +375,20 @@ proptest! {
         line in 1..=64u32,
         uniform in any::<bool>(),
     ) {
-        let mut log = first_copies(&log);
+        let mut log = log;
         let summary = 1 + u32::try_from(summaries.seed % u64::from(line)).expect("under a line");
         let summaries = Summaries { longest: if uniform { 1 } else { summaries.longest }, ..summaries };
         let of = |name: &Hash| summaries.of(name).map(|bytes| if uniform { summary } else { bytes });
         if uniform {
-            for (_, bytes) in &mut log {
-                *bytes = line;
+            for each in &mut log {
+                each.bytes = line;
             }
         }
-        let last = log.pop().expect("a line");
-        prop_assume!(!log.is_empty());
-        let (before, after) = (tree(leaves(&log)).expect("a line"), tree(leaves(&[log.clone(), vec![last]].concat())).expect("a line"));
+        // The new line has seen every line, so it comes last.
+        let ids: BTreeSet<u16> = log.iter().map(|each| each.id).collect();
+        let id = (0..=u16::MAX).find(|id| !ids.contains(id)).expect("a free id");
+        let last = Line { id, bytes: line, parents: ids.into_iter().collect() };
+        let (before, after) = (tree_of(&log), tree_of(&[log.clone(), vec![last]].concat()));
         let (old, new) = (view(&before, of, budget), view(&after, of, budget));
         for part in &old.parts {
             prop_assert!(
@@ -355,17 +404,18 @@ proptest! {
         }
     }
 
-    /// Law 6, a line arriving late: inserting a line anywhere renames at
-    /// most a logarithmic number of the tree's nodes.
+    /// Law 6, a line arriving late: a line concurrent with the rest lands
+    /// where its name puts it, and renames at most a logarithmic number of
+    /// the tree's nodes.
     #[test]
     fn a_late_line_renames_a_logarithmic_spine(
-        log in prop::collection::btree_set(0..u16::MAX, 64..1200),
+        ids in prop::collection::btree_set(any::<u16>(), 64..1200),
         at in any::<prop::sample::Index>(),
     ) {
-        let log: Vec<(u16, u32)> = log.into_iter().map(|id| (id, 1)).collect();
-        let late = log[at.index(log.len())];
-        let without: Vec<(u16, u32)> = log.iter().copied().filter(|line| *line != late).collect();
-        let (before, after) = (tree(leaves(&without)).expect("a line"), tree(leaves(&log)).expect("a line"));
+        let log: Vec<Line> = ids.into_iter().map(|id| Line { id, bytes: 1, parents: Vec::new() }).collect();
+        let late = log[at.index(log.len())].id;
+        let without: Vec<Line> = log.iter().filter(|line| line.id != late).cloned().collect();
+        let (before, after) = (tree_of(&without), tree_of(&log));
         let renamed = names(&before).difference(&names(&after)).count();
         let bound = 4 * (usize::BITS - log.len().leading_zeros()) as usize;
         prop_assert!(renamed <= bound, "{} renamed of {}", renamed, log.len());
@@ -381,12 +431,12 @@ proptest! {
         summaries in summaries(),
         budget in a_budget(),
     ) {
-        let tree = tree(leaves(&log)).expect("a line");
+        let tree = tree_of(&log);
         let mut cache = Cache::default();
         let (measure, _) = fold(&Measured::default(), tree.root(), &mut cache);
         prop_assert_eq!(&measure, tree.root().measure());
-        let lines = leaves(&first_copies(&log));
-        prop_assert_eq!(&measure, &lines.iter().fold(Ends::empty(), |measure, line| measure.join(&line.measure)));
+        let measures: Vec<Ends> = causal_order(&log).iter().map(|name| Ends(Some((name.clone(), name.clone())), 1)).collect();
+        prop_assert_eq!(&measure, &measures.iter().fold(Ends::empty(), |measure, line| measure.join(line)));
         for node in nodes(&tree) {
             prop_assert_eq!(&fold(&Measured::default(), node, &mut cache).0, node.measure());
         }
@@ -421,7 +471,11 @@ fn view_of<M>(tree: &Tree<M>, summaries: Summaries, budget: u64) -> View {
 /// children, closed, beside the path to the last line.
 #[test]
 fn a_view_with_no_budget_is_as_coarse_as_the_log_allows() {
-    let one = tree(vec![leaf(0, 9)]).expect("a line");
+    let one = tree_of(&[Line {
+        id: 0,
+        bytes: 9,
+        parents: Vec::new(),
+    }]);
     let view = view_of(
         &one,
         Summaries {
@@ -434,8 +488,14 @@ fn a_view_with_no_budget_is_as_coarse_as_the_log_allows() {
     assert_eq!(view.parts.len(), 1);
     assert_eq!((view.bytes, view.waiting.len()), (9, 0));
 
-    let log: Vec<(u16, u32)> = (0..2000).map(|id| (id, 40)).collect();
-    let tree = tree(leaves(&log)).expect("a line");
+    let log: Vec<Line> = (0..2000)
+        .map(|id| Line {
+            id,
+            bytes: 40,
+            parents: Vec::new(),
+        })
+        .collect();
+    let tree = tree_of(&log);
     let all = Summaries {
         seed: 1,
         percent: 100,
@@ -452,4 +512,21 @@ fn a_view_with_no_budget_is_as_coarse_as_the_log_allows() {
         "{} parts",
         view.parts.len()
     );
+}
+
+/// Lines that rest on one another in a cycle are refused, naming the least
+/// line the cycle leaves unplaced; a parent the log does not hold is
+/// passed over.
+#[test]
+fn a_cycle_is_refused() {
+    let line = |id, parents: &[u16]| Line {
+        id,
+        bytes: 1,
+        parents: parents.to_vec(),
+    };
+    let cycle = [line(0, &[]), line(1, &[2]), line(2, &[1])];
+    let least = line_name(1).min(line_name(2));
+    assert_eq!(tree(leaves(&cycle)), Err(digest::Cycle(least)));
+    let dangling = tree_of(&[line(0, &[9]), line(1, &[0])]);
+    assert_eq!(dangling.lines(), 2);
 }
