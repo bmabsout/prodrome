@@ -170,6 +170,19 @@ since this grammar has tuples and no mapping.
   The interior is never more than the objects, idempotent and monotone, so
   it is a function of the object set (law 40); of a store closed under
   parents it is the store.
+- **A read is total; a write is not.** A file of `objects/` that is no
+  object (it fails its hash, it is not text, it does not parse at the
+  schema the store is opened at) is held as UNREAD, with why, beside the
+  objects, and read again at every look. What rests on it waits, as on an
+  object not arrived, so every read answers the history of what verifies,
+  and what it leaves out is named as a replica's reading names it (law 44):
+  every name held or rested on that is no object, why, and the objects
+  above it. A store and a replica holding the same files read the same
+  (law 45). A WRITE refuses while anything is unread (every append, merge,
+  snapshot and adoption, and the coordinated decision they begin with),
+  naming the file: a write names the store's heads, and an unread file may
+  be one, so a reading may leave a file out but a decision may not guess
+  what it held.
 - **Tips are derived.** `tips()` is the set of objects of the history no
   object names as a parent: a function of the object set alone, in any
   order it is listed. A
@@ -270,10 +283,10 @@ since this grammar has tuples and no mapping.
   ever overwritten or deleted and the same bytes set aside twice are one
   file; the report names each (the receipt). A file that hashes to
   its name stays (it is the object, even one this reader cannot parse), and
-  a stray is reported, never moved. A read refuses a file failing its hash
-  rather than guess what it held — `tips()` among them, and so every
-  append — and its refusal names the object and this operation (`prodrome
-  fsck`). No read takes anything in `quarantine/` for part of the history.
+  a stray is reported, never moved. A read leaves a file failing its hash
+  out, and says so; a write refuses rather than guess what it held, and
+  its refusal names the object and this operation (`prodrome fsck`). No
+  read takes anything in `quarantine/` for part of the history.
   Set aside, the store reads the largest
   down-set it holds: the history without the object AND WITHOUT
   EVERYTHING RESTING ON IT, which is exactly what a replica that never
@@ -1506,6 +1519,21 @@ which every `Tagged` fails to parse, as a store migrated away from does.
     `wasm/exports/src/unread.rs::an_unreadable_print_changes_no_reading_of_what_does_not_rest_on_it`,
     `unread.rs::what_is_left_out_is_exactly_the_unreadable_and_what_rests_on_them`,
     `unread.rs::a_store_and_a_page_name_the_same_unreadable_objects`.
+
+Law 45 is law 44 read in the store of record, over generated histories of
+the declared proposal schema read at it or at a newer schema, with any
+files damaged in place, removed, or joined by prints that are no object.
+
+45. **The store of record reads totally, as a replica does.** A store on
+    disk holding a set of files, read by a fresh handle or by one that
+    held other files first, holds exactly what a replica handed the same
+    prints holds: the same history (the interior of the prints), the same
+    objects waiting outside it and the same unread prints, so the same
+    fold, heads, events and ancestry, and the same `excluded`. A write
+    refuses exactly when a print is unread, naming the first.
+    `core/tests/all/unread.rs::a_store_reads_as_a_replica_holding_its_files`,
+    `down_set.rs::quarantine_is_the_down_set_without_what_rests_on_it`,
+    `memory.rs::a_file_changed_under_a_held_name_is_read_again`.
 
 ## 10. Non-goals
 
