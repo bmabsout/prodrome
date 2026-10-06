@@ -43,6 +43,14 @@ pub trait Measure: Clone + Eq {
     fn join(&self, other: &Self) -> Self;
 }
 
+/// The measure of lines given in order, the monoid's fold: the one fold
+/// a chunk and [`Measured`] share.
+fn joined<'m, M: Measure + 'm>(measures: impl IntoIterator<Item = &'m M>) -> M {
+    measures
+        .into_iter()
+        .fold(M::empty(), |measure, next| measure.join(next))
+}
+
 /// No measure at all.
 impl Measure for () {
     fn empty() {}
@@ -161,16 +169,10 @@ impl<M> Tree<M> {
         &self.root
     }
 
-    /// How many lines the log holds.
+    /// How many lines the log holds: one or more.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub fn lines(&self) -> usize {
         self.root.span.end
-    }
-
-    /// Never: a tree holds at least one line.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        false
     }
 
     /// Whether `node` is SETTLED: it does not hold the last line, so no
@@ -179,7 +181,7 @@ impl<M> Tree<M> {
     /// replace.
     #[must_use]
     pub fn settled(&self, node: &Node<M>) -> bool {
-        node.span.end < self.len()
+        node.span.end < self.lines()
     }
 
     /// The node named `name`, if the tree has one.
@@ -213,9 +215,7 @@ pub fn tree<M: Measure>(leaves: Vec<Leaf<M>>) -> Option<Tree<M>> {
         span: children[0].span.start..children[children.len() - 1].span.end,
         level: children[0].level + 1,
         bytes: children.iter().map(Node::bytes).sum(),
-        measure: children
-            .iter()
-            .fold(M::empty(), |measure, child| measure.join(&child.measure)),
+        measure: joined(children.iter().map(Node::measure)),
         children,
     })?;
     Some(Tree { root })
@@ -241,9 +241,7 @@ impl<M: Measure> Algebra<Node<M>> for Measured {
         if node.is_leaf() {
             node.measure.clone()
         } else {
-            children
-                .iter()
-                .fold(M::empty(), |measure, child| measure.join(child))
+            joined(&children)
         }
     }
 }
