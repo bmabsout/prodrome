@@ -16,10 +16,17 @@ use crate::registers::{Genesis, Node};
 use crate::schema::Schema;
 use crate::sign::{Proof, Registrar};
 
-/// Named objects of the schema `E`, and the named prints that are not objects.
+/// Named prints read at the schema `E`: each an object or, `unread`, a print
+/// that is not one. The objects are `objects` and `waiting`: of a DAG made
+/// by [`Dag::interior`], or held by a store, `objects` is its history and
+/// `waiting` the objects outside it, each resting on a name no object of
+/// the history is; of any other, `waiting` is empty. So the history is
+/// `objects` once read, and what it leaves out ([`Dag::excluded`]) is still
+/// a function of every print held.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dag<E> {
     objects: BTreeMap<Hash, Envelope<E>>,
+    waiting: BTreeMap<Hash, Envelope<E>>,
     unread: BTreeMap<Hash, Unread>,
 }
 
@@ -27,6 +34,7 @@ impl<E> FromIterator<(Hash, Envelope<E>)> for Dag<E> {
     fn from_iter<I: IntoIterator<Item = (Hash, Envelope<E>)>>(objects: I) -> Self {
         Dag {
             objects: objects.into_iter().collect(),
+            waiting: BTreeMap::new(),
             unread: BTreeMap::new(),
         }
     }
@@ -38,6 +46,7 @@ impl<E> Extend<(Hash, Envelope<E>)> for Dag<E> {
     fn extend<I: IntoIterator<Item = (Hash, Envelope<E>)>>(&mut self, objects: I) {
         for (name, object) in objects {
             self.unread.remove(&name);
+            self.waiting.remove(&name);
             self.objects.insert(name, object);
         }
     }
@@ -71,12 +80,22 @@ impl<E> Dag<E> {
         self.objects.get(name)
     }
 
-    pub(crate) fn into_objects(self) -> BTreeMap<Hash, Envelope<E>> {
-        self.objects
+    /// Every object held, in the history or waiting outside it.
+    pub(crate) fn held(&self) -> impl Iterator<Item = (&Hash, &Envelope<E>)> {
+        self.objects.iter().chain(&self.waiting)
     }
 
-    pub(crate) fn remove(&mut self, name: &Hash) -> Option<Envelope<E>> {
-        self.objects.remove(name)
+    /// Is `name` held as an object, in the history or waiting outside it?
+    pub(crate) fn holds(&self, name: &Hash) -> bool {
+        self.objects.contains_key(name) || self.waiting.contains_key(name)
+    }
+
+    /// Every print `name` was held as, an object or unread, let go.
+    pub(crate) fn forget(&mut self, name: &Hash) -> Option<Envelope<E>> {
+        self.unread.remove(name);
+        self.objects
+            .remove(name)
+            .or_else(|| self.waiting.remove(name))
     }
 
     /// THE HISTORY THESE OBJECTS HOLD: the largest down-set among them, every
@@ -87,30 +106,41 @@ impl<E> Dag<E> {
     /// interior operator on sets of objects: never more than the set,
     /// idempotent and monotone, so a function of the objects alone (law 40).
     /// A cycle, which only a hash collision makes, is in no down-set.
+    ///
+    /// NOTHING IS LOST: the objects outside it are held as waiting, and the
+    /// unread prints as unread, so the interior holds the prints this DAG
+    /// holds and [`Dag::excluded`] answers of it what it answers of this.
     #[must_use]
     pub fn interior(&self) -> Dag<E>
     where
         E: Clone,
     {
-        let mut interior = Dag {
-            objects: BTreeMap::new(),
-            unread: self.unread.clone(),
-        };
-        interior.grow(self.objects.clone());
+        let mut interior = self.clone();
+        interior.settle();
         interior
     }
 
-    /// Extend this down-set by every object of `waiting` that rests only on
-    /// it and on each other, and answer the names taken and the objects that
-    /// stay waiting, each resting on something neither holds. The one step
+    /// Make the history the interior of every object held: each one waits,
+    /// and [`Dag::grow`] takes back in what rests only on the rest.
+    pub(crate) fn settle(&mut self) {
+        let held = std::mem::take(&mut self.objects);
+        self.grow(held);
+    }
+
+    /// Extend this down-set by every object `arrived` and held waiting that
+    /// rests only on it and on each other, and answer the names taken; the
+    /// rest wait, each resting on something neither holds. The one step
     /// [`Dag::interior`] and a store's memory share: what arrives either
     /// joins the history or waits for what it rests on, and whatever
     /// arrives later that completes it brings it in.
-    pub(crate) fn grow(
-        &mut self,
-        mut waiting: BTreeMap<Hash, Envelope<E>>,
-    ) -> (BTreeSet<Hash>, BTreeMap<Hash, Envelope<E>>) {
-        waiting.retain(|name, _| !self.objects.contains_key(name));
+    pub(crate) fn grow(&mut self, arrived: BTreeMap<Hash, Envelope<E>>) -> BTreeSet<Hash> {
+        let mut waiting = std::mem::take(&mut self.waiting);
+        for (name, object) in arrived {
+            if !self.objects.contains_key(&name) {
+                self.unread.remove(&name);
+                waiting.insert(name, object);
+            }
+        }
         let mut children: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
         let mut short: BTreeMap<Hash, usize> = BTreeMap::new();
         let mut ready: Vec<Hash> = Vec::new();
@@ -145,11 +175,17 @@ impl<E> Dag<E> {
             }
             taken.insert(name);
         }
-        (taken, waiting)
+        self.waiting = waiting;
+        taken
     }
 
-    /// The DAG, or the refusal of its first print that is not an object.
-    pub fn whole(self) -> Result<Dag<E>, ProdromeError> {
+    /// The DAG, where every print it holds is an object; or the refusal of
+    /// the first, by name, that is not.
+    ///
+    /// # Errors
+    ///
+    /// That print's [`Unread::refusal`].
+    pub fn whole(&self) -> Result<&Dag<E>, ProdromeError> {
         match self.unread.iter().next() {
             Some((name, why)) => Err(why.refusal(name)),
             None => Ok(self),
@@ -193,10 +229,11 @@ impl<E> Dag<E> {
         up(&self.children(), seeds)
     }
 
-    /// Each name the objects rest on, and the objects naming it as a parent.
+    /// Each name the objects held rest on, and the objects naming it as a
+    /// parent.
     fn children(&self) -> BTreeMap<Hash, Vec<&Hash>> {
         let mut children: BTreeMap<Hash, Vec<&Hash>> = BTreeMap::new();
-        for (name, object) in &self.objects {
+        for (name, object) in self.held() {
             for parent in parents_of(object) {
                 children.entry(parent).or_default().push(name);
             }
@@ -211,8 +248,9 @@ impl<E> Dag<E> {
     /// [`Dag::interior`], is exactly the objects no `resting` names (a
     /// cycle aside, which only a hash collision makes): this says, object
     /// by object, why the rest are not in it. A function of the prints, as
-    /// the interior is (law 40), and the one reading of "unreadable" that
-    /// [`Dag::verify`] reports and a replica's reading leaves out.
+    /// the interior is (law 40), and so the same of a DAG and of its
+    /// interior; the one reading of "unreadable" that [`Dag::verify`]
+    /// reports and every replica's reading leaves out (laws 44 and 45).
     #[must_use]
     pub fn excluded(&self) -> Vec<Excluded> {
         let children = self.children();
@@ -220,7 +258,7 @@ impl<E> Dag<E> {
             .unread
             .keys()
             .chain(children.keys())
-            .filter(|name| !self.objects.contains_key(*name))
+            .filter(|name| !self.holds(name))
             .collect();
         lacking
             .into_iter()
@@ -370,7 +408,7 @@ impl<E: Schema> Dag<E> {
         schema: &E::Vocabulary,
         prints: impl IntoIterator<Item = (Hash, Result<Vec<u8>, ProdromeError>)>,
     ) -> Dag<E> {
-        let mut dag = Dag::from_iter([]);
+        let mut dag: Dag<E> = Dag::from_iter([]);
         for (name, bytes) in prints {
             match bytes
                 .map_err(Unread::Io)
@@ -410,8 +448,16 @@ impl<E: Schema> Dag<E> {
 
     /// §3's findings: every print that is not an object, by name, then every
     /// parent no object is, or else a cycle, or else the dating rule; then
-    /// §3's genesis, deps and snapshot rules, object by object.
+    /// §3's genesis, deps and snapshot rules, object by object. Of every
+    /// object held, a function of the prints as [`Dag::excluded`] is: a
+    /// DAG's interior verifies as the DAG does.
     pub fn verify(&self, policy: &impl Policy<E>) -> Vec<Finding> {
+        if !self.waiting.is_empty() {
+            let mut held = self.clone();
+            let waiting = std::mem::take(&mut held.waiting);
+            held.objects.extend(waiting);
+            return held.verify(policy);
+        }
         let excluded = self.excluded();
         let mut findings: Vec<Finding> = excluded
             .iter()
