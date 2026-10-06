@@ -103,6 +103,7 @@
 //! - `store`    — §3: the files around a `Dag` (the lock, placement, quarantine),
 //!   and replicas: one in memory, an overlay, `sync` and a `Decision`
 //! - `memo`     — design §6.2: caches as tabulations of pure functions
+//! - `digest`   — design §6.5: a summary tree over a log, and its budgeted view
 //! - `nest`     — design §6.3: histories held in registers, and their join
 //! - `term`     — §7: the functor `TermF`, its fixed point `Term`, normal form
 //! - `fpl`      — §7: smart constructors, evaluation, explain (Cofree), link
@@ -125,6 +126,7 @@ pub mod chain;
 pub mod change;
 pub mod dag;
 pub mod declared;
+pub mod digest;
 pub mod event;
 pub mod fold;
 pub mod fpl;
