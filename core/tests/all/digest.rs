@@ -2,16 +2,16 @@
 //!
 //! Over generated logs (distinct lines of any cost, each resting on up to
 //! two before it, given in any order and any number of times) and
-//! generated summaries (each inner node
-//! summarised or not, of any cost, by a draw from its name): a view tiles
-//! the log; it never costs more than its budget or its lines, and fits
-//! its budget unless no closing it may make lowers its cost; what waits is
-//! pending; its
-//! parts' levels never rise toward the present; zooming every part down to
-//! the lines reads the log back in causal order; the tree, `pending` and
-//! the view are functions of the set of lines; an
-//! appended line only coarsens the past and, with lines of one cost and
-//! summaries of one no longer, changes at most `1 + ⌈line / summary⌉`
+//! generated summaries (each inner node summarised or not, of any cost, by
+//! a draw from its name): a view tiles the log; it never costs more than
+//! its budget or its lines, and fits its budget unless no closing it may
+//! make, with what decay forces beside it, lowers its cost; what waits is
+//! pending, and following it ends in the budget or with nothing left to
+//! lower; its parts' levels never rise toward the present; zooming every
+//! part down to the lines reads the log back in causal order; the tree,
+//! `pending` and the view are functions of the set of lines; an appended
+//! line only coarsens the past and, with lines of one cost and summaries of
+//! one no longer, changes at most `1 + ⌈line / summary⌉` stretches of
 //! parts; a line arriving late renames a logarithmic number of nodes; and
 //! the measure folded through `memo::fold` is the plain one, and
 //! `digest::read` is a sound key for the view and `pending`.
@@ -181,54 +181,72 @@ fn names<M>(tree: &Tree<M>) -> BTreeSet<Hash> {
 }
 
 /// A part's cost in the view.
-fn cost<M>(tree: &Tree<M>, summaries: Summaries, name: &Hash) -> u64 {
+fn cost<M>(tree: &Tree<M>, of: &dyn Fn(&Hash) -> Option<u32>, name: &Hash) -> u64 {
     let node = tree.node(name).expect("a part is a node of the tree");
     if node.is_leaf() {
         node.bytes()
     } else {
-        u64::from(summaries.of(name).expect("a closed part has a summary"))
+        u64::from(of(name).expect("a closed part has a summary"))
     }
 }
 
-/// The nodes the view may still close and lower its cost by, worked out
-/// from the view alone: each above some parts and below none, settled,
-/// after a part at least as high as itself (or first), and summarised in
-/// less than the parts it spans cost.
-fn closings_that_lower<M>(tree: &Tree<M>, summaries: Summaries, view: &View) -> Vec<Hash> {
+/// The closings the view may still make and lower its cost by, worked out
+/// from the view alone: each started at a settled node above some parts
+/// and below none, with, leftward, the node at its level over each part
+/// before it that is lower, until a part as high or the log's start; all
+/// summarised, and together summarised in less than the parts they span.
+fn closings_that_lower<M>(
+    tree: &Tree<M>,
+    of: &dyn Fn(&Hash) -> Option<u32>,
+    view: &View,
+) -> Vec<Hash> {
+    let inside = |span: &std::ops::Range<usize>| -> Vec<&digest::Part> {
+        view.parts
+            .iter()
+            .filter(|part| span.start <= part.span.start && part.span.end <= span.end)
+            .collect()
+    };
+    let open = |node: &Node<M>| {
+        let span = node.span();
+        let below = inside(&span);
+        (below.len() > 1 || below.first().is_some_and(|part| part.span != span))
+            && !view
+                .parts
+                .iter()
+                .any(|part| part.span.start <= span.start && span.end <= part.span.end)
+    };
+    let level = |name: &Hash| tree.node(name).expect("in the tree").level();
     nodes(tree)
         .into_iter()
-        .filter(|node| {
-            let span = node.span();
-            let inside: Vec<_> = view
-                .parts
+        .filter(|start| open(start) && tree.settled(start))
+        .filter(|start| {
+            let mut closing = vec![*start];
+            let mut at = start.span().start;
+            while let Some(before) = view.parts.iter().find(|part| part.span.end == at) {
+                if level(&before.node) >= start.level() {
+                    break;
+                }
+                let forced = nodes(tree)
+                    .into_iter()
+                    .find(|node| {
+                        node.level() == start.level()
+                            && node.span().start <= before.span.start
+                            && before.span.end <= node.span().end
+                    })
+                    .expect("every part has an ancestor at every level above it");
+                at = forced.span().start;
+                closing.push(forced);
+            }
+            let summaries: Option<u64> = closing
                 .iter()
-                .filter(|part| span.start <= part.span.start && part.span.end <= span.end)
-                .collect();
-            let above_parts =
-                inside.len() > 1 || inside.first().is_some_and(|part| part.span != span);
-            let below_none = !view
-                .parts
-                .iter()
-                .any(|part| part.span.start <= span.start && span.end <= part.span.end);
-            let decaying = view
-                .parts
-                .iter()
-                .rev()
-                .find(|part| part.span.end <= span.start)
-                .is_none_or(|before| {
-                    tree.node(&before.node).expect("in the tree").level() >= node.level()
-                });
-            let replaced: u64 = inside
-                .iter()
-                .map(|part| cost(tree, summaries, &part.node))
+                .map(|node| of(node.name()).map(u64::from))
                 .sum();
-            above_parts
-                && below_none
-                && tree.settled(node)
-                && decaying
-                && summaries
-                    .of(node.name())
-                    .is_some_and(|size| u64::from(size) < replaced)
+            let replaced: u64 = closing
+                .iter()
+                .flat_map(|node| inside(&node.span()))
+                .map(|part| cost(tree, of, &part.node))
+                .sum();
+            summaries.is_some_and(|summaries| summaries < replaced)
         })
         .map(|node| node.name().clone())
         .collect()
@@ -257,14 +275,14 @@ proptest! {
             at = part.span.end;
         }
         prop_assert_eq!(at, tree.lines());
-        let total: u64 = view.parts.iter().map(|part| cost(&tree, summaries, &part.node)).sum();
+        let total: u64 = view.parts.iter().map(|part| cost(&tree, &|name| summaries.of(name), &part.node)).sum();
         prop_assert_eq!(view.bytes, total);
     }
 
     /// Law 2, budget: a view never costs more than its budget or its
     /// lines, whichever is more; it fits its budget unless no closing it
-    /// may make would lower its cost; and whatever waits is a settled run
-    /// with no summary that `pending` offers.
+    /// may make would lower its cost; and whatever waits is pending, and
+    /// not under a part.
     #[test]
     fn a_view_fits_its_budget_unless_no_closing_lowers_it(
         log in a_log(300),
@@ -277,20 +295,59 @@ proptest! {
         prop_assert!(view.bytes <= budget.max(lines_cost(&tree)));
         prop_assert!(view.bytes <= lines_cost(&tree));
         if view.bytes > budget {
-            let lowering = closings_that_lower(&tree, summaries, &view);
+            let lowering = closings_that_lower(&tree, &of, &view);
             prop_assert!(lowering.is_empty(), "{} could close and lower the cost", lowering.len());
         }
-        let parts: BTreeSet<&Hash> = view.parts.iter().map(|part| &part.node).collect();
         let ready: BTreeSet<Hash> = pending(&tree, of).into_iter().collect();
         for name in &view.waiting {
             let node = tree.node(name).expect("a waiting node is in the tree");
-            prop_assert!(tree.settled(node) && of(name).is_none());
-            prop_assert!(node.children().iter().all(|child| parts.contains(child.name())));
             prop_assert!(ready.contains(name), "waiting, and not pending");
+            prop_assert!(!view.parts.iter().any(|part| {
+                part.span.start <= node.span().start && node.span().end <= part.span.end
+            }), "waiting under a part");
         }
         // An unbounded budget shows every line.
         let whole = view_of(&tree, summaries, u64::MAX);
         prop_assert_eq!(whole.parts.len(), tree.lines());
+    }
+
+    /// Law 2, followed: a summariser that writes what `waiting` names,
+    /// round after round, never writes one twice, and stops with the view
+    /// in its budget, or with every settled node the view could close
+    /// summarised and no closing that lowers the cost.
+    #[test]
+    fn following_waiting_fits_the_budget_or_nothing_lowers(
+        log in a_log(200),
+        summaries in summaries(),
+        seed in any::<u64>(),
+        budget in a_budget(),
+    ) {
+        let tree = tree_of(&log);
+        let would = Summaries { seed, percent: 100, ..summaries };
+        let mut written: BTreeSet<Hash> = BTreeSet::new();
+        loop {
+            let of = |name: &Hash| summaries.of(name).or_else(|| if written.contains(name) { would.of(name) } else { None });
+            let view = view(&tree, of, budget);
+            if !view.waiting.is_empty() {
+                for name in &view.waiting {
+                    prop_assert!(!written.contains(name), "waiting twice");
+                }
+                written.extend(view.waiting);
+                continue;
+            }
+            if view.bytes > budget {
+                let shown = |node: &Node<Ends>| !view.parts.iter().any(|part| {
+                    part.span.start <= node.span().start && node.span().end <= part.span.end
+                });
+                let unwritten = nodes(&tree)
+                    .into_iter()
+                    .filter(|node| !node.is_leaf() && tree.settled(node) && shown(node) && of(node.name()).is_none())
+                    .count();
+                prop_assert_eq!(unwritten, 0);
+                prop_assert!(closings_that_lower(&tree, &of, &view).is_empty());
+            }
+            break;
+        }
     }
 
     /// Law 3, decay: toward the present, the parts' levels never rise.
@@ -405,8 +462,9 @@ proptest! {
     /// Law 6, stability: appending a line only coarsens the past, every
     /// part of the view before it lying within a part of the view after;
     /// and with lines of one cost and summaries of one no longer, from a
-    /// view that fitted with nothing waiting, at most `1 + ⌈line /
-    /// summary⌉` of the parts after are new.
+    /// view that fitted with nothing waiting, the new parts are at most
+    /// `1 + ⌈line / summary⌉` stretches of adjacent parts at one level: the
+    /// line, and one per closing it made.
     #[test]
     fn an_appended_line_only_coarsens_the_past(
         log in a_log(400),
@@ -438,9 +496,22 @@ proptest! {
             prop_assert!(after.node(&part.node).is_some(), "{:?} renamed", part.span);
         }
         if uniform && old.waiting.is_empty() && old.bytes <= budget {
+            // Each closing places one stretch of adjacent nodes at one
+            // level, its start and what decay forced beside it.
             let c = 1 + line.div_ceil(summary) as usize;
-            let changed = new.parts.iter().filter(|part| !old.parts.contains(part)).count();
-            prop_assert!(changed <= c, "{} new parts, c = {}", changed, c);
+            let level = |part: &digest::Part| after.node(&part.node).expect("in the tree").level();
+            let fresh: Vec<&digest::Part> = new.parts.iter().filter(|part| !old.parts.contains(part)).collect();
+            let stretches = fresh
+                .iter()
+                .enumerate()
+                .filter(|(at, part)| {
+                    *at == 0 || {
+                        let before = fresh[at - 1];
+                        before.span.end != part.span.start || level(before) != level(part)
+                    }
+                })
+                .count();
+            prop_assert!(stretches <= c, "{} stretches of new parts, c = {}", stretches, c);
         }
     }
 
@@ -545,7 +616,7 @@ fn a_view_with_no_budget_is_as_coarse_as_the_log_allows() {
     };
     let view = view_of(&tree, all, 0);
     assert!(view.waiting.is_empty());
-    assert!(closings_that_lower(&tree, all, &view).is_empty());
+    assert!(closings_that_lower(&tree, &|name| all.of(name), &view).is_empty());
     // At most one level of the path to the last line is open per level,
     // each with fewer than `WIDEST` settled children shown.
     let depth = tree.root().level();
@@ -590,6 +661,42 @@ fn a_summary_longer_than_its_lines_never_closes() {
             view.parts.len()
         );
     }
+}
+
+/// A closing that decay forces beside another closes with it when the two
+/// lower the cost together, though it alone would raise it: some view of
+/// some small log shows a part dearer than its lines, and none costs more
+/// than its lines.
+#[test]
+fn a_closing_decay_forces_closes_with_it() {
+    let mut forced = 0;
+    for seed in 0..400u64 {
+        let log: Vec<Line> = (0..60)
+            .map(|id| Line {
+                id: id + u16::try_from(seed).expect("small") * 60,
+                bytes: 10 + u32::from(id % 7) * 9,
+                parents: Vec::new(),
+            })
+            .collect();
+        let tree = tree_of(&log);
+        let summaries = Summaries {
+            seed,
+            percent: 100,
+            longest: 160,
+        };
+        let view = view_of(&tree, summaries, 600);
+        assert!(view.bytes <= lines_cost(&tree));
+        forced += view
+            .parts
+            .iter()
+            .filter(|part| {
+                let node = tree.node(&part.node).expect("in the tree");
+                !node.is_leaf()
+                    && u64::from(summaries.of(&part.node).expect("closed")) >= node.bytes()
+            })
+            .count();
+    }
+    assert!(forced > 0, "no closing was forced beside another");
 }
 
 /// Lines that rest on one another in a cycle are refused, naming the least
