@@ -138,17 +138,20 @@ misses once.
 ### Added
 
 - **A digest (design §6.5, SPEC law 46):** `digest`. `tree(leaves)` over
-  the lines in the log's order, each a `Leaf` with a name, a cost and a
-  `Measure` (a monoid, `()` for none), a line given twice being the line
-  once; a `Node`'s name, span, level, bytes, measure and children, and
-  `Tree::settled` for a node no appended line renames. `pending`, the
-  settled nodes whose summary can be written now; `view(tree, summarized,
-  budget)`, the parts tiling the log, what they cost and the runs
-  `waiting` for a summary; `zoom`, a part's children; `Part::handle`,
-  `first+lines`; `read`, the tree's name as read under its summaries, to
-  key a cached view; `Measured`, the measure as a `memo::Algebra`. Laws in
-  `core/tests/all/digest.rs`; `core/examples/digest_prefix.rs` measures
-  what an append keeps of the printed view.
+  a set of lines given in any order, each a `Leaf` with a name, the lines
+  it rests on, a cost and a `Measure` (a monoid, `()` for none), ordered
+  by `topo::linear`, a cycle refused as `Cycle`; a `Node`'s name, span,
+  level, bytes, measure and children, and `Tree::settled` for a node no
+  appended line renames. `pending`, the settled nodes whose summary can be
+  written now; `view(tree, summarized, budget)`, the parts tiling the log,
+  what they cost and the runs `waiting` for a summary, each closing
+  lowering the cost; `zoom`, a part's children; `Part::handle`,
+  `first+lines`; `read`, a sound key for a cached view; `Measured`, the
+  measure as a `memo::Algebra`. Laws in `core/tests/all/digest.rs`;
+  `core/examples/digest_prefix.rs` measures what an append keeps of the
+  printed view.
+- **`topo::linear`:** the crate's one causal order, Kahn's walk with ties
+  by key, which `Dag::linearise` now is and the digest orders its lines by.
 - **`memo::balance` builds a tree that only grows:** a run closes at a
   boundary once it holds two, and a level's last run as it is, so an
   element appended renames only chunks holding the last element

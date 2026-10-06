@@ -851,15 +851,18 @@ A transcript or a journal is a grow-only set of lines in causal order
 prompted with. A DIGEST reads it through summaries, and each piece of it is
 something this document already has.
 
-- **The tree is a reading.** The lines are the leaves of `memo::balance`
-  over their names (§6.2), each chunk named by `memo::name` over its
-  children and carrying a monoid's measure of its lines. The shape is a
-  function of the lines, not of when each arrived: two replicas holding one
-  log build one tree, a line given twice is the line once, a line arriving
-  late renames a logarithmic spine, and an appended one renames only the
-  path to the last line, so every node off that path is SETTLED and keeps
-  its name for good. A position (`first+lines`) is a handle to show a
-  reader, never an identity.
+- **The tree is a reading.** The lines are a set, each naming the lines
+  it rests on, and the tree's leaves are that set in the crate's one causal
+  order (`topo::linear`, which `Dag::linearise` also is: parents first,
+  concurrent lines by name). Over them, `memo::balance` (§6.2) names each
+  chunk by `memo::name` over its children, carrying a monoid's measure of
+  its lines. So the shape is a function of the set, not of when each line
+  arrived or the order a caller gave: two replicas holding one log build one
+  tree, a line given twice is the line once, a line arriving late renames a
+  logarithmic spine, and an appended one renames only the path to the last
+  line, so every node off that path is SETTLED and keeps its name for good.
+  A position (`first+lines`) is a handle to show a reader, never an
+  identity.
 - **A summary is an object the caller records.** It is written by a model
   from the lines a node spans, so it is an observation, not a function of
   them, and never a cache entry: it belongs in a history beside the lines,
@@ -870,26 +873,37 @@ something this document already has.
   node on the path to the last line is never offered: the next line renames
   it.
 - **The view is a cache.** A view is a cut that tiles the log under a
-  budget, a pure function of the tree as read under its summaries
-  (`digest::read`) and the budget, so it is a tabulation by §6.2, keyed by
-  that name. It is built as the log was, line by line, closing the most due
-  run (age over size) while over budget, where the cut stays DECAYING
-  (levels never rising toward the present) and only once a line has
-  arrived after it. So a closed part is settled, is never renamed and never
-  reopens: an appended line only coarsens the past, and the view's printed
-  prefix up to the first part it closes stays as a model's prompt cache saw
-  it. Over ten thousand lines, an append keeps 85 to 94 percent of the
-  printed view's bytes on average, all of it in about three appends of four
-  (`core/examples/digest_prefix.rs`). A run with no summary waits, and the
-  view says so; `zoom` opens a part into its children, and the tree is
-  lossless.
+  budget, a pure function of the tree as read under its lines' costs and
+  its summaries (`digest::read`, a sound key) and the budget, so it is a
+  tabulation by §6.2. It is built as the log was, line by line: while over
+  budget, the most due node (age over size) closes over the parts it spans,
+  and only where its summary costs less than they do, where the cut stays
+  DECAYING, and once a line has arrived after it. So a view never costs
+  more than its lines, fits its budget unless no closing would lower it,
+  and a closed part is settled, never renamed and never reopened: an
+  appended line only coarsens the past, and the printed prefix up to the
+  first part it closes stays as a model's prompt cache saw it. Over ten
+  thousand lines in a chain, an append keeps 82 to 96 percent of the
+  printed view's bytes on average, and all of it in three appends of four
+  or more (`core/examples/digest_prefix.rs`). A run with no summary waits,
+  and is pending; `zoom` opens a part, and the tree is lossless.
+- **Decay is in levels, not lines.** A part is never at a lower level than
+  a part after it, so a reader may infer that the past is shown at least as
+  coarse as the present, level by level, and that a part at level `h` off
+  the last path spans `2^h` to `16^h` lines. Not that an earlier part spans
+  more lines than a later one: chunks hold two to sixteen, and decay in
+  lines cannot hold beside the budget (an old line alone beside a sibling of
+  three cannot close into a part of four without that part following one of
+  a single line, and nothing older can close instead).
 
 **What landed.** `prodrome::digest`, which, like `memo`, depends on the
-hash type and nothing else of the crate; `memo::balance` became the tree
-that only grows that it needed (every element at one depth, every chunk off
-the last path holding two to sixteen, a closed run never renamed). SPEC law
-46. No wasm export and no schema: the host that reads a transcript through
-a digest is the first to say what a line and a summary are as objects.
+hash type, `memo` and `topo` and nothing else of the crate; `memo::balance`
+became the tree that only grows that it needed (every element at one depth,
+every chunk off the last path holding two to sixteen, a closed run never
+renamed), and `Dag`'s walk became `topo::linear`, which the digest orders
+its lines by. SPEC law 46. No wasm export and no schema: the host that reads
+a transcript through a digest is the first to say what a line and a summary
+are as objects.
 
 ## 7. Laws
 
@@ -958,12 +972,12 @@ Each is a property test over generated histories, in the core's `tests/`:
     and a history signed throughout reads as the wrapped policy reads it.
     BUILT: SPEC law 42, `core/tests/all/signatures.rs`.
 
-14. **A digest.** Over generated logs and summaries: the tree is a function
-    of the lines' names in order; a view tiles the log, fits its budget
-    unless a run waits or none may close, and decays; zooming reads the log
-    back; an appended line only coarsens the past and changes a bounded
-    number of parts; the memoised measure and the cached view are the plain
-    ones. BUILT: SPEC law 46, `core/tests/all/digest.rs`.
+14. **A digest.** Over generated sets of lines and summaries: the tree is
+    a function of the set; a view tiles the log, never costs more than its
+    lines, fits its budget unless no closing lowers its cost, and decays in
+    levels; what waits is pending; zooming reads the log back; an appended
+    line only coarsens the past and changes a bounded number of parts; the
+    memoised measure is the plain one and `read` is a sound key. BUILT: SPEC law 46, `core/tests/all/digest.rs`.
 
 ## 8. Stages
 

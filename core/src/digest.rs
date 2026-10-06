@@ -402,6 +402,15 @@ pub fn zoom<M>(tree: &Tree<M>, name: &Hash) -> Option<Vec<Part>> {
 /// shown of the past stays as it was shown, or coarser.
 ///
 /// A part's cost is its summary's bytes, or a line's own.
+///
+/// What DECAYING lets a reader infer: a part never sits at a lower level
+/// of the tree than a part after it, and a settled node at level `h` spans
+/// between `2^h` and `16^h` lines, so the past is shown at least as coarse
+/// as the present, level by level. Not that an earlier part spans more
+/// lines than a later one: chunks hold two to sixteen, so one level spans
+/// unequal counts, and no view can promise decay in lines and its budget
+/// both (an old line alone beside a sibling of three cannot close into a
+/// part of four without that part following one of a single line).
 #[must_use]
 pub fn view<M>(tree: &Tree<M>, summarized: impl Fn(&Hash) -> Option<u32>, budget: u64) -> View {
     let arena = Arena::of(tree);
