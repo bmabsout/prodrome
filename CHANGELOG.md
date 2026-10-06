@@ -148,7 +148,10 @@ it did, and a read that refused now answers.
   and `verify` and `fsck`'s quarantine are views of the same look into an
   empty memory. `EventStore::decide`, and every write, refuses while
   anything is unread, with `Dag::whole`, which now borrows and names every
-  print it refuses with. Laws in `core/tests/all/unread.rs`.
+  print it refuses with. Laws in `core/tests/all/unread.rs`. The command
+  line's `list` and `show` print what their reading left out on the
+  standard error, each name with why and how many objects rest on it
+  (`Outcome::left_out`).
 - **What a history leaves out (SPEC law 44).** `Dag::excluded`: every
   name a set of prints holds or its objects rest on that is no object
   there, why (`Unread`, or `None` for a parent no print is), and the

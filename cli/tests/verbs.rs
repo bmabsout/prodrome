@@ -426,3 +426,43 @@ fn weave_settles_a_legacy_store_s_two_heads_and_is_a_no_op_on_changes() {
     let text = said(&root, &["list", "--at", "2026-09-10T12:00:00"]);
     assert!(text.contains("a-second-branch"), "{text}");
 }
+
+/// A READING OMITS, AND SAYS SO. The object completing a todo is damaged on
+/// disk: `list` and `show` still answer, reading the todo as open since what
+/// closed it is left out, and each says what it left out, by name and why,
+/// for the standard error; a write refuses, naming the file.
+#[test]
+fn a_reading_says_what_it_left_out() {
+    let root = seeded();
+    let healthy = prodrome(&root, &["list", "--at", "2026-09-10T12:00:00"]).expect("answers");
+    assert!(healthy.left_out.is_empty(), "{:?}", healthy.left_out);
+    let completed = std::fs::read_dir(root.join("objects"))
+        .expect("lists")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| std::fs::read_to_string(path).is_ok_and(|text| text.contains("Completed(")))
+        .expect("the completion is a file");
+    let name = completed
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("a name")
+        .to_owned();
+    let mut bytes = std::fs::read(&completed).expect("reads");
+    bytes.push(b' ');
+    std::fs::write(&completed, bytes).expect("damages");
+
+    let listed = prodrome(&root, &["list", "--at", "2026-09-10T12:00:00"]).expect("answers");
+    assert!(listed.text.contains("ship-the-cli"), "{}", listed.text);
+    let shown = prodrome(&root, &["show", "ship-the-cli"]).expect("answers");
+    for outcome in [&listed, &shown] {
+        assert_eq!(outcome.left_out.len(), 1, "{:?}", outcome.left_out);
+        let line = &outcome.left_out[0];
+        assert!(line.contains(&name), "{line}");
+        assert!(line.contains("does not hash to its filename"), "{line}");
+        assert!(line.contains("0 objects resting on it"), "{line}");
+    }
+    let refusal = prodrome(&root, &["done", "publish", "--actor", "bassel"])
+        .expect_err("a write does not guess")
+        .to_string();
+    assert!(refusal.contains(&name), "{refusal}");
+}
