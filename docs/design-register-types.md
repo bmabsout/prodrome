@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 and 7 to 12 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 to 13 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -844,6 +844,53 @@ which no key of its actor's proves. The wasm exports: `sign(secret,
 object)` on every schema's class, sharing `append`'s write path; `proven`;
 `public_key`; and `{untrusted, roots}` wherever a reading takes a policy.
 
+### 6.5 A digest: a log read through summaries
+
+A transcript or a journal is a grow-only set of lines in causal order
+(§3's sets under inclusion), and a long one is more than a model can be
+prompted with. A DIGEST reads it through summaries, and each piece of it is
+something this document already has.
+
+- **The tree is a reading.** The lines are the leaves of `memo::balance`
+  over their names (§6.2), each chunk named by `memo::name` over its
+  children and carrying a monoid's measure of its lines. The shape is a
+  function of the lines, not of when each arrived: two replicas holding one
+  log build one tree, a line given twice is the line once, a line arriving
+  late renames a logarithmic spine, and an appended one renames only the
+  path to the last line, so every node off that path is SETTLED and keeps
+  its name for good. A position (`first+lines`) is a handle to show a
+  reader, never an identity.
+- **A summary is an object the caller records.** It is written by a model
+  from the lines a node spans, so it is an observation, not a function of
+  them, and never a cache entry: it belongs in a history beside the lines,
+  keyed by the node's name, and two replicas that wrote two summaries of one
+  node hold both. The digest reads only which nodes have one and how long,
+  and `pending` names the settled nodes whose summary can be written now,
+  a function of which exist, so summaries of different nodes commute. A
+  node on the path to the last line is never offered: the next line renames
+  it.
+- **The view is a cache.** A view is a cut that tiles the log under a
+  budget, a pure function of the tree as read under its summaries
+  (`digest::read`) and the budget, so it is a tabulation by §6.2, keyed by
+  that name. It is built as the log was, line by line, closing the most due
+  run (age over size) while over budget, where the cut stays DECAYING
+  (levels never rising toward the present) and only once a line has
+  arrived after it. So a closed part is settled, is never renamed and never
+  reopens: an appended line only coarsens the past, and the view's printed
+  prefix up to the first part it closes stays as a model's prompt cache saw
+  it. Over ten thousand lines, an append keeps 85 to 94 percent of the
+  printed view's bytes on average, all of it in about three appends of four
+  (`core/examples/digest_prefix.rs`). A run with no summary waits, and the
+  view says so; `zoom` opens a part into its children, and the tree is
+  lossless.
+
+**What landed.** `prodrome::digest`, which, like `memo`, depends on the
+hash type and nothing else of the crate; `memo::balance` became the tree
+that only grows that it needed (every element at one depth, every chunk off
+the last path holding two to sixteen, a closed run never renamed). SPEC law
+46. No wasm export and no schema: the host that reads a transcript through
+a digest is the first to say what a line and a summary are as objects.
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -910,6 +957,13 @@ Each is a property test over generated histories, in the core's `tests/`:
     and every other is as the wrapped policy says, in any arrival order;
     and a history signed throughout reads as the wrapped policy reads it.
     BUILT: SPEC law 42, `core/tests/all/signatures.rs`.
+
+14. **A digest.** Over generated logs and summaries: the tree is a function
+    of the lines' names in order; a view tiles the log, fits its budget
+    unless a run waits or none may close, and decays; zooming reads the log
+    back; an appended line only coarsens the past and changes a bounded
+    number of parts; the memoised measure and the cached view are the plain
+    ones. BUILT: SPEC law 46, `core/tests/all/digest.rs`.
 
 ## 8. Stages
 
@@ -1105,6 +1159,11 @@ In this repository, after stage 3:
     keeps exactly what it rests on, and under roots a key counts only where
     a root signed it. `wasm/exports/src/review.rs`: a device signs what it
     wrote through the exports, and a policy requiring signatures reads it.
+
+13. **A digest** (§6.5). A summary tree over a log of lines, which nodes
+    can be summarised next, a budgeted view and zoom; law 14.
+
+    BUILT: `prodrome::digest` (§6.5's "What landed").
 
 ## 9. Non-goals
 

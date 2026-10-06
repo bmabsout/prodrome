@@ -126,7 +126,33 @@ of refusing. A MINOR change under this file's rule: no stored byte moves; a
 reading that refused now answers, with one key more; the reference module's
 free functions answer and refuse as they did.
 
+And a digest (`docs/design-register-types.md` §6.5, SPEC law 46): a long
+log of lines read through summaries, as a tree of the lines' names, a view
+that tiles the log under a byte budget, and zoom. A MINOR change under
+this file's rule: a new module, and no stored byte, vector or export
+moves. `memo::balance` builds a different tree of a sequence than before
+(every element at one depth, every chunk off the path to the last element
+holding two or more), so a cache filled by a fold of a balanced sequence
+misses once.
+
 ### Added
+
+- **A digest (design §6.5, SPEC law 46):** `digest`. `tree(leaves)` over
+  the lines in the log's order, each a `Leaf` with a name, a cost and a
+  `Measure` (a monoid, `()` for none), a line given twice being the line
+  once; a `Node`'s name, span, level, bytes, measure and children, and
+  `Tree::settled` for a node no appended line renames. `pending`, the
+  settled nodes whose summary can be written now; `view(tree, summarized,
+  budget)`, the parts tiling the log, what they cost and the runs
+  `waiting` for a summary; `zoom`, a part's children; `Part::handle`,
+  `first+lines`; `read`, the tree's name as read under its summaries, to
+  key a cached view; `Measured`, the measure as a `memo::Algebra`. Laws in
+  `core/tests/all/digest.rs`; `core/examples/digest_prefix.rs` measures
+  what an append keeps of the printed view.
+- **`memo::balance` builds a tree that only grows:** a run closes at a
+  boundary once it holds two, and a level's last run as it is, so an
+  element appended renames only chunks holding the last element
+  (`memo_balance.rs::an_append_renames_only_the_spine`).
 
 - **What a history leaves out (SPEC law 44).** `Dag::excluded`: every
   name a set of prints holds or its objects rest on that is no object
