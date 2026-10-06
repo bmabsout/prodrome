@@ -192,14 +192,23 @@ impl<E> Dag<E> {
     }
 
     /// The DAG, where every print it holds is an object; or the refusal of
-    /// the first, by name, that is not.
+    /// the first, by name, that is not: what a write over it refuses with.
     ///
     /// # Errors
     ///
-    /// That print's [`Unread::refusal`].
+    /// That print named: a file failing its hash by [`Unread::refusal`],
+    /// which names the `fsck` that sets it aside, and any other in
+    /// [`Dag::verify`]'s words ([`Finding::Unread`]).
     pub fn whole(&self) -> Result<&Dag<E>, ProdromeError> {
         match self.unread.iter().next() {
-            Some((name, why)) => Err(why.refusal(name)),
+            Some((name, why @ Unread::Tampered(_))) => Err(why.refusal(name)),
+            Some((name, why)) => Err(ProdromeError::Store(
+                Finding::Unread {
+                    name: name.clone(),
+                    why: why.clone(),
+                }
+                .to_string(),
+            )),
             None => Ok(self),
         }
     }
