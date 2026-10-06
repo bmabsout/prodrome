@@ -33,6 +33,10 @@ use crate::schema::Schema;
 /// and verified, and WAITS: it is in no reading, no tip and no fold until
 /// what it rests on arrives, and then it joins as any arrival does.
 ///
+/// A PRINT THAT IS NOT AN OBJECT IS HELD AS UNREAD, beside the objects, in
+/// the same [`Dag`]: what rests on it waits, and [`Dag::excluded`] names it
+/// with why and with what waits on it, as it names it for any replica.
+///
 /// INCREMENTAL EQUALS COLD: after any looks, admissions and forgettings, a
 /// memory is what one fresh look at the same files makes, its DAG the
 /// files' `interior()`, its fold `fold(&dag.nodes()?)`, its tips
@@ -310,9 +314,48 @@ impl<E: Schema> Memory<E> {
 
     /// A held object's file, read again and found to hold its bytes, as it
     /// looks now.
-    pub fn reseen(&mut self, name: &Hash, seen: Option<Seen>) {
+    fn reseen(&mut self, name: &Hash, seen: Option<Seen>) {
         if let Some(held) = self.files.get_mut(name) {
             *held = seen;
+        }
+    }
+
+    /// Level with a look at the files: `gone`, the held names no longer
+    /// listed, forgotten; `read`, every listed file not held as it looks
+    /// now, read by [`Dag::from_prints`], each with its file as it was seen
+    /// before it was read (`seen`). An object read under a held name is that
+    /// file seen again; one read under a new name is [`Memory::admit`]ted. A
+    /// held name read as no object leaves the history, and what rests on it
+    /// with it.
+    ///
+    /// The unread prints held are `read`'s: a file that is no object is
+    /// never held as one, so every look reads it again, and its repair (its
+    /// bytes restored, the file set aside) is seen at the next.
+    pub fn level(
+        &mut self,
+        mut gone: Vec<Hash>,
+        read: Dag<E>,
+        seen: &BTreeMap<Hash, Option<Seen>>,
+    ) {
+        let (objects, unread) = read.into_prints();
+        gone.extend(
+            unread
+                .keys()
+                .filter(|name| self.files.contains_key(*name))
+                .cloned(),
+        );
+        let mut fresh = Vec::new();
+        for (name, object) in objects {
+            let at = seen.get(&name).cloned().flatten();
+            if self.files.contains_key(&name) {
+                self.reseen(&name, at);
+            } else {
+                fresh.push((Verified { name, object }, at));
+            }
+        }
+        self.admit(&gone, fresh);
+        if self.dag.unread() != &unread {
+            Arc::make_mut(&mut self.dag).set_unread(unread);
         }
     }
 

@@ -98,6 +98,18 @@ impl<E> Dag<E> {
             .or_else(|| self.waiting.remove(name))
     }
 
+    /// The prints that are not objects: `unread`, in place of those held.
+    pub(crate) fn set_unread(&mut self, unread: BTreeMap<Hash, Unread>) {
+        self.unread = unread;
+    }
+
+    /// Every object held, and every print that is not one.
+    pub(crate) fn into_prints(self) -> (BTreeMap<Hash, Envelope<E>>, BTreeMap<Hash, Unread>) {
+        let mut objects = self.objects;
+        objects.extend(self.waiting);
+        (objects, self.unread)
+    }
+
     /// THE HISTORY THESE OBJECTS HOLD: the largest down-set among them, every
     /// object whose ancestors are all here. Of a store closed under parents
     /// it is the store; of one missing an object (set aside, never arrived)
