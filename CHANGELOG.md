@@ -134,6 +134,15 @@ anything is unread, naming the file. A MINOR change under this file's rule:
 no stored byte moves, a healthy store reads, writes and verifies exactly as
 it did, and a read that refused now answers.
 
+And a digest (`docs/design-register-types.md` §6.5, SPEC law 46): a long
+log of lines read through summaries, as a tree of the lines' names, a view
+that tiles the log under a byte budget, and zoom. A MINOR change under
+this file's rule: a new module, and no stored byte, vector or export
+moves. `memo::balance` builds a different tree of a sequence than before
+(every element at one depth, every chunk off the path to the last element
+holding two or more), so a cache filled by a fold of a balanced sequence
+misses once.
+
 ### Added
 
 - **A store's reads are total (SPEC law 45).** `EventStore::tips`, `dag`,
@@ -152,6 +161,25 @@ it did, and a read that refused now answers.
   line's `list` and `show` print what their reading left out on the
   standard error, each name with why and how many objects rest on it
   (`Outcome::left_out`).
+- **A digest (design §6.5, SPEC law 46):** `digest`. `tree(leaves)` over
+  a set of lines given in any order, each a `Leaf` with a name, the lines
+  it rests on, a cost and a `Measure` (a monoid, `()` for none), ordered
+  by `topo::linear`, a cycle refused as `Cycle`; a `Node`'s name, span,
+  level, bytes, measure and children, and `Tree::settled` for a node no
+  appended line renames. `pending`, the settled nodes whose summary can be
+  written now; `view(tree, summarized, budget)`, the parts tiling the log,
+  what they cost and what is `waiting` to be summarised, each closing,
+  with what decay forces beside it, lowering the cost; `zoom`, a part's children; `Part::handle`,
+  `first+lines`; `read`, a sound key for a cached view; `Measured`, the
+  measure as a `memo::Algebra`. Laws in `core/tests/all/digest.rs`;
+  `core/examples/digest_prefix.rs` measures what an append keeps of the
+  printed view.
+- **`topo::linear`:** the crate's one causal order, Kahn's walk with ties
+  by key, which `Dag::linearise` now is and the digest orders its lines by.
+- **`memo::balance` builds a tree that only grows:** a run closes at a
+  boundary once it holds two, and a level's last run as it is, so an
+  element appended renames only chunks holding the last element
+  (`memo_balance.rs::an_append_renames_only_the_spine`).
 - **What a history leaves out (SPEC law 44).** `Dag::excluded`: every
   name a set of prints holds or its objects rest on that is no object
   there, why (`Unread`, or `None` for a parent no print is), and the
