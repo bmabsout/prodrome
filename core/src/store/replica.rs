@@ -32,11 +32,14 @@ pub trait Replica<E: Schema> {
     /// parses at (§5). No object carries it.
     fn schema(&self) -> &E::Vocabulary;
 
-    /// Its objects, their fold and their tips, of one look.
+    /// Its objects, their fold and their tips, of one look: TOTAL over what
+    /// it holds, a print that is no object left out with what rests on it,
+    /// and named by its `dag`'s [`Dag::excluded`] (SPEC laws 44 and 45).
     ///
     /// # Errors
     ///
-    /// What it holds has no honest reading: a file that is not an object.
+    /// Where it holds them cannot be read at all: a store's `objects/` not
+    /// listed.
     fn held(&self) -> Result<Held<E>, ProdromeError>;
 
     /// Its tips: what a sync from it starts from.

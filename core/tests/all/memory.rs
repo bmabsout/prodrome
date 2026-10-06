@@ -25,6 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use prodrome::dag::{Excluded, Unread};
 use prodrome::event::{Actor, Hash, TodoEvent, TodoId};
 use prodrome::fold::{self as folds, Kind, Product};
 use prodrome::policy::Untrusted;
@@ -230,14 +231,15 @@ fn readings(state: &Folded<Event>) -> Readings {
     out
 }
 
-/// What a store reads: its objects, its fold, each register's reading and
-/// its heads, or the refusal.
+/// What a store reads: its objects, its fold, each register's reading, its
+/// heads and what it left out, or the refusal.
 #[derive(Debug, PartialEq)]
 struct Read {
     objects: BTreeSet<Hash>,
     folded: Folded<Event>,
     readings: Readings,
     tips: BTreeSet<Hash>,
+    excluded: Vec<Excluded>,
 }
 
 fn read(store: &Store) -> Result<Read, String> {
@@ -248,6 +250,7 @@ fn read(store: &Store) -> Result<Read, String> {
         readings: readings(&folded),
         folded: (*folded).clone(),
         tips: store.tips().map_err(|e| e.to_string())?,
+        excluded: dag.excluded(),
     })
 }
 
@@ -435,9 +438,10 @@ proptest! {
 }
 
 /// A FILE CHANGED UNDER A HELD NAME IS READ AGAIN. A handle that has read
-/// every object refuses once one of their files no longer holds its bytes,
-/// as a fresh handle does, and reads as before once the bytes are back; a
-/// file rewritten with the same bytes is read again and changes nothing.
+/// every object leaves one out once its file no longer holds its bytes, and
+/// says so, as a fresh handle does, and refuses a write; it reads as before
+/// once the bytes are back; a file rewritten with the same bytes is read
+/// again and changes nothing.
 #[test]
 fn a_file_changed_under_a_held_name_is_read_again() {
     let scratch = Scratch::new("changed");
@@ -465,11 +469,17 @@ fn a_file_changed_under_a_held_name_is_read_again() {
     let last = damaged.len() - 2;
     damaged[last] ^= 1;
     fs::write(&path, &damaged).expect("damages");
+    let left_out = read(&store).expect("reads");
     assert!(
-        read(&store).is_err(),
+        !left_out.objects.contains(&name),
         "the held handle reads the file again"
     );
-    assert_eq!(read(&store), read(&scratch.store("store")));
+    assert!(matches!(
+        &left_out.excluded[..],
+        [Excluded { name: out, why: Some(Unread::Tampered(_)), .. }] if *out == name
+    ));
+    assert_eq!(Ok(left_out), read(&scratch.store("store")));
+    assert!(store.append(event[0].clone()).is_err(), "a write refuses");
     fs::write(&path, &bytes).expect("restores");
     assert_eq!(read(&store), Ok(before));
 }

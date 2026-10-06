@@ -43,7 +43,7 @@ use crate::common::draw::{a_draw, history, Draw};
 use crate::schema_laws::{free, routed};
 
 #[path = "../schemas/proposal.rs"]
-mod proposal;
+pub(crate) mod proposal;
 
 use proposal::{a_proposal, Field, Id, Proposal, Says, State, DECLARED, FIELDS, STATES};
 
