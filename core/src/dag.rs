@@ -3,8 +3,7 @@
 
 mod finding;
 
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use finding::{Excluded, Finding, Unread};
 
@@ -15,6 +14,7 @@ use crate::policy::Policy;
 use crate::registers::{Genesis, Node};
 use crate::schema::Schema;
 use crate::sign::{Proof, Registrar};
+use crate::topo;
 
 /// Named objects of the schema `E`, and the named prints that are not objects.
 #[derive(Debug, Clone, PartialEq)]
@@ -258,49 +258,24 @@ impl<E> Dag<E> {
     /// `among`, parents first, by Kahn's walk over them alone: a parent
     /// outside them is passed over. A cycle is a refusal.
     pub(crate) fn order_among(&self, among: &BTreeSet<&Hash>) -> Result<Vec<Hash>, ProdromeError> {
-        let mut children: BTreeMap<&Hash, Vec<&Hash>> = BTreeMap::new();
-        let mut waiting: BTreeMap<&Hash, usize> = BTreeMap::new();
-        for (name, object) in among
+        let rests_on: BTreeMap<&Hash, Vec<&Hash>> = among
             .iter()
             .filter_map(|name| self.objects.get_key_value(*name))
-        {
-            waiting.insert(name, 0);
-            for parent in &parents_of(object) {
-                let Some(known) = among.get(parent) else {
-                    continue;
-                };
-                children.entry(known).or_default().push(name);
-                *waiting.get_mut(name).expect("counted above") += 1;
-            }
-        }
-        let mut ready: BinaryHeap<Reverse<&Hash>> = waiting
-            .iter()
-            .filter(|(_, count)| **count == 0)
-            .map(|(name, _)| Reverse(*name))
+            .map(|(name, object)| {
+                let parents = parents_of(object)
+                    .into_iter()
+                    .filter_map(|parent| among.get(&parent).copied())
+                    .collect();
+                (name, parents)
+            })
             .collect();
-        let mut order: Vec<Hash> = Vec::with_capacity(waiting.len());
-        while let Some(Reverse(name)) = ready.pop() {
-            order.push(name.clone());
-            for child in children.get(name).into_iter().flatten() {
-                let count = waiting.get_mut(*child).expect("every object is counted");
-                *count -= 1;
-                if *count == 0 {
-                    ready.push(Reverse(child));
-                }
-            }
-        }
-        if order.len() != waiting.len() {
-            let placed: BTreeSet<&Hash> = order.iter().collect();
-            let stuck = waiting
-                .keys()
-                .find(|name| !placed.contains(*name))
-                .expect("a short order left something out");
-            return Err(ProdromeError::Store(format!(
+        match topo::linear(&rests_on) {
+            Ok(order) => Ok(order.into_iter().cloned().collect()),
+            Err(stuck) => Err(ProdromeError::Store(format!(
                 "cycle in the object graph at {}",
                 stuck.as_str()
-            )));
+            ))),
         }
-        Ok(order)
     }
 
     /// Is `name` a legacy root, a `Sealed` with no `prev`?
