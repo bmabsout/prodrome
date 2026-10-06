@@ -888,17 +888,28 @@ something this document already has.
   budget, a pure function of the tree as read under its lines' costs and
   its summaries (`digest::read`, a sound key) and the budget, so it is a
   tabulation by §6.2. It is built as the log was, line by line: while over
-  budget, the most due node (age over size) closes over the parts it spans,
-  and only where its summary costs less than they do, where the cut stays
-  DECAYING, and once a line has arrived after it. So a view never costs
-  more than its lines, fits its budget unless no closing would lower it,
-  and a closed part is settled, never renamed and never reopened: an
-  appended line only coarsens the past, and the printed prefix up to the
-  first part it closes stays as a model's prompt cache saw it. Over ten
-  thousand lines in a chain, an append keeps 82 to 96 percent of the
-  printed view's bytes on average, and all of it in three appends of four
-  or more (`core/examples/digest_prefix.rs`). A run with no summary waits,
-  and is pending; `zoom` opens a part, and the tree is lossless.
+  budget, a CLOSING is made, settled nodes replacing the parts they span.
+  A closing starts at one node and holds what DECAY forces beside it (the
+  node at its level over each lower part before it, leftward), and it is
+  admissible when all its nodes are summarised and together cost less than
+  what they replace. That is the one rule: a node closing over a child
+  whose own summary would not lower the cost is the case with nothing
+  forced, and a summary that would not lower the cost alone closes when
+  what it is forced beside makes up the difference. Of the admissible
+  closings, the one started at the most due node (age over size) is made.
+  So a view never costs more than its lines and fits its budget unless no
+  closing is admissible, and a closed part is settled, never renamed and
+  never reopened: an appended line only coarsens the past, and the printed
+  prefix up to the first part it closes stays as a model's prompt cache saw
+  it. Over ten thousand lines in a chain, an append keeps 95 to 98 percent
+  of the printed view's bytes on average, and all of it in four appends of
+  five or more (`core/examples/digest_prefix.rs`).
+- **What waits is what to summarise.** A closing more due than the one
+  made, or any when none can be, that lacks summaries puts in `waiting` the
+  pending nodes at or under each node it lacks one for. A summariser that
+  writes what `waiting` names, round after round, ends with the view in its
+  budget or with nothing left that a summary could make lower. `zoom`
+  opens a part, and the tree is lossless.
 - **Decay is in levels, not lines.** A part is never at a lower level than
   a part after it, so a reader may infer that the past is shown at least as
   coarse as the present, level by level, and that a part at level `h` off
@@ -994,8 +1005,9 @@ Each is a property test over generated histories, in the core's `tests/`:
 
 15. **A digest.** Over generated sets of lines and summaries: the tree is
     a function of the set; a view tiles the log, never costs more than its
-    lines, fits its budget unless no closing lowers its cost, and decays in
-    levels; what waits is pending; zooming reads the log back; an appended
+    lines, fits its budget unless no admissible closing (with what decay
+    forces beside it) remains, and decays in levels; what waits is pending,
+    and following it ends in the budget or with nothing left to lower; zooming reads the log back; an appended
     line only coarsens the past and changes a bounded number of parts; the
     memoised measure is the plain one and `read` is a sound key.
     BUILT: SPEC law 46, `core/tests/all/digest.rs`.
