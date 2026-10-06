@@ -251,12 +251,15 @@ deleted, and the tips it derives are the ones they named.)
 An object is synced to disk before it appears under its name, so a crash
 leaves at most a temp file, which `prodrome verify` reports with anything
 else in `objects/` that is not an object. A file that no longer hashes to its
-name makes every read refuse, since nothing can say what it held;
-`prodrome fsck` moves every such file to `quarantine/` (never overwriting
-or deleting one), the store answers again, reading its history without the
-object and without what rests on it, and the report keeps a receipt for it
-until the object is restored from a replica. `prodrome verify` checks the
-same and changes nothing.
+name, or does not parse, is left out of every read with what rests on it,
+and the read says so (`Dag::excluded`; `prodrome list` and `show` print it
+on the standard error); every write refuses, naming it,
+since nothing can say what it held and it may be a head.
+`prodrome fsck` moves every file failing its hash to `quarantine/` (never
+overwriting or deleting one), the store writes again over its history
+without the object and without what rests on it, and the report keeps a
+receipt for it until the object is restored from a replica. `prodrome
+verify` checks the same and changes nothing.
 
 **A store under git needs `objects/** -text -diff` in its `.gitattributes`**,
 and writes it: the first write to a store with no `.gitattributes` beside

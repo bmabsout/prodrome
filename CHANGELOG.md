@@ -126,6 +126,14 @@ of refusing. A MINOR change under this file's rule: no stored byte moves; a
 reading that refused now answers, with one key more; the reference module's
 free functions answer and refuse as they did.
 
+And the store of record reads totally, as a replica does (SPEC law 45): a
+file of `objects/` that is no object is left out of every read of an
+`EventStore` with what rests on it, and named in the `Dag` the read answers,
+where one such file used to refuse every read. Writes still refuse while
+anything is unread, naming the file. A MINOR change under this file's rule:
+no stored byte moves, a healthy store reads, writes and verifies exactly as
+it did, and a read that refused now answers.
+
 And a digest (`docs/design-register-types.md` §6.5, SPEC law 46): a long
 log of lines read through summaries, as a tree of the lines' names, a view
 that tiles the log under a byte budget, and zoom. A MINOR change under
@@ -137,6 +145,22 @@ misses once.
 
 ### Added
 
+- **A store's reads are total (SPEC law 45).** `EventStore::tips`, `dag`,
+  `folded`, `events`, `ancestors`, `concurrent` and `Replica::held` answer
+  the history of the files that verify: a file failing its hash, not text
+  or not parsing at the store's schema is held as unread, what rests on it
+  waits, and the `Dag` answered names it in `excluded()` exactly as a
+  replica handed the same prints does. A `Dag` holds the objects waiting
+  outside its history, so `interior()` keeps every print and `excluded()`
+  and `verify()` answer of it what they answer of the prints. The store
+  reads what it lacks by `Dag::from_prints`, the replica's own function,
+  and `verify` and `fsck`'s quarantine are views of the same look into an
+  empty memory. `EventStore::decide`, and every write, refuses while
+  anything is unread, with `Dag::whole`, which now borrows and names every
+  print it refuses with. Laws in `core/tests/all/unread.rs`. The command
+  line's `list` and `show` print what their reading left out on the
+  standard error, each name with why and how many objects rest on it
+  (`Outcome::left_out`).
 - **A digest (design §6.5, SPEC law 46):** `digest`. `tree(leaves)` over
   a set of lines given in any order, each a `Leaf` with a name, the lines
   it rests on, a cost and a `Measure` (a monoid, `()` for none), ordered
@@ -156,7 +180,6 @@ misses once.
   boundary once it holds two, and a level's last run as it is, so an
   element appended renames only chunks holding the last element
   (`memo_balance.rs::an_append_renames_only_the_spine`).
-
 - **What a history leaves out (SPEC law 44).** `Dag::excluded`: every
   name a set of prints holds or its objects rest on that is no object
   there, why (`Unread`, or `None` for a parent no print is), and the

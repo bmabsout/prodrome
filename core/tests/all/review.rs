@@ -126,10 +126,15 @@ fn an_event_the_schema_does_not_name_is_refused_at_the_boundary() {
     todos
         .append(mk_created("alpha", day(1), "ana", "", "").expect("valid"))
         .expect("a genesis is any schema's");
-    assert!(
-        store.dag().is_err(),
+    let dag = store.dag().expect("reads");
+    assert_eq!(
+        dag.unread().len(),
+        1,
         "a todo object is not a review store's"
     );
+    assert!(store
+        .append(moved("pr-1", day(2), "ana", Phase::Draft))
+        .is_err());
 }
 
 fn a_phase() -> impl Strategy<Value = Phase> {
