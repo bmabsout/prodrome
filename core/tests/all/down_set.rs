@@ -23,7 +23,7 @@ use crate::memory::{copy_store, replicas, Scratch};
 use std::collections::BTreeSet;
 use std::fs;
 
-use prodrome::dag::{Dag, Finding};
+use prodrome::dag::{Dag, Excluded, Finding};
 use prodrome::event::{parents_of, Hash, TodoEvent};
 use prodrome::reference::Todo;
 use prodrome::registers::fold;
@@ -131,6 +131,11 @@ fn is_interior(whole: &Dag<Event>, mask: u64, more: u64) -> Result<(), TestCaseE
         "the history is the objects nothing lacked is beneath"
     );
     prop_assert!(whole.excluded().is_empty(), "a history lacks nothing");
+    prop_assert_eq!(
+        &interior.excluded(),
+        &excluded,
+        "the interior lacks what the set lacks"
+    );
     prop_assert_eq!(&interior.interior(), &interior, "idempotent");
     prop_assert!(
         interior.nodes().is_ok(),
@@ -197,9 +202,13 @@ fn reads_its_interior(
     }
     let folded = fold(&interior.nodes().expect("an interior reads"));
     for at in [&warm, &gappy, &only] {
-        prop_assert_eq!(&*at.dag().expect("reads"), &interior);
+        prop_assert_eq!(names(&at.dag().expect("reads")), names(&interior));
         prop_assert_eq!(&*at.folded().expect("folds"), &folded);
         prop_assert_eq!(at.tips().expect("derives"), interior.tips());
+    }
+    // And the stores holding the same files hold what waits outside it.
+    for at in [&warm, &gappy] {
+        prop_assert_eq!(&*at.dag().expect("reads"), &interior);
     }
     Ok(())
 }
@@ -259,12 +268,24 @@ fn quarantine_reads_without_it(
         .cloned()
         .collect();
     let expected = without(&whole, &resting);
+    let waiting: BTreeSet<Hash> = resting
+        .iter()
+        .filter(|name| **name != damaged)
+        .cloned()
+        .collect();
     let file = format!("{}.py", damaged.as_str());
     let path = store.root().join("objects").join(&file);
     let mut bytes = fs::read(&path).expect("reads");
     bytes.push(b' ');
     fs::write(&path, &bytes).expect("damages");
-    prop_assert!(store.dag().is_err(), "a read refuses what fails its hash");
+    let read = store.dag().expect("a read leaves out what fails its hash");
+    prop_assert_eq!(read.objects(), expected.objects());
+    let lacked: Vec<(Hash, BTreeSet<Hash>)> = read
+        .excluded()
+        .into_iter()
+        .map(|out| (out.name, out.resting))
+        .collect();
+    prop_assert_eq!(lacked, vec![(damaged.clone(), waiting.clone())]);
 
     let report = store.fsck();
     prop_assert!(
@@ -284,7 +305,21 @@ fn quarantine_reads_without_it(
     let folded = fold(&expected.nodes().expect("a down-set reads"));
     let fresh = Store::new(store.root(), store.policy().clone());
     for at in [store, &fresh] {
-        prop_assert_eq!(&*at.dag().expect("reads"), &expected);
+        let dag = at.dag().expect("reads");
+        prop_assert_eq!(dag.objects(), expected.objects());
+        let lacked: Vec<Excluded> = (!waiting.is_empty())
+            .then(|| Excluded {
+                name: damaged.clone(),
+                why: None,
+                resting: waiting.clone(),
+            })
+            .into_iter()
+            .collect();
+        prop_assert_eq!(
+            dag.excluded(),
+            lacked,
+            "set aside, it is a parent no print is"
+        );
         prop_assert_eq!(&*at.folded().expect("folds"), &folded);
         prop_assert_eq!(at.tips().expect("derives"), expected.tips());
     }
@@ -311,7 +346,8 @@ fn quarantine_reads_without_it(
     );
     prop_assert_eq!(fs::read(aside.join(second)).expect("kept"), again.clone());
     prop_assert!(report.contains(&Finding::Quarantined(second.clone())));
-    prop_assert_eq!(&*store.dag().expect("reads"), &expected);
+    let dag = store.dag().expect("reads");
+    prop_assert_eq!(dag.objects(), expected.objects());
 
     // The same bytes set aside again are the same file: nothing new.
     fs::write(&path, &again).expect("damages the same way");

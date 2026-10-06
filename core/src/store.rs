@@ -135,9 +135,23 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// brought level with `objects/`. See [`Decision`]. On unix only: there
     /// is no store, and no lock, off it.
     ///
+    /// A READING MAY OMIT; A DECISION MAY NOT GUESS. Every read is total
+    /// (SPEC law 45): a file that is no object is left out, with what rests
+    /// on it, and named in [`Dag::excluded`]. A decision is not a reading.
+    /// What it writes names the store's heads as its parents and deps, and
+    /// what it answers ("is this still standing?") is a negation over the
+    /// history: a file this reader cannot read may be a head, or the write
+    /// that settled the question, and leaving it out would write a change
+    /// over heads that are not the store's, or answer from a history the
+    /// store does not hold. So a decision, and every write that begins with
+    /// one, refuses while anything is unread, naming the file; `fsck` sets
+    /// aside a file failing its hash, and a file that parses under a newer
+    /// schema is read by opening the store at it.
+    ///
     /// # Errors
     ///
-    /// The lock not taken; a file that is not an object, as every read.
+    /// The lock not taken; `objects/` not listed; the first file, by name,
+    /// that is not an object ([`Dag::whole`]).
     #[cfg(unix)]
     pub fn decide(&self) -> Result<Decision<'_, E, Pol>, ProdromeError> {
         self.decision()
@@ -148,6 +162,7 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let locked = self.lock()?;
         let mut memory = self.memory();
         self.look(&mut memory)?;
+        memory.dag().whole()?;
         Ok(Decision {
             store: self,
             memory,
@@ -161,8 +176,11 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// read and verified again. Nothing else is read, and nothing held is
     /// rehashed.
     ///
-    /// Refuses as a cold read does, with the first file by name that is not
-    /// an object; what did verify is held all the same.
+    /// TOTAL: what is read is read as a replica reads what it is handed
+    /// ([`Dag::from_prints`]), so a file that is no object is held as unread
+    /// with why, what rests on it waits, and every other object reads as it
+    /// would had the file never been there (SPEC law 45). Refuses only where
+    /// `objects/` cannot be listed.
     fn look(&self, memory: &mut Memory<E>) -> Result<(), ProdromeError> {
         let listed = self.listing()?.objects;
         let now = SystemTime::now();
@@ -175,31 +193,19 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
                 .cloned()
                 .collect()
         };
-        let mut fresh = Vec::new();
-        let mut unread: BTreeMap<Hash, Unread> = BTreeMap::new();
+        let mut seen = BTreeMap::new();
         for (name, entry) in listed {
-            let seen = Seen::of(stat(&entry), now);
-            let held = match memory.files().get(&name) {
-                Some(Some(was)) if seen.as_ref() == Some(was) => continue,
-                held => held.is_some(),
-            };
-            match self
-                .raw(&name)
-                .map_err(Unread::Io)
-                .and_then(|bytes| Verified::read(&self.schema, &name, &bytes))
-            {
-                Err(why) => {
-                    unread.insert(name, why);
-                }
-                Ok(_) if held => memory.reseen(&name, seen),
-                Ok(verified) => fresh.push((verified, seen)),
+            let at = Seen::of(stat(&entry), now);
+            if !matches!(memory.files().get(&name), Some(Some(was)) if at.as_ref() == Some(was)) {
+                seen.insert(name, at);
             }
         }
-        memory.admit(&gone, fresh);
-        match unread.into_iter().next() {
-            Some((name, why)) => Err(why.refusal(&name)),
-            None => Ok(()),
-        }
+        let read = Dag::from_prints(
+            &self.schema,
+            seen.keys().map(|name| (name.clone(), self.raw(name))),
+        );
+        memory.level(gone, read, &seen);
+        Ok(())
     }
 
     /// The policy this store reads under — what `verify` asks and what a
@@ -225,14 +231,16 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// parent — [`Dag::tips`] over [`EventStore::dag`], and nothing on disk
     /// besides.
     ///
-    /// FALLIBLE, because it reads every object it does not hold: a store
-    /// holding a file that does not verify has no honest answer to "what
-    /// are its heads", since the file it cannot read might name any of them.
-    /// The refusal does not guess, and it does not leave the store stuck
-    /// either: a file failing its hash is named, with the
-    /// [`EventStore::fsck`] that sets it aside.
-    /// Empty for an empty store. The tips are the memory's, so a steady store
-    /// costs a directory listing.
+    /// Of the history the store reads, so a file that is no object is not
+    /// among them, nor what rests on it: the heads of what verifies, and
+    /// [`Dag::excluded`] says what they leave out. A write does not take
+    /// them as the store's while anything is unread
+    /// ([`EventStore::decide`]). Empty for an empty store. The tips are the
+    /// memory's, so a steady store costs a directory listing.
+    ///
+    /// # Errors
+    ///
+    /// `objects/` not listed.
     pub fn tips(&self) -> Result<BTreeSet<Hash>, ProdromeError> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
@@ -270,14 +278,19 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     }
 
     /// THE STORE'S HISTORY: the largest down-set of its objects
-    /// ([`Dag::interior`]), refusing the first file that is not an object.
-    /// An object resting on one the store lacks (set aside, or not arrived)
-    /// is in it once what it rests on is; until then no read sees it, and
-    /// `verify` names what it lacks. What the memory holds, after reading
-    /// what it does not.
+    /// ([`Dag::interior`]). An object resting on one the store lacks (set
+    /// aside, not arrived, or a file that is no object) is in it once what
+    /// it rests on is; until then no read sees it, and [`Dag::excluded`]
+    /// names what it lacks and why, as it does for any replica holding the
+    /// same files (SPEC law 45). What the memory holds, after reading what
+    /// it does not.
     ///
     /// Shared, not copied: the memory goes on from this value, and copies it
     /// only if a look extends it while the caller still holds this one.
+    ///
+    /// # Errors
+    ///
+    /// `objects/` not listed.
     pub fn dag(&self) -> Result<Arc<Dag<E>>, ProdromeError> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
@@ -292,13 +305,6 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
         memory.folded().map(Arc::clone)
-    }
-
-    fn read(&self, names: &[Hash]) -> Dag<E> {
-        Dag::from_prints(
-            &self.schema,
-            names.iter().map(|name| (name.clone(), self.raw(name))),
-        )
     }
 
     fn lock_file(&self) -> PathBuf {
@@ -490,9 +496,9 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     ///
     /// The walk ends at what the memory holds: this store is closed under
     /// parents, so everything above one of ours is already here. A store
-    /// holding a file that does not verify refuses, as every read of it
-    /// does, naming the file and the quarantine that sets it aside;
-    /// adopting the object back is the repair after that.
+    /// holding a file that does not verify refuses, as every write does
+    /// ([`EventStore::decide`]), naming the file and the quarantine that
+    /// sets it aside; adopting the object back is the repair after that.
     ///
     /// NOTHING IS WRITTEN UNTIL EVERYTHING HAS VERIFIED, and then PARENTS
     /// FIRST. With derived tips an object is part of the store the moment its
@@ -648,12 +654,13 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// FULL FSCK: set aside every object file that fails its hash, then
     /// [`EventStore::verify`]. An empty result means healthy.
     ///
-    /// A file whose bytes are not the hash of its name has no honest reading,
-    /// and every read refuses to guess one, so one damaged file would stop
-    /// every write. This moves each such file to `quarantine/` (durably,
-    /// under the store's lock, never overwriting other bytes already there
-    /// and never deleting any), and the store then reads the largest down-set
-    /// it holds (law 40): the history WITHOUT the object and without
+    /// A file whose bytes are not the hash of its name has no honest reading:
+    /// every read leaves it out, and every write refuses to guess what it
+    /// held, so one damaged file would stop every write. This moves each
+    /// such file to `quarantine/` (durably, under the store's lock, never
+    /// overwriting other bytes already there and never deleting any), and
+    /// the store then reads and writes the largest down-set it holds
+    /// (law 40): the history WITHOUT the object and without
     /// everything resting on it, which a replica that never received the
     /// object holds. The report names each set-aside file
     /// ([`Finding::Quarantined`]) until the object is restored from a
@@ -664,6 +671,14 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// object, whatever it holds — one this reader cannot parse may be a
     /// newer writer's — and setting it aside would be hiding it: it is
     /// reported, and stays. Strays are reported, never moved or deleted.
+    ///
+    /// So such a file blocks writes until its owner decides what it is,
+    /// which nothing here can: a newer writer's object is read, and written
+    /// over, by opening the store at the schema that parses it; a print no
+    /// schema parses (it is not text, or it is junk under an object's name)
+    /// is no object of any reader's, and its owner moves it out of
+    /// `objects/` by hand once `verify` has named it. Reads answer
+    /// throughout, leaving it out.
     #[must_use]
     pub fn fsck(&self) -> Vec<Finding> {
         match self.quarantine() {
@@ -676,17 +691,13 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
 
     /// Every file of `objects/` failing its hash, moved to `quarantine/`
     /// under the lock: the directory it lands in synced with each, and
-    /// `objects/` once after.
+    /// `objects/` once after. The files are those a cold look holds as
+    /// unread ([`EventStore::cold`]), every one rehashed.
     fn quarantine(&self) -> Result<(), ProdromeError> {
         let _locked = self.lock()?;
-        let names: Vec<Hash> = self
-            .listing()?
-            .objects
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        let read = self.read(&names);
+        let read = self.cold()?;
         let tampered: Vec<(&Hash, &Hash)> = read
+            .dag()
             .unread()
             .iter()
             .filter_map(|(name, why)| match why {
@@ -745,28 +756,40 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
             .collect())
     }
 
+    /// What a fresh handle reads: every file read, and so rehashed, on
+    /// purpose, whatever this handle's memory holds. The look every read
+    /// takes, into an empty memory.
+    fn cold(&self) -> Result<Memory<E>, ProdromeError> {
+        let mut memory = Memory::empty();
+        self.look(&mut memory)?;
+        Ok(memory)
+    }
+
     /// Full fsck; an empty result means healthy.
     ///
-    /// The [`Dag`]'s findings, with what only the files can say beside them:
+    /// The [`Dag`]'s findings of a cold look ([`EventStore::cold`]), the
+    /// unread prints and what rests on them as [`Dag::excluded`] says, with
+    /// what only the files can say beside them:
     /// every entry of `objects/` that is not an object, a `HEAD` or `refs/`
     /// left from before the tips were derived, and a receipt for each file in
     /// `quarantine/`, which stands in for the missing parent it would be.
     /// Asked under the store's policy at what it read ([`Policy::at`]).
     pub fn verify(&self) -> Vec<Finding> {
-        let Listing { objects, garbage } = match self.listing() {
-            Ok(listing) => listing,
+        let (garbage, read) = match self
+            .listing()
+            .and_then(|listing| Ok((listing, self.cold()?)))
+        {
+            Ok((Listing { garbage, .. }, read)) => (garbage, read),
             Err(error) => return vec![Finding::Io(error)],
         };
-        let mut objects: Vec<Hash> = objects.into_iter().map(|(name, _)| name).collect();
-        objects.sort();
         let mut garbage: Vec<String> = garbage
             .into_iter()
             .map(|file| format!("objects/{file}"))
             .collect();
         garbage.sort();
-        let dag = self.read(&objects);
+        let dag = read.dag();
         let (mut findings, graph): (Vec<Finding>, Vec<Finding>) = dag
-            .verify(self.policy.at(&dag).as_ref().unwrap_or(&self.policy))
+            .verify(self.policy.at(dag).as_ref().unwrap_or(&self.policy))
             .into_iter()
             .partition(|finding| matches!(finding, Finding::Unread { .. }));
         garbage.extend(self.temps());
@@ -834,6 +857,8 @@ impl<E: Schema, Pol: Policy<E>> Replica<E> for EventStore<E, Pol> {
         &self.schema
     }
 
+    /// Total, as every read of the store is: what it cannot read is left
+    /// out, and its `dag` says so.
     fn held(&self) -> Result<Held<E>, ProdromeError> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
@@ -1359,14 +1384,29 @@ mod tests {
         let text = fs::read_to_string(&path).expect("reads");
         fs::write(&path, text.replace("alpha", "omega")).expect("writes");
         assert!(store.load(&digest).is_err());
-        // The reads REFUSE: a store holding a file that does not verify has no
-        // honest tips, since that file could name any object as its parent.
+        // The reads ANSWER, and say what they left out: the file, with why,
+        // and the object resting on it. A FILE CHANGED UNDER A HELD NAME IS
+        // READ AGAIN, so the handle that verified the object before it was
+        // tampered with reads as a fresh one does.
         let fresh = Store::new(store.root(), roster());
-        assert!(fresh.tips().is_err());
-        assert!(store.dag().is_err());
-        // A FILE CHANGED UNDER A HELD NAME IS READ AGAIN, so the handle that
-        // verified the object before it was tampered with refuses too.
-        assert!(store.tips().is_err());
+        assert!(
+            fresh.dag().expect("reads").objects().is_empty(),
+            "the history is what rests on nothing unread"
+        );
+        for at in [&fresh, &store] {
+            assert!(at.tips().expect("answers").is_empty());
+            let excluded = at.dag().expect("reads").excluded();
+            assert_eq!(excluded.len(), 1);
+            assert_eq!(excluded[0].name, digest);
+            assert!(matches!(excluded[0].why, Some(Unread::Tampered(_))));
+            assert_eq!(excluded[0].resting.len(), 1);
+        }
+        // A WRITE REFUSES: the file it cannot read might be a head.
+        let refusal = store
+            .append(mk_reopened("alpha", at(3), "bassel", "").expect("valid"))
+            .expect_err("a write does not guess")
+            .to_string();
+        assert!(refusal.contains(digest.as_str()), "{refusal}");
         // `verify` REPORTS, twice over, and both are true: the file no longer
         // hashes to its name, and the object resting on it rests on nothing.
         assert_eq!(
@@ -1379,7 +1419,7 @@ mod tests {
                 format!(
                     "chain broke at {digest}: object {digest} hashes to {} — tampered or \
                      corrupt: `prodrome fsck` (`EventStore::fsck`) sets it aside so the store \
-                     answers again",
+                     writes again",
                     Hash::of_bytes(&fs::read(&path).expect("reads")).as_str(),
                     digest = digest.as_str()
                 ),
@@ -1711,8 +1751,9 @@ mod tests {
     }
 
     /// ONE BAD OBJECT DOES NOT STOP EVERYTHING. A chain of three whose middle
-    /// file is damaged: a fresh handle's `tips` refuses, naming the object and
-    /// the command that sets it aside, and so does every append. Once it is
+    /// file is damaged: a fresh handle's `tips` answers the first object,
+    /// what verifies and rests on nothing unread, and every append refuses,
+    /// naming the object and the command that sets it aside. Once it is
     /// quarantined the store reads the largest down-set it holds: the chain
     /// without the damaged object and without the object resting on it, so
     /// the first object is the one tip and the only head an append sees.
@@ -1741,12 +1782,13 @@ mod tests {
         fs::write(&path, text.replace("alpha", "omega")).expect("damages");
 
         let fresh = Store::new(store.root(), roster());
-        let refusal = fresh.tips().expect_err("no honest tips").to_string();
+        assert_eq!(tips(&fresh), [first.clone()].into_iter().collect());
+        let refusal = fresh
+            .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
+            .expect_err("a write does not guess a head")
+            .to_string();
         assert!(refusal.contains(middle.as_str()), "{refusal}");
         assert!(refusal.contains("`prodrome fsck`"), "{refusal}");
-        assert!(fresh
-            .append(mk_completed("alpha", at(4), "bassel", "").expect("valid"))
-            .is_err());
 
         let receipt = format!(
             "quarantine/{}.py failed its hash and was set aside (SPEC §3): restore the object \

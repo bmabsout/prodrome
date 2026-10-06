@@ -58,14 +58,20 @@ impl Error {
     }
 }
 
-/// What a verb answers: what to print, and whether it found what it looked at
-/// to be in order. `ok` is false only where a verb makes a JUDGEMENT that
-/// failed — `verify` with findings — and never for a refusal, which is an
-/// [`Error`].
+/// What a verb answers: what to print, whether it found what it looked at
+/// to be in order, and what its reading left out. `ok` is false only where a
+/// verb makes a JUDGEMENT that failed — `verify` with findings — and never
+/// for a refusal, which is an [`Error`].
+///
+/// A reading of the store is total (SPEC law 45): a file that is no object
+/// is left out with everything resting on it, so a todo whose completion
+/// rests on it reads as open. It is never left out silently: `left_out`
+/// says what, one line each, for the standard error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub text: String,
     pub ok: bool,
+    pub left_out: Vec<String>,
 }
 
 impl Outcome {
@@ -74,8 +80,42 @@ impl Outcome {
         Outcome {
             text: text.into(),
             ok: true,
+            left_out: Vec::new(),
         }
     }
+
+    /// This answer, read from `store`, with what its reading left out.
+    fn reading(self, store: &Store) -> Result<Outcome, Error> {
+        Ok(Outcome {
+            left_out: left_out(store)?,
+            ..self
+        })
+    }
+}
+
+/// What a reading of `store` leaves out ([`prodrome::dag::Dag::excluded`]),
+/// one line each: the name, why, and how many objects rest on it.
+fn left_out(store: &Store) -> Result<Vec<String>, Error> {
+    Ok(store
+        .dag()?
+        .excluded()
+        .into_iter()
+        .map(|out| {
+            let what = match out.why {
+                Some(why) => Finding::Unread {
+                    name: out.name,
+                    why,
+                }
+                .to_string(),
+                None => format!("object {} is not in the store", out.name),
+            };
+            let resting = out.resting.len();
+            format!(
+                "left out {what}, and the {resting} object{} resting on it (`prodrome verify`)",
+                if resting == 1 { "" } else { "s" }
+            )
+        })
+        .collect())
 }
 
 /// Where the store is.
@@ -294,7 +334,7 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
 
         Command::List { at } => {
             let reading = read(&store, price::instant(at.as_deref())?)?;
-            Ok(Outcome::said(render::list(&reading)))
+            Outcome::said(render::list(&reading)).reading(&store)
         }
 
         Command::Show { id, at } => {
@@ -302,7 +342,8 @@ pub fn run(cli: &Cli) -> Result<Outcome, Error> {
             let reading = read(&store, price::instant(at.as_deref())?)?;
             render::show(&reading, &todo)
                 .map(Outcome::said)
-                .ok_or_else(|| Error::usage(format!("no todo {id:?} in this store")))
+                .ok_or_else(|| Error::usage(format!("no todo {id:?} in this store")))?
+                .reading(&store)
         }
 
         Command::Verify => report(&store, &store.verify()),
@@ -349,6 +390,7 @@ fn report(store: &Store, findings: &[Finding]) -> Result<Outcome, Error> {
             .collect::<Vec<_>>()
             .join("\n"),
         ok: false,
+        left_out: Vec::new(),
     })
 }
 
