@@ -372,22 +372,29 @@ pub fn zoom<M>(tree: &Tree<M>, name: &Hash) -> Option<Vec<Part>> {
 /// The view of the log under `budget` bytes.
 ///
 /// It is built as the log was: line by line, each appended as a part of
-/// its own, and while the parts cost more than the budget, a RUN of sibling
-/// parts is replaced by their parent. A run is a node all of whose children
-/// are parts. It may close only once a line has arrived after it, so it is
-/// settled ([`Tree::settled`]) and no line to come renames a closed part;
-/// and only where the view stays DECAYING, its parts' levels never rising
-/// toward the present: at the start of the log, or after a part at least
-/// as high as itself. Of those, the most DUE closes, its due being its age
-/// over its size (the lines from its first to the present, over the lines
-/// it spans), so an old run closes before a young one and a small one
-/// before a large; of two as due, the older. A run with no summary cannot
-/// close: it is `waiting`, and the next one closes instead. The oldest
-/// settled run may always close, so the view stops over its budget only
-/// with a run waiting or with no settled run left: the view is then as
-/// coarse as the log allows. A closed part is never renamed and never opens
-/// as lines arrive, so what a reader was shown of the past stays as it was
-/// shown, or coarser.
+/// its own, and while the parts cost more than the budget, a node above
+/// some parts CLOSES: the parts it spans are replaced by the node, shown as
+/// its summary. A node may close only
+///
+/// - when its summary costs less than the parts it replaces, so a closing
+///   always lowers the view's cost and the view never costs more than its
+///   lines (a node may close over a child whose own summary would not
+///   lower it);
+/// - once a line has arrived after it, so it is settled ([`Tree::settled`])
+///   and no line to come renames a closed part;
+/// - where the view stays DECAYING, its parts' levels never rising toward
+///   the present: at the start of the log, or after a part at least as high
+///   as itself.
+///
+/// Of those, the most DUE closes, its due being its age over its size (the
+/// lines from its first to the present, over the lines it spans), so an old
+/// node closes before a young one and a small one before a large; of two as
+/// due, the older. A RUN, a node all of whose children are parts, with no
+/// summary is `waiting` when it is more due than the node that closes, or
+/// when none can: it is what to summarise next. The view stops over its
+/// budget only when no node may close and lower its cost. A closed part is
+/// never renamed and never opens as lines arrive, so what a reader was
+/// shown of the past stays as it was shown, or coarser.
 ///
 /// A part's cost is its summary's bytes, or a line's own.
 #[must_use]
@@ -401,75 +408,94 @@ pub fn view<M>(tree: &Tree<M>, summarized: impl Fn(&Hash) -> Option<u32>, budget
             summarized(&node(id).name).map(u64::from)
         }
     };
-    // Per node, how many of its children are parts. A node whose count
-    // reaches its arity is a run, and stays one until it closes, since
-    // only it may close its children.
+    // Per node: how many of its children are parts, and what the parts it
+    // spans cost. OPEN is every node above a part, none of whose ancestors
+    // is one: the nodes that may close.
     let mut parted = vec![0; arena.nodes.len()];
-    let mut runs: BTreeSet<usize> = BTreeSet::new();
+    let mut covered = vec![0u64; arena.nodes.len()];
+    let mut open: BTreeSet<usize> = BTreeSet::new();
     let mut waiting: BTreeSet<usize> = BTreeSet::new();
     let mut parts: Vec<usize> = Vec::new();
     let mut bytes = 0u64;
-    let mut parted_one = |id: usize, runs: &mut BTreeSet<usize>| {
-        if let Some(parent) = arena.parent[id] {
-            parted[parent] += 1;
-            if parted[parent] == node(parent).children.len() {
-                runs.insert(parent);
-            }
-        }
-    };
     for (now, &leaf) in arena.leaves.iter().enumerate() {
         let now = now + 1;
+        let size = node(leaf).bytes;
         parts.push(leaf);
-        bytes += node(leaf).bytes;
-        parted_one(leaf, &mut runs);
+        bytes += size;
+        if let Some(parent) = arena.parent[leaf] {
+            parted[parent] += 1;
+        }
+        for above in arena.ancestors(leaf) {
+            covered[above] += size;
+            open.insert(above);
+        }
         while bytes > budget {
-            // Where each run's children begin among the parts.
-            let first = |run: usize| {
-                let start = node(run).span.start;
+            let first = |id: usize| {
+                let start = node(id).span.start;
                 parts.partition_point(|&part| node(part).span.start < start)
             };
-            let decaying = |run: usize| match first(run) {
+            let decaying = |id: usize| match first(id) {
                 0 => true,
-                at => node(parts[at - 1]).level >= node(run).level,
+                at => node(parts[at - 1]).level >= node(id).level,
             };
-            let mut order: Vec<usize> = runs
+            let mut order: Vec<usize> = open
                 .iter()
                 .copied()
-                .filter(|&run| node(run).span.end < now && decaying(run))
+                .filter(|&id| node(id).span.end < now && decaying(id))
                 .collect();
             order.sort_by(|&a, &b| arena.due(b, now).cmp(&arena.due(a, now)).then(a.cmp(&b)));
-            let Some((at, size)) = order
+            let run = |id: usize| parted[id] == node(id).children.len();
+            let lowers = |id: usize| cost(id).filter(|&size| size < covered[id]);
+            let chosen = order
                 .iter()
                 .enumerate()
-                .find_map(|(at, &run)| cost(run).map(|size| (at, size)))
-            else {
-                waiting.extend(order);
-                break;
-            };
-            let run = order[at];
-            waiting.extend(&order[..at]);
-            runs.remove(&run);
-            let from = first(run);
+                .find_map(|(at, &id)| lowers(id).map(|size| (at, size)));
+            waiting.extend(
+                order[..chosen.map_or(order.len(), |(at, _)| at)]
+                    .iter()
+                    .filter(|&&id| run(id) && cost(id).is_none()),
+            );
+            let Some((at, size)) = chosen else { break };
+            let closing = order[at];
+            let span = node(closing).span.clone();
+            let from = first(closing);
+            let to = from + parts[from..].partition_point(|&part| node(part).span.start < span.end);
             let freed: u64 = parts
-                .splice(from..from + node(run).children.len(), [run])
+                .splice(from..to, [closing])
                 .map(|part| cost(part).unwrap_or_default())
                 .sum();
             bytes = bytes - freed + size;
-            parted_one(run, &mut runs);
+            for above in arena.ancestors(closing) {
+                covered[above] = covered[above] - freed + size;
+            }
+            let inside: Vec<usize> = open.range(closing..arena.after[closing]).copied().collect();
+            for id in inside {
+                open.remove(&id);
+            }
+            if let Some(parent) = arena.parent[closing] {
+                parted[parent] += 1;
+            }
         }
     }
     View {
         parts: parts.iter().map(|&id| node(id).part()).collect(),
         bytes,
-        waiting: waiting.iter().map(|&id| node(id).name.clone()).collect(),
+        // A run closed over since it waited no longer waits.
+        waiting: waiting
+            .iter()
+            .filter(|id| open.contains(id))
+            .map(|&id| node(id).name.clone())
+            .collect(),
     }
 }
 
 /// The tree's nodes numbered in pre-order, which is the log's order by
-/// first line and, among nodes starting at one line, outermost first.
+/// first line and, among nodes starting at one line, outermost first; so a
+/// node's descendants are the ids after it, up to `after`.
 struct Arena<'t, M> {
     nodes: Vec<&'t Node<M>>,
     parent: Vec<Option<usize>>,
+    after: Vec<usize>,
     leaves: Vec<usize>,
 }
 
@@ -478,6 +504,7 @@ impl<'t, M> Arena<'t, M> {
         let mut arena = Arena {
             nodes: Vec::new(),
             parent: Vec::new(),
+            after: Vec::new(),
             leaves: Vec::new(),
         };
         let mut stack = vec![(&tree.root, None)];
@@ -490,10 +517,27 @@ impl<'t, M> Arena<'t, M> {
             }
             stack.extend(node.children.iter().rev().map(|child| (child, Some(id))));
         }
+        // A node's subtree is itself and its children's, which come after it.
+        let mut size = vec![1; arena.nodes.len()];
+        for id in (1..arena.nodes.len()).rev() {
+            if let Some(parent) = arena.parent[id] {
+                size[parent] += size[id];
+            }
+        }
+        arena.after = size
+            .iter()
+            .enumerate()
+            .map(|(id, size)| id + size)
+            .collect();
         arena
     }
 
-    /// How due a run is at `now` lines: its age over its size.
+    /// The node's ancestors, its parent first.
+    fn ancestors(&self, id: usize) -> impl Iterator<Item = usize> + '_ {
+        std::iter::successors(self.parent[id], |&id| self.parent[id])
+    }
+
+    /// How due a node is at `now` lines: its age over its size.
     fn due(&self, id: usize, now: usize) -> Due {
         let span = &self.nodes[id].span;
         Due {
