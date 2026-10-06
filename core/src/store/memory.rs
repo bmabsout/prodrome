@@ -38,9 +38,8 @@ use crate::schema::Schema;
 /// files' `interior()`, its fold `fold(&dag.nodes()?)`, its tips
 /// `dag.tips()` and its geneses `dag.geneses()` (`core/tests/all/memory.rs`).
 pub struct Memory<E: Schema> {
+    /// Every print held: the history, and the objects waiting outside it.
     dag: Arc<Dag<E>>,
-    /// Held objects outside the history: each rests on something not held.
-    waiting: BTreeMap<Hash, Envelope<E>>,
     folded: Option<Arc<Folded<E>>>,
     tips: BTreeSet<Hash>,
     /// What a held object names (a parent, a genesis) that is not held.
@@ -148,7 +147,6 @@ impl<E: Schema> Memory<E> {
     pub fn empty() -> Memory<E> {
         Memory {
             dag: Arc::new(Dag::from_iter([])),
-            waiting: BTreeMap::new(),
             folded: None,
             tips: BTreeSet::new(),
             wanted: BTreeSet::new(),
@@ -181,14 +179,9 @@ impl<E: Schema> Memory<E> {
                 .flat_map(parents_of)
                 .filter(|parent| dag.get(parent).is_none())
                 .collect(),
-            files: dag
-                .objects()
-                .keys()
-                .map(|name| (name.clone(), None))
-                .collect(),
+            files: dag.held().map(|(name, _)| (name.clone(), None)).collect(),
             twins,
             folded: Some(folded),
-            waiting: BTreeMap::new(),
             dag,
         }
     }
@@ -341,9 +334,8 @@ impl<E: Schema> Memory<E> {
                 .iter()
                 .all(|(verified, _)| !self.wanted.contains(&verified.name));
         let dag = Arc::make_mut(&mut self.dag);
-        let mut waiting = std::mem::take(&mut self.waiting);
         for name in gone {
-            let object = dag.remove(name).or_else(|| waiting.remove(name));
+            let object = dag.forget(name);
             if let Some(event) = object.as_ref().and_then(Envelope::event) {
                 if let Some(twins) = self.twins.get_mut(&(event.key().clone(), event.at())) {
                     twins.remove(name);
@@ -351,10 +343,7 @@ impl<E: Schema> Memory<E> {
             }
             self.files.remove(name);
         }
-        if !gone.is_empty() {
-            // What rested on a gone object leaves the history with it.
-            waiting.append(&mut std::mem::replace(dag, Dag::from_iter([])).into_objects());
-        }
+        let mut arrived = BTreeMap::new();
         for (Verified { name, object }, seen) in fresh {
             if let Some(event) = object.event() {
                 self.twins
@@ -363,10 +352,13 @@ impl<E: Schema> Memory<E> {
                     .insert(name.clone());
             }
             self.files.insert(name.clone(), seen);
-            waiting.insert(name, object);
+            arrived.insert(name, object);
         }
-        let (names, waiting) = dag.grow(waiting);
-        self.waiting = waiting;
+        let names = dag.grow(arrived);
+        if !gone.is_empty() {
+            // What rested on a gone object leaves the history with it.
+            dag.settle();
+        }
         let order = match dag.order_among(&names.iter().collect()) {
             Ok(order) if extends => order,
             _ => {
