@@ -885,25 +885,29 @@ something this document already has.
   node on the path to the last line is never offered: the next line renames
   it.
 - **The view is a cache.** A view is a cut that tiles the log under a
-  budget, a pure function of the tree as read under its lines' costs and
-  its summaries (`digest::read`, a sound key) and the budget, so it is a
+  budget, a pure function of the tree as read under its lines' costs and its
+  summaries (`digest::read`, a sound key) and the budget, so it is a
   tabulation by §6.2. It is built as the log was, line by line: while over
-  budget, a CLOSING is made, settled nodes replacing the parts they span.
-  A closing starts at one node and holds what DECAY forces beside it (the
-  node at its level over each lower part before it, leftward), and it is
-  admissible when all its nodes are summarised and together cost less than
-  what they replace. That is the one rule: a node closing over a child
-  whose own summary would not lower the cost is the case with nothing
-  forced, and a summary that would not lower the cost alone closes when
-  what it is forced beside makes up the difference. Of the admissible
-  closings, the one started at the most due node (age over size) is made.
-  So a view never costs more than its lines and fits its budget unless no
-  closing is admissible, and a closed part is settled, never renamed and
-  never reopened: an appended line only coarsens the past, and the printed
-  prefix up to the first part it closes stays as a model's prompt cache saw
-  it. Over ten thousand lines in a chain, an append keeps 95 to 98 percent
-  of the printed view's bytes on average, and all of it in four appends of
-  five or more (`core/examples/digest_prefix.rs`).
+  budget, a CLOSING is made, settled nodes replacing the parts they span. A
+  closing starts at one node and holds what DECAY forces beside it (the node
+  at its level over each lower part before it, leftward), and it is
+  admissible when all its nodes are summarised and every leftward prefix of
+  it costs less than what it replaces. That is the one rule: a node closing
+  over a child whose own summary would not lower the cost is the case with
+  nothing forced, and a FORCED node whose summary would not lower the cost
+  closes because the start, and each prefix up to it, makes up the
+  difference; a start that would not lower the cost itself never closes on a
+  forced node's account. Of the admissible closings, the one started at the
+  most due node (age over size) is made. So a view never costs more than its
+  lines and fits its budget unless no closing is admissible. It is GREEDY:
+  decay forces nodes only at the start's level, so it does not seek a fit
+  that needs a coarser node to the left, and may stop over its budget though
+  one exists. A closed part is settled, never renamed and never reopened: an
+  appended line only coarsens the past, and the printed prefix up to the
+  first part it closes stays as a model's prompt cache saw it. Over ten
+  thousand lines in a chain, an append keeps 95 to 98 percent of the printed
+  view's bytes on average, and all of it in four appends of five or more
+  (`core/examples/digest_prefix.rs`).
 - **What waits is what to summarise.** A closing more due than the one
   made, or any when none can be, that lacks summaries puts in `waiting` the
   pending nodes at or under each node it lacks one for. A summariser that
@@ -1003,13 +1007,14 @@ Each is a property test over generated histories, in the core's `tests/`:
     laws 44 and 45, `core/tests/all/down_set.rs`,
     `wasm/exports/src/unread.rs`, `core/tests/all/unread.rs`.
 
-15. **A digest.** Over generated sets of lines and summaries: the tree is
-    a function of the set; a view tiles the log, never costs more than its
+15. **A digest.** Over generated sets of lines and summaries: the tree is a
+    function of the set; a view tiles the log, never costs more than its
     lines, fits its budget unless no admissible closing (with what decay
     forces beside it) remains, and decays in levels; what waits is pending,
-    and following it ends in the budget or with nothing left to lower; zooming reads the log back; an appended
-    line only coarsens the past and changes a bounded number of parts; the
-    memoised measure is the plain one and `read` is a sound key.
+    and following it ends in the budget or with nothing left to lower;
+    zooming reads the log back; an appended line only coarsens the past and
+    changes a bounded number of parts; the memoised measure is the plain one
+    and `read` is a sound key.
     BUILT: SPEC law 46, `core/tests/all/digest.rs`.
 
 ## 8. Stages
