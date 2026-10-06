@@ -10,14 +10,22 @@
 //!
 //! The shape is a function of the elements alone. A run of nodes closes
 //! after a node whose name ends a chunk (one in four, decided by the name's
-//! bytes) or at [`WIDEST`] nodes, level by level until one node is left. So
-//! two hosts that hold one sequence build one tree with one name, whatever
-//! edits each made to reach it, and their caches share every entry; and an
-//! insertion or a deletion moves the chunk boundaries next to it and no
-//! others, as a replacement does. (Inside a run of more than [`WIDEST`]
-//! nodes with no boundary, an insertion moves the cuts up to the run's end:
-//! rare among distinct elements, and among equal ones only the last chunk
-//! changes.)
+//! bytes) once it holds two, or at [`WIDEST`] nodes, and a level's last run
+//! closes as it is; level by level until one node is left. So every
+//! element is at the same depth, and every chunk holds between two and
+//! [`WIDEST`] children but the last of a level, which may hold one: no fold
+//! spends a node on a layer that adds nothing, except on the path to the
+//! last element. A closed run never changes: an element appended renames
+//! only chunks holding the last element, at most one per level, and every
+//! other chunk is the one it was, so a sequence that only grows is a tree
+//! that only grows. And two hosts that hold one sequence build one tree
+//! with one name, whatever edits each made to reach it, and their caches
+//! share every entry; an insertion or a deletion moves the chunk
+//! boundaries next to it and no others, as a replacement does, up to the
+//! next boundary that follows a node that is none. (Inside a run of more
+//! than [`WIDEST`] nodes with no boundary, an insertion moves the cuts up
+//! to the run's end: rare among distinct elements, and among equal ones
+//! only the last chunk changes.)
 
 use super::fold::Tree;
 use crate::event::Hash;
@@ -49,26 +57,19 @@ fn ends_a_chunk(name: &Hash) -> bool {
 pub fn balance<T: Tree>(elements: Vec<T>, mut chunk: impl FnMut(Vec<T>) -> T) -> Option<T> {
     let mut level = elements;
     while level.len() > 1 {
-        let before = level.len();
-        let mut next = Vec::new();
+        let mut runs: Vec<Vec<T>> = Vec::new();
         let mut run = Vec::new();
         for node in level {
             let ends = ends_a_chunk(node.name());
             run.push(node);
-            if ends || run.len() == WIDEST {
-                next.push(chunk(std::mem::take(&mut run)));
+            if (ends && run.len() > 1) || run.len() == WIDEST {
+                runs.push(std::mem::take(&mut run));
             }
         }
         if !run.is_empty() {
-            next.push(chunk(run));
+            runs.push(run);
         }
-        // Every node ended its own run, so the level did not shrink: close
-        // it as one chunk rather than climb a level that may not either.
-        level = if next.len() == before {
-            vec![chunk(next)]
-        } else {
-            next
-        };
+        level = runs.into_iter().map(&mut chunk).collect();
     }
     level.pop()
 }
