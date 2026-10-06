@@ -149,7 +149,9 @@ fn reads_as_its_replica(
         }
     }
     // A write: refused, with the first unread print's own refusal, exactly
-    // when something is unread.
+    // when something is unread. With nothing unread it is written over the
+    // history's heads, and the store and a replica handed its files, the
+    // written one among them, still hold the same.
     let proposal = Proposal {
         proposal: Id("p-written".to_owned()),
         at: crate::common::moment(0),
@@ -157,14 +159,49 @@ fn reads_as_its_replica(
         says: Says::Proposed("written".to_owned()),
     };
     let event = Declared::from_value(schema, &proposal.to_value()).expect("a proposal");
+    let written = fresh.append(event);
     if let Some(first) = replica.unread().keys().next() {
-        let refusal = fresh.append(event).expect_err("a write does not guess");
+        let refusal = written.expect_err("a write does not guess");
         let named = replica
             .whole()
             .map(|_| ())
             .expect_err("something is unread");
         prop_assert_eq!(&refusal, &named);
         prop_assert!(refusal.to_string().contains(first.as_str()), "{}", refusal);
+    } else if replica.geneses().is_empty() {
+        // The genesis itself is gone: there is no prodrome to write into,
+        // a refusal of its own, and nothing unread is its cause.
+        prop_assert!(
+            written.is_err_and(|refusal| refusal.to_string().contains("no genesis")),
+            "a store with no genesis refuses as one"
+        );
+    } else {
+        let name = written.expect("nothing unread: a write is written");
+        let print = fs::read(
+            fresh
+                .root()
+                .join("objects")
+                .join(format!("{}.py", name.as_str())),
+        )
+        .expect("the write is on disk");
+        let mut after = prints.clone();
+        after.insert(name.clone(), print);
+        let replica = Dag::<Declared>::from_prints(
+            schema,
+            after
+                .iter()
+                .map(|(name, bytes)| (name.clone(), Ok(bytes.clone()))),
+        )
+        .interior();
+        prop_assert!(replica.get(&name).is_some(), "the write is in the history");
+        for store in [warm, &fresh] {
+            prop_assert_eq!(
+                &*store.dag().expect("reads"),
+                &replica,
+                "and they still agree"
+            );
+            prop_assert_eq!(store.tips().expect("derives"), replica.tips());
+        }
     }
     Ok(())
 }
@@ -179,7 +216,8 @@ proptest! {
     /// replica handed the same prints holds: its history, its fold, its
     /// heads, its events and ancestry, and what it leaves out and why. A
     /// write refuses, with the first unread print's refusal, exactly when
-    /// one is held.
+    /// one is held; otherwise it is written, and the store and the replica
+    /// still agree.
     #[test]
     fn a_store_reads_as_a_replica_holding_its_files(
         draw in a_draw(a_proposal()),
