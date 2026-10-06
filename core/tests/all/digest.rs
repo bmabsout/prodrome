@@ -4,7 +4,9 @@
 //! two before it, given in any order and any number of times) and
 //! generated summaries (each inner node
 //! summarised or not, of any cost, by a draw from its name): a view tiles
-//! the log; it fits its budget unless a run waits or none may close; its
+//! the log; it never costs more than its budget or its lines, and fits
+//! its budget unless no closing it may make lowers its cost; what waits is
+//! pending; its
 //! parts' levels never rise toward the present; zooming every part down to
 //! the lines reads the log back in causal order; the tree, `pending` and
 //! the view are functions of the set of lines; an
@@ -188,19 +190,53 @@ fn cost<M>(tree: &Tree<M>, summaries: Summaries, name: &Hash) -> u64 {
     }
 }
 
-/// Whether some node all of whose children are parts may still close: it
-/// is settled, it has no part above it, and it is not one of the parts.
-fn a_settled_run<M>(tree: &Tree<M>, view: &View) -> bool {
-    let parts: BTreeSet<&Hash> = view.parts.iter().map(|part| &part.node).collect();
-    nodes(tree).into_iter().any(|node| {
-        !node.is_leaf()
-            && tree.settled(node)
-            && !parts.contains(node.name())
-            && node
-                .children()
+/// The nodes the view may still close and lower its cost by, worked out
+/// from the view alone: each above some parts and below none, settled,
+/// after a part at least as high as itself (or first), and summarised in
+/// less than the parts it spans cost.
+fn closings_that_lower<M>(tree: &Tree<M>, summaries: Summaries, view: &View) -> Vec<Hash> {
+    nodes(tree)
+        .into_iter()
+        .filter(|node| {
+            let span = node.span();
+            let inside: Vec<_> = view
+                .parts
                 .iter()
-                .all(|child| parts.contains(child.name()))
-    })
+                .filter(|part| span.start <= part.span.start && part.span.end <= span.end)
+                .collect();
+            let above_parts =
+                inside.len() > 1 || inside.first().is_some_and(|part| part.span != span);
+            let below_none = !view
+                .parts
+                .iter()
+                .any(|part| part.span.start <= span.start && span.end <= part.span.end);
+            let decaying = view
+                .parts
+                .iter()
+                .rev()
+                .find(|part| part.span.end <= span.start)
+                .is_none_or(|before| {
+                    tree.node(&before.node).expect("in the tree").level() >= node.level()
+                });
+            let replaced: u64 = inside
+                .iter()
+                .map(|part| cost(tree, summaries, &part.node))
+                .sum();
+            above_parts
+                && below_none
+                && tree.settled(node)
+                && decaying
+                && summaries
+                    .of(node.name())
+                    .is_some_and(|size| u64::from(size) < replaced)
+        })
+        .map(|node| node.name().clone())
+        .collect()
+}
+
+/// What the log's lines cost, every one shown.
+fn lines_cost<M>(tree: &Tree<M>) -> u64 {
+    tree.root().bytes()
 }
 
 proptest! {
@@ -225,30 +261,34 @@ proptest! {
         prop_assert_eq!(view.bytes, total);
     }
 
-    /// Law 2, budget: with nothing waiting, a view fits its budget or no
-    /// run of it may close; whatever waits is a settled run with no
-    /// summary.
+    /// Law 2, budget: a view never costs more than its budget or its
+    /// lines, whichever is more; it fits its budget unless no closing it
+    /// may make would lower its cost; and whatever waits is a settled run
+    /// with no summary that `pending` offers.
     #[test]
-    fn a_view_fits_its_budget_unless_a_run_waits(
+    fn a_view_fits_its_budget_unless_no_closing_lowers_it(
         log in a_log(300),
         summaries in summaries(),
         budget in a_budget(),
     ) {
         let tree = tree_of(&log);
-        let view = view(&tree, |name| summaries.of(name), budget);
-        if view.waiting.is_empty() {
-            prop_assert!(view.bytes <= budget || !a_settled_run(&tree, &view));
+        let of = |name: &Hash| summaries.of(name);
+        let view = view(&tree, of, budget);
+        prop_assert!(view.bytes <= budget.max(lines_cost(&tree)));
+        prop_assert!(view.bytes <= lines_cost(&tree));
+        if view.bytes > budget {
+            let lowering = closings_that_lower(&tree, summaries, &view);
+            prop_assert!(lowering.is_empty(), "{} could close and lower the cost", lowering.len());
         }
         let parts: BTreeSet<&Hash> = view.parts.iter().map(|part| &part.node).collect();
+        let ready: BTreeSet<Hash> = pending(&tree, of).into_iter().collect();
         for name in &view.waiting {
             let node = tree.node(name).expect("a waiting node is in the tree");
-            prop_assert!(tree.settled(node) && summaries.of(name).is_none());
+            prop_assert!(tree.settled(node) && of(name).is_none());
             prop_assert!(node.children().iter().all(|child| parts.contains(child.name())));
+            prop_assert!(ready.contains(name), "waiting, and not pending");
         }
-        // With every node summarised, nothing waits, and an unbounded budget
-        // shows every line.
-        let all = Summaries { percent: 100, ..summaries };
-        prop_assert!(view_of(&tree, all, budget).waiting.is_empty());
+        // An unbounded budget shows every line.
         let whole = view_of(&tree, summaries, u64::MAX);
         prop_assert_eq!(whole.parts.len(), tree.lines());
     }
@@ -503,7 +543,7 @@ fn a_view_with_no_budget_is_as_coarse_as_the_log_allows() {
     };
     let view = view_of(&tree, all, 0);
     assert!(view.waiting.is_empty());
-    assert!(!a_settled_run(&tree, &view));
+    assert!(closings_that_lower(&tree, all, &view).is_empty());
     // At most one level of the path to the last line is open per level,
     // each with fewer than `WIDEST` settled children shown.
     let depth = tree.root().level();
@@ -512,6 +552,42 @@ fn a_view_with_no_budget_is_as_coarse_as_the_log_allows() {
         "{} parts",
         view.parts.len()
     );
+}
+
+/// A closing never raises the cost: 17 lines of 10 bytes under a budget of
+/// 169, with summaries of 5 or 500 bytes, never cost more than the lines.
+#[test]
+fn a_summary_longer_than_its_lines_never_closes() {
+    let log: Vec<Line> = (0..17)
+        .map(|id| Line {
+            id,
+            bytes: 10,
+            parents: id.checked_sub(1).into_iter().collect(),
+        })
+        .collect();
+    let tree = tree_of(&log);
+    for seed in 0..64 {
+        let long_or_short = |name: &Hash| {
+            let hash = memo::name(&u64::to_be_bytes(seed), [name]);
+            Some(
+                if hash
+                    .as_str()
+                    .ends_with(['0', '1', '2', '3', '4', '5', '6', '7'])
+                {
+                    5
+                } else {
+                    500
+                },
+            )
+        };
+        let view = view(&tree, long_or_short, 169);
+        assert!(
+            view.bytes <= 170,
+            "{} bytes in {} parts",
+            view.bytes,
+            view.parts.len()
+        );
+    }
 }
 
 /// Lines that rest on one another in a cycle are refused, naming the least
