@@ -169,7 +169,7 @@ proptest! {
             prop_assert_eq!(tree.node(&part.node).map(Node::span), Some(part.span.clone()));
             at = part.span.end;
         }
-        prop_assert_eq!(at, tree.len());
+        prop_assert_eq!(at, tree.lines());
         let total: u64 = view.parts.iter().map(|part| cost(&tree, summaries, &part.node)).sum();
         prop_assert_eq!(view.bytes, total);
     }
@@ -199,7 +199,7 @@ proptest! {
         let all = Summaries { percent: 100, ..summaries };
         prop_assert!(view_of(&tree, all, budget).waiting.is_empty());
         let whole = view_of(&tree, summaries, u64::MAX);
-        prop_assert_eq!(whole.parts.len(), tree.len());
+        prop_assert_eq!(whole.parts.len(), tree.lines());
     }
 
     /// Law 3, decay: toward the present, the parts' levels never rise.
