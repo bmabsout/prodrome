@@ -194,7 +194,8 @@ fn cost<M>(tree: &Tree<M>, of: &dyn Fn(&Hash) -> Option<u32>, name: &Hash) -> u6
 /// from the view alone: each started at a settled node above some parts
 /// and below none, with, leftward, the node at its level over each part
 /// before it that is lower, until a part as high or the log's start; all
-/// summarised, and together summarised in less than the parts they span.
+/// summarised, and each leftward prefix summarised in less than the parts
+/// it spans.
 fn closings_that_lower<M>(
     tree: &Tree<M>,
     of: &dyn Fn(&Hash) -> Option<u32>,
@@ -237,16 +238,20 @@ fn closings_that_lower<M>(
                 at = forced.span().start;
                 closing.push(forced);
             }
-            let summaries: Option<u64> = closing
-                .iter()
-                .map(|node| of(node.name()).map(u64::from))
-                .sum();
-            let replaced: u64 = closing
-                .iter()
-                .flat_map(|node| inside(&node.span()))
-                .map(|part| cost(tree, of, &part.node))
-                .sum();
-            summaries.is_some_and(|summaries| summaries < replaced)
+            // Each leftward prefix: its summaries against what it replaces.
+            let mut summaries = 0;
+            let mut replaced = 0;
+            closing.iter().all(|node| {
+                let Some(summary) = of(node.name()) else {
+                    return false;
+                };
+                summaries += u64::from(summary);
+                replaced += inside(&node.span())
+                    .iter()
+                    .map(|part| cost(tree, of, &part.node))
+                    .sum::<u64>();
+                summaries < replaced
+            })
         })
         .map(|node| node.name().clone())
         .collect()
@@ -697,6 +702,57 @@ fn a_closing_decay_forces_closes_with_it() {
             .count();
     }
     assert!(forced > 0, "no closing was forced beside another");
+}
+
+/// A start dearer than its parts never closes on a forced node's account:
+/// with only two adjacent nodes summarised, the older and larger cheap and
+/// the younger, more due one dear, the view closes the cheap one alone and
+/// fits, where closing both, started at the dear one, would lower the cost
+/// less and leave a dear part for good.
+#[test]
+fn a_dear_start_does_not_close_on_a_forced_nodes_account() {
+    for offset in 0..200u16 {
+        let log: Vec<Line> = (0..40)
+            .map(|id| Line {
+                id: offset * 40 + id,
+                bytes: 10,
+                parents: Vec::new(),
+            })
+            .collect();
+        let tree = tree_of(&log);
+        let level_one: Vec<&Node<Ends>> = nodes(&tree)
+            .into_iter()
+            .filter(|node| node.level() == 1)
+            .collect();
+        let (older, younger) = (level_one[0], level_one[1]);
+        let lines = tree.lines();
+        // The younger is more due at the last line: its age over its size
+        // beats the older's.
+        let due = |node: &Node<Ends>| (lines - node.span().start, node.span().len());
+        let ((older_age, older_size), (younger_age, younger_size)) = (due(older), due(younger));
+        if younger_age * older_size <= older_age * younger_size || !tree.settled(younger) {
+            continue;
+        }
+        let (cheap, dear) = (older.name().clone(), younger.name().clone());
+        let dear_size = u32::try_from(younger.bytes()).expect("small") + 5;
+        let summaries = |name: &Hash| {
+            if *name == cheap {
+                Some(1)
+            } else if *name == dear {
+                Some(dear_size)
+            } else {
+                None
+            }
+        };
+        let budget = lines_cost(&tree) - 1;
+        let view = view(&tree, summaries, budget);
+        let parts: BTreeSet<&Hash> = view.parts.iter().map(|part| &part.node).collect();
+        assert!(parts.contains(&cheap), "the cheap node closes");
+        assert!(!parts.contains(&dear), "the dear start does not");
+        assert!(view.bytes <= budget);
+        return;
+    }
+    panic!("no log put a more due node beside an older one");
 }
 
 /// Lines that rest on one another in a cycle are refused, naming the least

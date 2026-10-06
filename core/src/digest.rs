@@ -388,12 +388,15 @@ pub fn zoom<M>(tree: &Tree<M>, name: &Hash) -> Option<Vec<Part>> {
 /// levels never rise toward the present, so where the part before a node
 /// is lower than it, the node at its level over that part closes too, and
 /// so on leftward until a part as high or the log's start. A closing is
-/// ADMISSIBLE when each of its nodes has a summary and together they cost
-/// less than the parts they replace: so every closing lowers the view's
-/// cost, the view never costs more than its lines, and a node whose own
-/// summary would not lower it closes when what it is forced beside makes
-/// up the difference (a node closing over a child whose summary would not
-/// lower it is the case with nothing forced).
+/// ADMISSIBLE when each of its nodes has a summary and every leftward
+/// prefix of it (the start, the start with the first node forced beside
+/// it, and so on) costs less than the parts it replaces: so every closing
+/// lowers the view's cost, the view never costs more than its lines, a
+/// FORCED node whose own summary would not lower the cost closes because
+/// the start, and each prefix up to it, makes up the difference, and a
+/// start that would not lower the cost itself never closes on a forced
+/// node's account. A node closing over a child whose summary would not
+/// lower it is the case with nothing forced.
 ///
 /// Of the admissible closings, the one started at the most DUE node closes,
 /// its due being its age over its size (the lines from its first to the
@@ -402,7 +405,10 @@ pub fn zoom<M>(tree: &Tree<M>, name: &Hash) -> Option<Vec<Part>> {
 /// started at a more due node that lacks a summary, or every one when none
 /// is admissible, puts in `waiting` the pending nodes at or under each of
 /// its nodes that lacks one: what to summarise next. The view stops over
-/// its budget only when no closing is admissible. A closed part is never
+/// its budget only when no closing is admissible. It is GREEDY: decay
+/// forces nodes only at the start's level, so it does not seek a fit that
+/// needs a coarser node to the left, and may stop over its budget though
+/// one exists. A closed part is never
 /// renamed and never opens as lines arrive, so what a reader was shown of
 /// the past stays as it was shown, or coarser.
 ///
@@ -472,9 +478,16 @@ pub fn view<M>(tree: &Tree<M>, summarized: impl Fn(&Hash) -> Option<u32>, budget
                 };
                 let costs: Option<Vec<u64>> = closing.iter().map(|&id| cost(id)).collect();
                 match costs {
+                    // Every leftward prefix lowers the cost: the start pays
+                    // for itself, and for each node it is forced beside.
                     Some(costs)
-                        if costs.iter().sum::<u64>()
-                            < closing.iter().map(|&id| cut.covered[id]).sum::<u64>() =>
+                        if (1..=closing.len()).all(|upto| {
+                            costs[..upto].iter().sum::<u64>()
+                                < closing[..upto]
+                                    .iter()
+                                    .map(|&id| cut.covered[id])
+                                    .sum::<u64>()
+                        }) =>
                     {
                         chosen = Some(closing.into_iter().zip(costs).collect::<Vec<_>>());
                         break;
