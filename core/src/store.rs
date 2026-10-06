@@ -285,12 +285,12 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// same files (SPEC law 45). What the memory holds, after reading what
     /// it does not.
     ///
+    /// Shared, not copied: the memory goes on from this value, and copies it
+    /// only if a look extends it while the caller still holds this one.
+    ///
     /// # Errors
     ///
     /// `objects/` not listed.
-    ///
-    /// Shared, not copied: the memory goes on from this value, and copies it
-    /// only if a look extends it while the caller still holds this one.
     pub fn dag(&self) -> Result<Arc<Dag<E>>, ProdromeError> {
         let mut memory = self.memory();
         self.look(&mut memory)?;
@@ -656,10 +656,11 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     ///
     /// A file whose bytes are not the hash of its name has no honest reading:
     /// every read leaves it out, and every write refuses to guess what it
-    /// held, so one damaged file would stop every write. This moves each such file to `quarantine/` (durably,
-    /// under the store's lock, never overwriting other bytes already there
-    /// and never deleting any), and the store then reads the largest down-set
-    /// it holds (law 40): the history WITHOUT the object and without
+    /// held, so one damaged file would stop every write. This moves each
+    /// such file to `quarantine/` (durably, under the store's lock, never
+    /// overwriting other bytes already there and never deleting any), and
+    /// the store then reads and writes the largest down-set it holds
+    /// (law 40): the history WITHOUT the object and without
     /// everything resting on it, which a replica that never received the
     /// object holds. The report names each set-aside file
     /// ([`Finding::Quarantined`]) until the object is restored from a
