@@ -48,22 +48,29 @@ fn kept(before: &View, after: &View) -> u64 {
 }
 
 fn main() {
-    let log: Vec<Leaf<()>> = (0..LINES)
+    // Each line rests on the one before it, as a transcript's do.
+    let mut log: Vec<Leaf<()>> = (0..LINES)
         .map(|at| {
             let name = memo::name(b"line", [&memo::name(&at.to_be_bytes(), [])]);
             Leaf {
                 bytes: draw(&name, b"line", 20, 200),
+                parents: Vec::new(),
                 name,
                 measure: (),
             }
         })
         .collect();
+    for at in 1..LINES {
+        log[at].parents = vec![log[at - 1].name.clone()];
+    }
     for budget in [4_096, 16_384, 65_536] {
         let mut shares = Vec::new();
         let mut whole = 0;
         let mut previous = None;
         for lines in LINES - APPENDS..=LINES {
-            let tree = tree(log[..lines].to_vec()).expect("lines");
+            let tree = tree(log[..lines].to_vec())
+                .expect("a chain has no cycle")
+                .expect("lines");
             let now = view(&tree, summary, budget);
             if let Some(before) = previous.replace(now.clone()) {
                 let kept = kept(&before, &now);
