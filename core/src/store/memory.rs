@@ -33,14 +33,17 @@ use crate::schema::Schema;
 /// and verified, and WAITS: it is in no reading, no tip and no fold until
 /// what it rests on arrives, and then it joins as any arrival does.
 ///
+/// A PRINT THAT IS NOT AN OBJECT IS HELD AS UNREAD, beside the objects, in
+/// the same [`Dag`]: what rests on it waits, and [`Dag::excluded`] names it
+/// with why and with what waits on it, as it names it for any replica.
+///
 /// INCREMENTAL EQUALS COLD: after any looks, admissions and forgettings, a
 /// memory is what one fresh look at the same files makes, its DAG the
 /// files' `interior()`, its fold `fold(&dag.nodes()?)`, its tips
 /// `dag.tips()` and its geneses `dag.geneses()` (`core/tests/all/memory.rs`).
 pub struct Memory<E: Schema> {
+    /// Every print held: the history, and the objects waiting outside it.
     dag: Arc<Dag<E>>,
-    /// Held objects outside the history: each rests on something not held.
-    waiting: BTreeMap<Hash, Envelope<E>>,
     folded: Option<Arc<Folded<E>>>,
     tips: BTreeSet<Hash>,
     /// What a held object names (a parent, a genesis) that is not held.
@@ -148,7 +151,6 @@ impl<E: Schema> Memory<E> {
     pub fn empty() -> Memory<E> {
         Memory {
             dag: Arc::new(Dag::from_iter([])),
-            waiting: BTreeMap::new(),
             folded: None,
             tips: BTreeSet::new(),
             wanted: BTreeSet::new(),
@@ -181,14 +183,9 @@ impl<E: Schema> Memory<E> {
                 .flat_map(parents_of)
                 .filter(|parent| dag.get(parent).is_none())
                 .collect(),
-            files: dag
-                .objects()
-                .keys()
-                .map(|name| (name.clone(), None))
-                .collect(),
+            files: dag.held().map(|(name, _)| (name.clone(), None)).collect(),
             twins,
             folded: Some(folded),
-            waiting: BTreeMap::new(),
             dag,
         }
     }
@@ -317,9 +314,48 @@ impl<E: Schema> Memory<E> {
 
     /// A held object's file, read again and found to hold its bytes, as it
     /// looks now.
-    pub fn reseen(&mut self, name: &Hash, seen: Option<Seen>) {
+    fn reseen(&mut self, name: &Hash, seen: Option<Seen>) {
         if let Some(held) = self.files.get_mut(name) {
             *held = seen;
+        }
+    }
+
+    /// Level with a look at the files: `gone`, the held names no longer
+    /// listed, forgotten; `read`, every listed file not held as it looks
+    /// now, read by [`Dag::from_prints`], each with its file as it was seen
+    /// before it was read (`seen`). An object read under a held name is that
+    /// file seen again; one read under a new name is [`Memory::admit`]ted. A
+    /// held name read as no object leaves the history, and what rests on it
+    /// with it.
+    ///
+    /// The unread prints held are `read`'s: a file that is no object is
+    /// never held as one, so every look reads it again, and its repair (its
+    /// bytes restored, the file set aside) is seen at the next.
+    pub fn level(
+        &mut self,
+        mut gone: Vec<Hash>,
+        read: Dag<E>,
+        seen: &BTreeMap<Hash, Option<Seen>>,
+    ) {
+        let (objects, unread) = read.into_prints();
+        gone.extend(
+            unread
+                .keys()
+                .filter(|name| self.files.contains_key(*name))
+                .cloned(),
+        );
+        let mut fresh = Vec::new();
+        for (name, object) in objects {
+            let at = seen.get(&name).cloned().flatten();
+            if self.files.contains_key(&name) {
+                self.reseen(&name, at);
+            } else {
+                fresh.push((Verified { name, object }, at));
+            }
+        }
+        self.admit(&gone, fresh);
+        if self.dag.unread() != &unread {
+            Arc::make_mut(&mut self.dag).set_unread(unread);
         }
     }
 
@@ -341,9 +377,8 @@ impl<E: Schema> Memory<E> {
                 .iter()
                 .all(|(verified, _)| !self.wanted.contains(&verified.name));
         let dag = Arc::make_mut(&mut self.dag);
-        let mut waiting = std::mem::take(&mut self.waiting);
         for name in gone {
-            let object = dag.remove(name).or_else(|| waiting.remove(name));
+            let object = dag.forget(name);
             if let Some(event) = object.as_ref().and_then(Envelope::event) {
                 if let Some(twins) = self.twins.get_mut(&(event.key().clone(), event.at())) {
                     twins.remove(name);
@@ -351,10 +386,7 @@ impl<E: Schema> Memory<E> {
             }
             self.files.remove(name);
         }
-        if !gone.is_empty() {
-            // What rested on a gone object leaves the history with it.
-            waiting.append(&mut std::mem::replace(dag, Dag::from_iter([])).into_objects());
-        }
+        let mut arrived = BTreeMap::new();
         for (Verified { name, object }, seen) in fresh {
             if let Some(event) = object.event() {
                 self.twins
@@ -363,10 +395,13 @@ impl<E: Schema> Memory<E> {
                     .insert(name.clone());
             }
             self.files.insert(name.clone(), seen);
-            waiting.insert(name, object);
+            arrived.insert(name, object);
         }
-        let (names, waiting) = dag.grow(waiting);
-        self.waiting = waiting;
+        let names = dag.grow(arrived);
+        if !gone.is_empty() {
+            // What rested on a gone object leaves the history with it.
+            dag.settle();
+        }
         let order = match dag.order_among(&names.iter().collect()) {
             Ok(order) if extends => order,
             _ => {
