@@ -412,6 +412,18 @@ it, the one `verify` reports by, and every reading answers it beside what
 it read (SPEC law 44). So adding an unreadable print, and what rests on
 it, changes no reading of an object that does not rest on it.
 
+The store of record is a replica like any other, so it reads the same way
+(SPEC law 45). Its files are prints, read by the function a page reads
+what it is handed by (`Dag::from_prints`); one that is no object is held
+as unread in the same `Dag`, beside the objects waiting on it, so a store
+and a replica holding the same files are one value and `excluded` answers
+alike of both. What does not follow is a DECISION (above): it names the
+store's heads and answers a negation over the history, and an unread file
+may be a head or the very write that settles the question. A reading may
+omit; a decision may not guess. So every write refuses while anything is
+unread, naming the file, and `fsck` (for a file failing its hash) or a
+store opened at the schema that parses it is the way on.
+
 ### 6.2 Caches are tabulations of pure functions
 
 Once a view is a pure function of a reading (§6.0), every cache in the
@@ -907,6 +919,14 @@ Each is a property test over generated histories, in the core's `tests/`:
     and a history signed throughout reads as the wrapped policy reads it.
     BUILT: SPEC law 42, `core/tests/all/signatures.rs`.
 
+14. **Total readings.** What a set of prints leaves out of its history is
+    a function of the prints, the same of the set and of its interior; a
+    replica's every reading answers it beside what it read; and a store on
+    disk, read cold or warm, holds exactly what a replica handed its files
+    holds, its writes refusing exactly while a print is unread. BUILT: SPEC
+    laws 44 and 45, `core/tests/all/down_set.rs`,
+    `wasm/exports/src/unread.rs`, `core/tests/all/unread.rs`.
+
 ## 8. Stages
 
 In this repository, each one PR:
@@ -981,7 +1001,9 @@ In this repository, after stage 3:
    their tips and their fold (`store::memory`), and each look at the disk
    replica is a sync into it of exactly the objects it lacks: a name
    listed and not held is read and verified, a held name no longer listed
-   is forgotten, and a held file whose `stat` changed is read again. The
+   is forgotten, and a held file whose `stat` changed is read again. A
+   file that is no object is held as unread, as a page holds a print it
+   cannot parse (§6.1), and read again at every look. The
    fold follows by `registers::Folded::insert`, which puts an object where
    the linearisation of the union puts it, so the memory is the fold of
    the object set whatever order the objects arrive in, never rebuilt from
