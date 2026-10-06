@@ -1507,6 +1507,38 @@ which every `Tagged` fails to parse, as a store migrated away from does.
     `unread.rs::what_is_left_out_is_exactly_the_unreadable_and_what_rests_on_them`,
     `unread.rs::a_store_and_a_page_name_the_same_unreadable_objects`.
 
+Law 46 is a digest (design §6.5), over generated logs, some lines given
+twice, and generated summaries of any cost on any share of the nodes,
+under budgets from none to unbounded. It reads no object: a digest is a
+reading of lines a host holds, with summaries the host records.
+
+46. **A digest's view is a decaying cut of a tree that only grows.** The
+    tree over a log is a function of its lines' names in order, a line
+    given twice being the line once; a line appended renames only nodes
+    holding the last line, and one arriving late a logarithmic number. A
+    view's parts tile the log in order, cost what their lines and
+    summaries cost, and, with nothing waiting, fit the budget or leave no
+    settled run to close; their levels never rise toward the present.
+    Zooming every part down to the lines reads the log back. An appended
+    line only coarsens the past, every part before it lying within a part
+    after it and none renamed, and, with lines of one cost `b` and
+    summaries of one cost `s ≤ b`, from a view that fitted with nothing
+    waiting, at most `1 + ⌈b / s⌉` parts are new. `pending` is exactly
+    the settled nodes with no summary whose children are lines or
+    summarised. The measure folded through `memo::fold` is the plain one,
+    and a view and `pending` read through a cache keyed by the tree as
+    read under its summaries are the plain ones.
+    `memo_balance.rs::an_append_renames_only_the_spine`,
+    `digest.rs::a_view_tiles_the_log`,
+    `digest.rs::a_view_fits_its_budget_unless_a_run_waits`,
+    `digest.rs::a_view_decays`,
+    `digest.rs::zooming_every_part_reads_the_log`,
+    `digest.rs::a_digest_is_a_function_of_its_lines`,
+    `digest.rs::pending_is_what_can_be_summarised`,
+    `digest.rs::an_appended_line_only_coarsens_the_past`,
+    `digest.rs::a_late_line_renames_a_logarithmic_spine`,
+    `digest.rs::a_digest_read_through_memo_is_the_plain_one`.
+
 ## 10. Non-goals
 
 A clock in the merge; a second evaluator; a rendering as a source of truth;
