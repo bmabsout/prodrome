@@ -1,6 +1,6 @@
 # Register types: the history is free, a schema is its reading
 
-Status: design, 2026-10-01; stages 1 to 3 and 7 to 12 built (§8). Successor to
+Status: design, 2026-10-01; stages 1 to 3 and 7 to 13 built (§8). Successor to
 `design-change-identity.md`, whose frontier this names as the universal
 part.
 
@@ -573,9 +573,13 @@ type and on nothing else of the crate.
 - **A long sequence.** `memo::balance` builds a sequence into a balanced
   tree of the host's own chunk nodes, each named over its children and
   holding their measure. A run of nodes closes after a node whose name
-  ends a chunk (one in four) or at sixteen, so the shape is a function of
-  the elements alone: two replicas holding one sequence build one tree and
-  share its cache, and an edit renames a logarithmic spine.
+  ends a chunk (one in four) once it holds two, or at sixteen, and a
+  level's last run closes as it is, so every element is at one depth and
+  every chunk off the path to the last element holds two to sixteen; the
+  shape is a function of the elements alone: two replicas holding one
+  sequence build one tree and share its cache, an edit renames a
+  logarithmic spine, and an append renames only chunks on that path, so a
+  closed run never changes.
 
 No wasm export. The algebra is a host's code, so a fold in the module
 would call back across the boundary at every node it computes, and what
@@ -852,6 +856,82 @@ which no key of its actor's proves. The wasm exports: `sign(secret,
 object)` on every schema's class, sharing `append`'s write path; `proven`;
 `public_key`; and `{untrusted, roots}` wherever a reading takes a policy.
 
+### 6.5 A digest: a log read through summaries
+
+A transcript or a journal is a grow-only set of lines in causal order
+(§3's sets under inclusion), and a long one is more than a model can be
+prompted with. A DIGEST reads it through summaries, and each piece of it is
+something this document already has.
+
+- **The tree is a reading.** The lines are a set, each naming the lines
+  it rests on, and the tree's leaves are that set in the crate's one causal
+  order (`topo::linear`, which `Dag::linearise` also is: parents first,
+  concurrent lines by name). Over them, `memo::balance` (§6.2) names each
+  chunk by `memo::name` over its children, carrying a monoid's measure of
+  its lines. So the shape is a function of the set, not of when each line
+  arrived or the order a caller gave: two replicas holding one log build one
+  tree, a line given twice is the line once, a line arriving late renames a
+  logarithmic spine, and an appended one renames only the path to the last
+  line, so every node off that path is SETTLED and keeps its name for good.
+  A position (`first+lines`) is a handle to show a reader, never an
+  identity.
+- **A summary is an object the caller records.** It is written by a model
+  from the lines a node spans, so it is an observation, not a function of
+  them, and never a cache entry: it belongs in a history beside the lines,
+  keyed by the node's name, and two replicas that wrote two summaries of one
+  node hold both. The digest reads only which nodes have one and how long,
+  and `pending` names the settled nodes whose summary can be written now,
+  a function of which exist, so summaries of different nodes commute. A
+  node on the path to the last line is never offered: the next line renames
+  it.
+- **The view is a cache.** A view is a cut that tiles the log under a
+  budget, a pure function of the tree as read under its lines' costs and its
+  summaries (`digest::read`, a sound key) and the budget, so it is a
+  tabulation by §6.2. It is built as the log was, line by line: while over
+  budget, a CLOSING is made, settled nodes replacing the parts they span. A
+  closing starts at one node and holds what DECAY forces beside it (the node
+  at its level over each lower part before it, leftward), and it is
+  admissible when all its nodes are summarised and every leftward prefix of
+  it costs less than what it replaces. That is the one rule: a node closing
+  over a child whose own summary would not lower the cost is the case with
+  nothing forced, and a FORCED node whose summary would not lower the cost
+  closes because the start, and each prefix up to it, makes up the
+  difference; a start that would not lower the cost itself never closes on a
+  forced node's account. Of the admissible closings, the one started at the
+  most due node (age over size) is made. So a view never costs more than its
+  lines and fits its budget unless no closing is admissible. It is GREEDY:
+  decay forces nodes only at the start's level, so it does not seek a fit
+  that needs a coarser node to the left, and may stop over its budget though
+  one exists. A closed part is settled, never renamed and never reopened: an
+  appended line only coarsens the past, and the printed prefix up to the
+  first part it closes stays as a model's prompt cache saw it. Over ten
+  thousand lines in a chain, an append keeps 95 to 98 percent of the printed
+  view's bytes on average, and all of it in four appends of five or more
+  (`core/examples/digest_prefix.rs`).
+- **What waits is what to summarise.** A closing more due than the one
+  made, or any when none can be, that lacks summaries puts in `waiting` the
+  pending nodes at or under each node it lacks one for. A summariser that
+  writes what `waiting` names, round after round, ends with the view in its
+  budget or with nothing left that a summary could make lower. `zoom`
+  opens a part, and the tree is lossless.
+- **Decay is in levels, not lines.** A part is never at a lower level than
+  a part after it, so a reader may infer that the past is shown at least as
+  coarse as the present, level by level, and that a part at level `h` off
+  the last path spans `2^h` to `16^h` lines. Not that an earlier part spans
+  more lines than a later one: chunks hold two to sixteen, and decay in
+  lines cannot hold beside the budget (an old line alone beside a sibling of
+  three cannot close into a part of four without that part following one of
+  a single line, and nothing older can close instead).
+
+**What landed.** `prodrome::digest`, which, like `memo`, depends on the
+hash type, `memo` and `topo` and nothing else of the crate; `memo::balance`
+became the tree that only grows that it needed (every element at one depth,
+every chunk off the last path holding two to sixteen, a closed run never
+renamed), and `Dag`'s walk became `topo::linear`, which the digest orders
+its lines by. SPEC law 46. No wasm export and no schema: the host that reads
+a transcript through a digest is the first to say what a line and a summary
+are as objects.
+
 ## 7. Laws
 
 Each is a property test over generated histories, in the core's `tests/`:
@@ -926,6 +1006,16 @@ Each is a property test over generated histories, in the core's `tests/`:
     holds, its writes refusing exactly while a print is unread. BUILT: SPEC
     laws 44 and 45, `core/tests/all/down_set.rs`,
     `wasm/exports/src/unread.rs`, `core/tests/all/unread.rs`.
+
+15. **A digest.** Over generated sets of lines and summaries: the tree is a
+    function of the set; a view tiles the log, never costs more than its
+    lines, fits its budget unless no admissible closing (with what decay
+    forces beside it) remains, and decays in levels; what waits is pending,
+    and following it ends in the budget or with nothing left to lower;
+    zooming reads the log back; an appended line only coarsens the past and
+    changes a bounded number of parts; the memoised measure is the plain one
+    and `read` is a sound key.
+    BUILT: SPEC law 46, `core/tests/all/digest.rs`.
 
 ## 8. Stages
 
@@ -1123,6 +1213,11 @@ In this repository, after stage 3:
     keeps exactly what it rests on, and under roots a key counts only where
     a root signed it. `wasm/exports/src/review.rs`: a device signs what it
     wrote through the exports, and a policy requiring signatures reads it.
+
+13. **A digest** (§6.5). A summary tree over a log of lines, which nodes
+    can be summarised next, a budgeted view and zoom; law 15.
+
+    BUILT: `prodrome::digest` (§6.5's "What landed").
 
 ## 9. Non-goals
 
