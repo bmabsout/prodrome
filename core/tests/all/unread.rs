@@ -18,6 +18,7 @@
 //! intact files first.
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::fs;
 use std::sync::OnceLock;
 
@@ -68,10 +69,12 @@ fn a_damage() -> impl Strategy<Value = Damage> {
 
 /// The name `bytes` would have, computed apart from the crate.
 fn name_of(bytes: &[u8]) -> Hash {
-    let hex: String = Sha256::digest(bytes)
+    let hex = Sha256::digest(bytes)
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
     Hash::new(hex).expect("a sha256 is a name")
 }
 
