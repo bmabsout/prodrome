@@ -671,6 +671,14 @@ impl<E: Schema, Pol: Policy<E>> EventStore<E, Pol> {
     /// object, whatever it holds — one this reader cannot parse may be a
     /// newer writer's — and setting it aside would be hiding it: it is
     /// reported, and stays. Strays are reported, never moved or deleted.
+    ///
+    /// So such a file blocks writes until its owner decides what it is,
+    /// which nothing here can: a newer writer's object is read, and written
+    /// over, by opening the store at the schema that parses it; a print no
+    /// schema parses (it is not text, or it is junk under an object's name)
+    /// is no object of any reader's, and its owner moves it out of
+    /// `objects/` by hand once `verify` has named it. Reads answer
+    /// throughout, leaving it out.
     #[must_use]
     pub fn fsck(&self) -> Vec<Finding> {
         match self.quarantine() {
