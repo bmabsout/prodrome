@@ -283,7 +283,10 @@ since this grammar has tuples and no mapping.
   ever overwritten or deleted and the same bytes set aside twice are one
   file; the report names each (the receipt). A file that hashes to
   its name stays (it is the object, even one this reader cannot parse), and
-  a stray is reported, never moved. A read leaves a file failing its hash
+  a stray is reported, never moved. Such a file blocks writes until its
+  owner decides what it is: a newer schema's object is read by opening the
+  store at that schema, and a print no schema parses is moved out of
+  `objects/` by hand. A read leaves a file failing its hash
   out, and says so; a write refuses rather than guess what it held, and
   its refusal names the object and this operation (`prodrome fsck`). No
   read takes anything in `quarantine/` for part of the history.
