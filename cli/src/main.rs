@@ -1,4 +1,5 @@
-//! The binary: parse, run one verb, print what it said.
+//! The binary: parse, run one verb, print what it said, and on the standard
+//! error what its reading left out.
 //!
 //! Three exit codes and no fourth: 0 for an answer, 1 for a verdict that
 //! failed (`verify` with findings), 2 for a refusal.
@@ -13,6 +14,9 @@ use prodrome_cli::run;
 fn main() -> std::process::ExitCode {
     match run(&Cli::parse()) {
         Ok(outcome) => {
+            for line in &outcome.left_out {
+                eprintln!("prodrome: {line}");
+            }
             if !outcome.text.is_empty() {
                 println!("{}", outcome.text);
             }
