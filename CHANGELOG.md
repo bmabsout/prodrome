@@ -168,8 +168,8 @@ misses once.
   level, bytes, measure and children, and `Tree::settled` for a node no
   appended line renames. `pending`, the settled nodes whose summary can be
   written now; `view(tree, summarized, budget)`, the parts tiling the log,
-  what they cost and the runs `waiting` for a summary, each closing
-  lowering the cost; `zoom`, a part's children; `Part::handle`,
+  what they cost and what is `waiting` to be summarised, each closing,
+  with what decay forces beside it, lowering the cost; `zoom`, a part's children; `Part::handle`,
   `first+lines`; `read`, a sound key for a cached view; `Measured`, the
   measure as a `memo::Algebra`. Laws in `core/tests/all/digest.rs`;
   `core/examples/digest_prefix.rs` measures what an append keeps of the
