@@ -561,9 +561,13 @@ type and on nothing else of the crate.
 - **A long sequence.** `memo::balance` builds a sequence into a balanced
   tree of the host's own chunk nodes, each named over its children and
   holding their measure. A run of nodes closes after a node whose name
-  ends a chunk (one in four) or at sixteen, so the shape is a function of
-  the elements alone: two replicas holding one sequence build one tree and
-  share its cache, and an edit renames a logarithmic spine.
+  ends a chunk (one in four) once it holds two, or at sixteen, and a
+  level's last run closes as it is, so every element is at one depth and
+  every chunk off the path to the last element holds two to sixteen; the
+  shape is a function of the elements alone: two replicas holding one
+  sequence build one tree and share its cache, an edit renames a
+  logarithmic spine, and an append renames only chunks on that path, so a
+  closed run never changes.
 
 No wasm export. The algebra is a host's code, so a fold in the module
 would call back across the boundary at every node it computes, and what
