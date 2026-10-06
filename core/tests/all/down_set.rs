@@ -278,7 +278,14 @@ fn quarantine_reads_without_it(
     let mut bytes = fs::read(&path).expect("reads");
     bytes.push(b' ');
     fs::write(&path, &bytes).expect("damages");
-    prop_assert!(store.dag().is_err(), "a read refuses what fails its hash");
+    let read = store.dag().expect("a read leaves out what fails its hash");
+    prop_assert_eq!(read.objects(), expected.objects());
+    let lacked: Vec<(Hash, BTreeSet<Hash>)> = read
+        .excluded()
+        .into_iter()
+        .map(|out| (out.name, out.resting))
+        .collect();
+    prop_assert_eq!(lacked, vec![(damaged.clone(), waiting.clone())]);
 
     let report = store.fsck();
     prop_assert!(
