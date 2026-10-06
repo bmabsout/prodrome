@@ -255,7 +255,8 @@ pub fn tree<M: Measure>(leaves: Vec<Leaf<M>>) -> Result<Option<Tree<M>>, Cycle> 
 }
 
 /// The measure as an algebra, for [`memo::fold`]: a line is its own, a chunk
-/// the join of its children's.
+/// the join of its children's. A fold memoises it by node name, which is
+/// sound because a line's measure is a function of its name ([`Leaf`]).
 #[derive(Debug, Clone)]
 pub struct Measured(Hash);
 
@@ -280,15 +281,19 @@ impl<M: Measure> Algebra<Node<M>> for Measured {
 }
 
 /// The name of the tree as read under its summaries: its root's name and,
-/// for every inner node in order, whether it has a summary and how long.
-/// [`view`] and [`pending`] are functions of it (and of the budget), so a
-/// cache keyed by it is never stale, and a summary recorded moves the key.
+/// in order, every line's cost and every inner node's summary, whether it
+/// has one and how long. [`view`] and [`pending`] read nothing else (and
+/// the budget), so two reads of one name answer alike and a cache keyed by
+/// it is never stale; a summary recorded moves the key. A line's measure
+/// is not covered: it is a function of the line's name ([`Leaf`]).
 #[must_use]
 pub fn read<M>(tree: &Tree<M>, summarized: impl Fn(&Hash) -> Option<u32>) -> Hash {
     let mut own = Vec::new();
     let mut stack = vec![&tree.root];
     while let Some(node) = stack.pop() {
-        if !node.is_leaf() {
+        if node.is_leaf() {
+            own.extend(node.bytes.to_be_bytes());
+        } else {
             match summarized(&node.name) {
                 Some(bytes) => {
                     own.push(1);

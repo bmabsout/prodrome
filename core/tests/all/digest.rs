@@ -13,8 +13,8 @@
 //! appended line only coarsens the past and, with lines of one cost and
 //! summaries of one no longer, changes at most `1 + ⌈line / summary⌉`
 //! parts; a line arriving late renames a logarithmic number of nodes; and
-//! the measure folded through `memo::fold`, and the view and `pending`
-//! read through a cache keyed by `digest::read`, are the plain ones.
+//! the measure folded through `memo::fold` is the plain one, and
+//! `digest::read` is a sound key for the view and `pending`.
 
 use std::collections::BTreeSet;
 
@@ -22,7 +22,7 @@ use prodrome::digest::{
     self, pending, tree, view, zoom, Leaf, Measure, Measured, Node, Tree, View,
 };
 use prodrome::event::Hash;
-use prodrome::memo::{self, fold, Cache, Key, Lookup};
+use prodrome::memo::{self, fold, Cache};
 use proptest::prelude::*;
 
 /// A measure whose join is not commutative: the first and last line's
@@ -462,13 +462,15 @@ proptest! {
     }
 
     /// Law 7, memo: the measure folded through `memo::fold` is every node's
-    /// measure, and the fold of the measures of the first copies; the view
-    /// and `pending` read through a cache keyed by `digest::read` are the
-    /// plain ones, and a summary recorded moves the key.
+    /// measure, and the fold of the lines' measures in causal order. And
+    /// `digest::read` is a sound key for the view and `pending`: summaries
+    /// that differ only off the tree read alike and answer alike, while a
+    /// summary recorded, or a line's cost changed, moves the key.
     #[test]
     fn a_digest_read_through_memo_is_the_plain_one(
         log in a_log(300),
         summaries in summaries(),
+        other in any::<u64>(),
         budget in a_budget(),
     ) {
         let tree = tree_of(&log);
@@ -481,24 +483,24 @@ proptest! {
             prop_assert_eq!(&fold(&Measured::default(), node, &mut cache).0, node.measure());
         }
 
+        // Equal keys: the same summaries on the tree, any others off it.
+        let names = names(&tree);
         let of = |name: &Hash| summaries.of(name);
-        let key = |function: &[u8], read: &Hash| Key {
-            function: memo::name(function, []),
-            argument: memo::name(&budget.to_be_bytes(), [read]),
-        };
+        let elsewhere = Summaries { seed: other, ..summaries };
+        let off = |name: &Hash| if names.contains(name) { of(name) } else { elsewhere.of(name) };
+        prop_assert_eq!(digest::read(&tree, of), digest::read(&tree, off));
+        prop_assert_eq!(view(&tree, of, budget), view(&tree, off, budget));
+        prop_assert_eq!(pending(&tree, of), pending(&tree, off));
+
+        // What the view reads moves the key.
         let read = digest::read(&tree, of);
-        let mut views: Cache<View> = Cache::default();
-        let mut pendings: Cache<Vec<Hash>> = Cache::default();
-        let view_key = key(b"digest view", &read);
-        let pending_key = key(b"digest pending", &read);
-        views.insert(view_key.clone(), view(&tree, of, budget)).expect("one value");
-        pendings.insert(pending_key.clone(), pending(&tree, of)).expect("one value");
-        prop_assert_eq!(views.get(&view_key), Lookup::Hit(&view(&tree, of, budget)));
-        prop_assert_eq!(pendings.get(&pending_key), Lookup::Hit(&pending(&tree, of)));
         if let Some(next) = pending(&tree, of).first().cloned() {
             let recorded = |name: &Hash| if *name == next { Some(1) } else { of(name) };
-            prop_assert_ne!(digest::read(&tree, recorded), read);
+            prop_assert_ne!(digest::read(&tree, recorded), read.clone());
         }
+        let mut dearer = log.clone();
+        dearer[0].bytes += 1;
+        prop_assert_ne!(digest::read(&tree_of(&dearer), of), read);
     }
 }
 
