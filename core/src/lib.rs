@@ -1,6 +1,5 @@
-//! Prodrome — a temporal, content-addressed event database over any schema,
-//! with FPL for values that change with time. The todo list is the reference
-//! schema.
+//! Prodrome — a mergeable store of events, over any schema, with FPL for
+//! values that change with time. The todo list is the reference schema.
 //!
 //! A store is a directory of plain files: one file per object, holding that
 //! object's canonical print, named by the SHA-256 of those bytes. Objects name

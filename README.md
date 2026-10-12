@@ -1,11 +1,11 @@
 # Prodrome
 
-**An immutable event store that is also a CRDT: copies always merge, history never changes, and it runs on disk, in memory or in the browser.**
+**A mergeable store of events.**
 
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Prodrome is a store of events. A schema says what the events are, and
+Prodrome is a mergeable store of events. A schema says what the events are, and
 Prodrome computes the state from them.
 
 - **It is a CRDT** (a conflict-free replicated data type). Any two copies of a
