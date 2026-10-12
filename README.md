@@ -1,21 +1,28 @@
 # Prodrome
 
-**Like git, but for data: every change is kept, any moment can be read, and copies merge without stopping for conflicts.**
+**An immutable event store that is also a CRDT: copies always merge, history never changes, and it runs on disk, in memory or in the browser.**
 
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Prodrome works like git. Every change is an object indexed by the hash of its
-contents, the objects form a history, and two copies sync by exchanging the
-objects that each one is missing. Three things differ:
+Prodrome is a store of events. A schema says what the events are, and
+Prodrome computes the state from them.
 
-- **It stores events, not files.** A schema says what the events are, and
-  Prodrome computes the state from them.
-- **A merge never stops.** Two copies combine by keeping the events of both.
-  If both sides changed the same field, the field shows both values until
-  someone picks one.
-- **You can read any moment.** Ask for the state at any time, not only at a
-  commit, and you get the answer the store gave at that time.
+- **It is a CRDT** (a conflict-free replicated data type). Any two copies of a
+  store merge, in any order, and end in the same state. So you can edit copies
+  offline on different machines and sync them later, with no server to
+  coordinate them. If both sides changed the same field, the field keeps both
+  values until someone picks one.
+- **It is immutable.** No event is ever changed or deleted, and each object is
+  indexed by the hash of its contents. So you can read the state at any past
+  moment, check a store for damage, and cache a result for as long as you
+  like, because the objects it was computed from never change.
+- **It runs anywhere.** The same Rust core works on a directory of files, in
+  memory, and in the browser through WebAssembly, and the copies sync with
+  each other.
+- **Its laws make every merge succeed.** [`SPEC.md`](SPEC.md) §9 states the
+  laws that every implementation must pass, and the tests check them. They
+  guarantee that a merge never fails and that any number of copies converge.
 
 What you keep in it is up to you: an application's settings or messages, a
 list of tasks, a record of decisions. A schema can also give each entity a
@@ -55,11 +62,8 @@ documentation.
 
 - **Values that change with time, if you want them.** With FPL, a schema
   combines deadlines, priorities and dependencies into one number per entity.
-- **Storage you can check.** Each event is a file indexed by the SHA-256 hash of
-  its contents, and `prodrome verify` checks a whole store.
 - **You decide whom to trust.** Your program's policy says whose events
   count. The others are kept as suggestions.
-- **Runs in the browser.** The same Rust core compiles to WebAssembly.
 
 ## Install
 
