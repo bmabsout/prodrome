@@ -1,0 +1,1 @@
+Change(genesis='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', deps=(), event=Created(todo='signature-proof-cache', at=datetime(2026, 10, 12, 13, 54, 7, 821947), actor='maintainer', text='cache the result of each signature check, keyed by the name of the Signed object', note=''))

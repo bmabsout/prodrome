@@ -1,0 +1,1 @@
+Change(genesis='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', deps=('976b21a782c1cb4601bd1ce3ede135fef94f8765f58eb130cd217d5bb617ef1d',), event=SpecRevised(todo='overlay-reject-receipt', at=datetime(2026, 10, 12, 13, 54, 7, 813723), actor='maintainer', spec=Flat(value=0.8), note=''))

@@ -1,0 +1,1 @@
+Change(genesis='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', deps=(), event=Created(todo='overlay-reject-receipt', at=datetime(2026, 10, 12, 13, 54, 7, 813723), actor='maintainer', text='when a program rejects a proposal in an overlay, keep a receipt, so that the program can recognise the same proposal later', note=''))
