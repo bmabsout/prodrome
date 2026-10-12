@@ -1,9 +1,10 @@
 # Contributing to Prodrome
 
 Thank you for your interest in Prodrome. Issues and pull requests are
-welcome. This page explains how to set up the project, how to test a
-change, how maintainers review it, and the rules for code. [`docs/development.md`](docs/development.md) gives more detail
-about the tests, the CI, and the layout of the repository.
+welcome. This page explains the workflow for a change: how to set up the
+project, how to test a change, how to open a pull request, and how to add
+roadmap items. [`docs/development.md`](docs/development.md) gives more
+detail about the tests, the CI, and the layout of the repository.
 
 ## Set up
 
@@ -71,14 +72,6 @@ Do not change the fields of a stored constructor that a release contains.
 Stores that exist today contain those bytes, and the name of each object is
 the hash of its bytes. To store new data, add a new constructor.
 
-## How maintainers review and merge
-
-The CI must pass on your pull request: the `cargo (lint)`, `cargo (test)`
-and `nix` checks. A maintainer then reads the change. The maintainer checks
-that the change does one thing, that the SPEC and the tests match the code,
-and that the code follows the style below. When the maintainer agrees with
-the change, the maintainer merges it with a merge commit.
-
 ## Roadmap items arrive by pull request
 
 The roadmap is a Prodrome store on the branch `roadmap-data`.
@@ -89,48 +82,6 @@ named by the hash of its bytes, so the diff of the pull request contains
 exactly the objects that it adds, and a reviewer can read each one. If you
 mark an item as done, name the evidence in the note: a merged pull request,
 or the code that does the work.
-
-## Code style
-
-These rules keep the code correct by construction, so that the compiler
-finds mistakes before a test or a user does.
-
-- **Make invalid states unrepresentable.** Use an enum for a value that has
-  several states, not a `bool` or an `Option`. Then no code can build a
-  state that has no meaning.
-- **Parse input once, at the edge.** Check input when it enters the program,
-  and return a type that records the check, such as `TodoId`. Then later
-  code does not need to check again.
-- **Write total functions.** Avoid `unwrap`, `expect` and `panic!`. If a
-  state is impossible, change the types so that it cannot occur.
-- **Match exhaustively.** Avoid a `_ =>` arm in a match on our own enums.
-  Then a new variant makes the compiler show every place that must handle
-  it.
-- **Use data for closed sets of behaviour.** Write a closed set of
-  behaviours as an enum that one function interprets, as `Term` does. Data
-  is easier to test, print and compare than a closure.
-- **Keep the core pure.** The core does not read the clock. Only the
-  command-line tool reads it. A pure function gives the same answer for the
-  same input, so a test can check it.
-- **Write one combinator with laws.** Do not copy a function for each type.
-  Make it generic, and state its laws.
-- **Test each law.** State each law in SPEC section 9, and name it in the
-  doc comment of the test that checks it.
-- **Put one concept in each file,** and name the file for the concept.
-- **Do not add checks for states that the types exclude,** and do not add an
-  abstraction that no code uses.
-- **Write comments about the code, not its history.** The commit message
-  records the history.
-
-Some existing code does not follow every rule yet. The maintainers fix
-these places over time. Do not add new ones.
-
-## This repository is public
-
-Everything that you write here is public. In examples, tests and roadmap
-items, use only neutral names and data, such as the actor `ada` and the
-todo "write the report". Do not write about a real person, account,
-deployment, place or private project.
 
 ## License
 
