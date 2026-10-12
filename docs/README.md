@@ -1,35 +1,38 @@
 # Documentation
 
-Start with the [guide](guide.md). [`SPEC.md`](../SPEC.md) is the contract.
+Start with the [guide](guide.md). [`SPEC.md`](../SPEC.md) is the
+specification.
 
 ## For users
 
-- [`guide.md`](guide.md): the model, how to price work, the Rust API, the
-  store on disk and WebAssembly.
-- [`../SPEC.md`](../SPEC.md): the specification. The laws are in §9.
-- [`../CHANGELOG.md`](../CHANGELOG.md): what changed, and what the stored
-  bytes promise.
+- [`guide.md`](guide.md) explains the model, how to price work, the Rust
+  API, the files on disk, and WebAssembly.
+- [`../SPEC.md`](../SPEC.md) is the specification. Section 9 lists the laws.
+- [`../CHANGELOG.md`](../CHANGELOG.md) lists the changes in each release,
+  and which changes affect the stored format.
 
 ## For contributors
 
-- [`development.md`](development.md): tests, CI, the conformance vectors and
-  the repository layout.
-- [`roadmap.md`](roadmap.md): the roadmap branch, issues as items, and how to
-  add to it.
-- [`viewer.md`](viewer.md): the browser viewer and GitHub Pages.
-- [`github-agent.md`](github-agent.md): the issue mirror and the pricing
-  bot, and their trust boundaries.
+- [`development.md`](development.md) explains the tests, the CI, the
+  conformance vectors, and the layout of the repository.
+- [`roadmap.md`](roadmap.md) explains the roadmap branch, how issues become
+  roadmap items, and how to add items.
+- [`viewer.md`](viewer.md) explains the browser viewer and GitHub Pages.
+- [`github-agent.md`](github-agent.md) explains the issue mirror and the
+  pricing bot, and the limits of trust in them.
 
 ## Design notes
 
-Each note proposed a change before it was made. The SPEC and the CHANGELOG
-say what landed.
+Each design note was written before its change was made. For what was
+finally implemented, see `SPEC.md` and `CHANGELOG.md`.
 
-- [`design-empty-term.md`](design-empty-term.md): `Absent`, the empty term,
-  and the store's two layers.
-- [`design-change-identity.md`](design-change-identity.md): a change is
-  named by what it says and what it supersedes.
-- [`design-register-types.md`](design-register-types.md): register types;
-  the history is free, and a schema is its reading.
-- [`SIMPLIFY-PLAN.md`](SIMPLIFY-PLAN.md): one functor, one schema, one
-  evaluator, one fold.
+- [`design-empty-term.md`](design-empty-term.md): a design for `Absent`, a
+  term that has no value, and for the two layers of the store.
+- [`design-change-identity.md`](design-change-identity.md): a design that
+  names each change by its event and by the writes that it replaces.
+- [`design-register-types.md`](design-register-types.md): a design for typed
+  registers. Events are stored without a schema, and a program applies a
+  schema when it reads the events.
+- [`SIMPLIFY-PLAN.md`](SIMPLIFY-PLAN.md): a plan to remove duplicated code,
+  so that the crate has one term functor, one schema, one evaluator, and one
+  fold.

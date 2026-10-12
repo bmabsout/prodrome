@@ -1,287 +1,355 @@
 # The Prodrome guide
 
-This guide teaches Prodrome in the order a reader needs it. Part I is the
-model: what a store means. Part II is how to read and price todos. Part III
-is the Rust API, the files on disk and WebAssembly. [`SPEC.md`](../SPEC.md)
-is the contract; where this guide and the SPEC differ, the SPEC is right.
-Each section names the SPEC section it follows.
+This guide explains Prodrome in the order that a new reader needs it. Part I
+explains the model: what a store contains, and how Prodrome computes an
+answer from it. Part II explains how to give a todo a price. Part III
+explains the Rust API, the files on disk, and WebAssembly.
+[`SPEC.md`](../SPEC.md) is the specification. If this guide and the SPEC
+disagree, the SPEC is correct. Each section of this guide names the SPEC
+section that it follows.
 
 ## Part I. The model
 
-### 1. A store is a history, and a reading is that history at an instant
+### 1. A store holds a history, and a read computes the state at a time
 
-A store holds a HISTORY: a set of objects, each an event or a structural
-record, linked by the parents each object names. A write adds an object. A
-write never changes or removes one. So a history only grows, and two
-histories merge by set union.
+A store holds a HISTORY. The history is a set of objects. Most objects
+record one event, for example "todo X was created" or "todo X was
+completed". Each object names the objects that came before it, which are
+its parents. A program adds objects to the history. A program never changes
+or removes an object. So a history only grows, and you merge two histories
+by taking the union of their objects.
 
-A READING takes three things and gives one answer:
-
-```
-reading : History × Instant × Policy → Belief
-```
-
-- The history is the set of objects the store holds.
-- The instant `t` is the moment you ask about. Each event carries an `at`,
-  the instant its writer stamped on it, and a reading at `t` uses only the
-  events with `at ≤ t`.
-- The policy says which events bind and which only claim (§4 below).
-- The belief is, for each todo: its state (open, completed, cancelled), its
-  content, and its spec.
-
-A spec is a term of FPL. It denotes a function of time:
+To READ a store, you give three inputs, and Prodrome gives one output:
 
 ```
-⟦spec⟧ : Instant → [0, 1] ∪ {∅}
+read : History × Time × Policy → State
 ```
 
-The value is the todo's FULFILLMENT: how well things go if the todo stays as
-it is. Its complement is the todo's urgency. `∅` means "no value": a note or
-a proposal with no claim on attention.
+- The history is the set of objects in the store.
+- The time `t` is the moment that you ask about. Each event has a field
+  `at`, which is the time that its writer stamped on it. A read at `t` uses
+  only the events whose `at` is at or before `t`.
+- The policy is a rule that your program supplies. For each event, the
+  policy says whether the event takes effect or is only a suggestion.
+  Section 4 explains policies.
+- The state gives, for each todo, its status (open, completed or
+  cancelled), its content, and its spec.
 
-Everything else in Prodrome is an operation on these two meanings. Three
-consequences follow from them, and the SPEC states each one as a law (§9):
+A SPEC is a formula in FPL, a small fuzzy temporal logic. A spec describes a
+function from time to a number:
 
-- **The past does not change.** An event dated after `t` cannot change the
-  reading at `t` (law 2, *Prefix*). So you can ask what the store believed
-  last week, and the answer is the one it gave last week.
-- **Order is causal; time is data.** The DAG of parents decides which write
-  supersedes which. The `at` stamps never decide a merge (§1, law 25).
-- **Replicas converge.** A reading depends only on the set of objects, so
-  two replicas with the same objects give the same reading (laws 17, 45).
+```
+value of a spec : Time → a number from 0 to 1, or ∅
+```
+
+This number is the todo's FULFILLMENT. It answers the question "how well do
+things go if this todo stays as it is?". One minus the fulfillment is the
+todo's urgency. The value `∅` means "no value". A note or a proposal that
+needs no attention has the value `∅`.
+
+All other parts of Prodrome are operations on these two functions. The SPEC
+states three consequences of the model as laws, in section 9:
+
+- **A read of the past does not change.** An event that is dated after `t`
+  does not change the result of a read at `t` (law 2). So you can ask what
+  the store showed last week, and you get the answer that it gave last week.
+- **The parents decide the order, not the clock.** If one write descends
+  from another write, the later write replaces the earlier one. The `at`
+  stamps never decide which write wins (SPEC section 1, law 25).
+- **Replicas agree.** A read depends only on the set of objects. So two
+  replicas that hold the same objects give the same answers (laws 17 and
+  45).
 
 ### 2. Objects and the DAG
 
-*SPEC §3.*
+*SPEC section 3.*
 
-A prodrome begins with a `Genesis(label, nonce)`. An event is written as a
-`Change(genesis, deps, event)`. Its `deps` are what its writer saw of its
-todo: the todo's heads, every write to it that no other write descends from.
-So `deps` never leave their todo, and one writer's own writes are ordered by
-causality, never by their instants. A write supersedes only the writes to its
-own registers that it descends from.
+The objects and their parent links form a directed acyclic graph, the DAG.
+There are a few kinds of objects:
 
-Appending an event that the prodrome already holds writes nothing. A
-`Snapshot(genesis, tips, previous)` attests everything written so far.
-Stores written before 0.9 hold `Sealed` and `Woven` objects, and they are
-read forever.
+- A `Genesis(label, nonce)` object starts a prodrome. A prodrome is one
+  history, and a store can hold more than one.
+- A `Change(genesis, deps, event)` object records one event. Its `deps`
+  field lists what the writer saw of the event's todo when the writer wrote
+  the event. These are the todo's HEADS: the writes to the todo that no
+  other write descends from. So the `deps` of a change always belong to the
+  same todo. One writer's writes are ordered by their parent links, never
+  by their `at` stamps. A write replaces only the earlier writes to the same
+  register (see section 3) that it descends from.
+- A `Snapshot(genesis, tips, previous)` object records the state of the
+  whole history at one point, so that a reader can later check it.
+- Stores that were written before version 0.9 hold `Sealed` and `Woven`
+  objects. Prodrome still reads them.
 
-An object's name is the hash of its canonical print. So a change's name is a
-function of its genesis, its event and what its writer held of its todo,
-wherever it was written. `verify` reports any object that does not hash to
-its name, rests on a missing parent, forms a cycle, or crosses from one
-genesis to another.
+If you append an event that the prodrome already holds, the store writes
+nothing.
 
-### 3. Registers and readings
+The name of an object is the hash of its canonical text. So the name of a
+change depends only on its genesis, its event, and what its writer saw of
+its todo. The name does not depend on the place where the change was
+written. The command `verify` reports each object that does not hash to its
+name, that names a missing parent, that is part of a cycle, or that links
+two different prodromes.
 
-*SPEC §6.*
+### 3. Registers, conflicts and folds
 
-The DAG is read per `(kind, todo)`. A REGISTER holds its FRONTIER: the writes
-to it that no later write descends from. It reads as its CANDIDATES, the
-distinct events of the frontier. One candidate is a value. More than one is
-a conflict. The caller sees the conflict, and the next write that descends
-from it settles it.
+*SPEC section 6.*
 
-Every fold projects the registers at an instant:
+Prodrome reads the DAG separately for each pair of event kind and todo. For
+each pair, it keeps a REGISTER. A register is the set of the latest writes
+to one field of one todo: the writes that no later write descends from. The
+distinct events in a register are its CANDIDATES. If a register has one
+candidate, that candidate is the value. If a register has more than one
+candidate, there is a CONFLICT. Prodrome shows the conflict to the caller.
+The next write that descends from all the candidates settles the conflict.
 
-- `env` gives each todo's candidate outcomes, and every instant it was
-  tended (a grow-only set, merged by union);
-- `specs` gives its candidate specs;
-- `content` gives its candidate records;
-- `flatten` gives its whole history as one function of time. A conflict is
-  priced as its most urgent candidate, with `Least`.
+A FOLD is a function that walks the history and computes one part of the
+state at a time `t`. Each fold reads the registers at `t`:
 
-### 4. Standing: binds or claims
+- `env` gives each todo's candidate outcomes (completed, cancelled or
+  open). It also gives each time that the todo was tended. The tended times
+  form a set that only grows, and Prodrome merges two such sets by union.
+- `specs` gives each todo's candidate specs.
+- `content` gives each todo's candidate records.
+- `flatten` gives each todo's whole history as one function of time. If the
+  spec register has a conflict, `flatten` uses the most urgent candidate,
+  through the term `Least`.
 
-*SPEC §5.*
+### 4. Policies: an event binds or claims
 
-The database does not decide whom to believe. It asks the host's `Policy`
-one question per event: does this event BIND, or does it only CLAIM? It
-keeps both readings. The CONFIRMED reading uses the policy. The CLAIMED
-reading uses the policy where every event binds. A claim is stored and shown,
-and it is never folded into the confirmed reading.
+*SPEC section 5.*
 
-`Untrusted`, the reference policy, is a set of actor names whose lifecycle
-events only claim. `Proven` binds an event only when a signature proves
-who wrote it. A host with a different
-rule implements the trait.
+Prodrome does not decide whom to trust. Your program gives Prodrome a
+POLICY. For each event, the policy answers one question: does this event
+BIND (take effect), or does it only CLAIM (make a suggestion)? Prodrome
+computes two states:
+
+- The CONFIRMED state uses your policy. A claim does not change it.
+- The CLAIMED state treats every event as binding.
+
+Prodrome stores and shows each claim, but a claim never changes the
+confirmed state.
+
+The crate has two ready-made policies:
+
+- `Untrusted` takes a list of actor names. The lifecycle events of these
+  actors only claim.
+- `Proven` lets an event bind only when a signature proves who wrote it.
+
+If you need a different rule, implement the `Policy` trait.
 
 ### 5. Records, payloads and schemas
 
-*SPEC §4, §6.*
+*SPEC sections 4 and 6.*
 
-A store is opened at a SCHEMA: the type of its events and the registers each
-event writes. The todo schema is the reference one. Six of its event kinds
-belong to the database, and their fields are its semantics: `Created`;
-`Completed`, `Cancelled` and `Reopened`; `Tended`, a pass at a recurring
-todo, which leaves its state alone; and `SpecRevised`.
+A program opens a store with a SCHEMA. The schema lists the event kinds and
+the registers that each event kind writes. The todo schema is the
+reference schema. Six of its event kinds belong to the database, and their
+fields define the database's behaviour:
 
-The seventh kind is the host's. A record is `KIND(todo, at, actor, <your
-fields>)`. Your `Payload` supplies the name, the fields, their parse and
-print, and the two things the folds read out of a record: the spec it
-carries, and how many checklist items it has. The stored bytes are frozen
-when you ship them, as the database's own are.
+- `Created` creates a todo.
+- `Completed`, `Cancelled` and `Reopened` change its status.
+- `Tended` records one pass at a recurring todo. It does not change the
+  status.
+- `SpecRevised` gives the todo a new spec.
+
+The seventh event kind belongs to your program. A record has the form
+`KIND(todo, at, actor, <your fields>)`. Your program implements the
+`Payload` trait, which gives:
+
+- the name of the record kind;
+- the fields, and how to parse and print them;
+- the two things that the folds read from a record: the spec that it
+  carries, and the number of checklist items that it has.
+
+After you release a payload, do not change the fields of its stored form.
+The same rule applies to the database's own event kinds.
 
 ## Part II. Pricing work
 
 ### 6. FPL terms
 
-*SPEC §7.*
+*SPEC section 7.*
 
-A spec is built from these terms:
+You build a spec from these terms:
 
 | Term | Meaning |
 |---|---|
-| `Flat` | one value at every instant |
+| `Flat` | the same value at every time |
 | `Decay` | a value that falls toward a deadline |
-| `Conj` | a power mean of its members, so the weakest member dominates |
+| `Conj` | a power mean of its members, so the weakest member has the most effect |
 | `Within` | a term sampled over a window of days ahead |
-| `After` | a term anchored to another todo's completion |
-| `Recur` | a term anchored to a todo's last tending |
-| `Periodic` | a term repeated on the calendar |
-| `Piecewise` | a different term from each instant on |
-| `Ref` | another todo's fulfillment, for subtodos and groups |
-| `Absent` | no value, `∅`; it neither raises nor lowers what it is composed with |
+| `After` | a term that starts when another todo is completed |
+| `Recur` | a term that restarts each time a todo is tended |
+| `Periodic` | a term that repeats on the calendar |
+| `Piecewise` | a different term from each given time on |
+| `Ref` | the fulfillment of another todo, for subtodos and groups |
+| `Absent` | no value, `∅`; it does not raise or lower the value of a term that contains it |
 
-A term that holds a `Ref` is OPEN. `link` binds every reference to that
-todo's function, and to `Absent` for a known todo with none. It returns a
-`Closed` term. It refuses a todo the store has never seen, and a loop.
+A term that contains a `Ref` is OPEN, because its value depends on another
+todo. The function `link` replaces each `Ref` with the function of the todo
+that it names. If that todo has no spec, `link` uses `Absent`. The result is
+a `Closed` term. `link` returns an error if a `Ref` names a todo that the
+store does not know, or if the references form a loop.
 
-Four operations read a closed term:
+Four functions read a closed term:
 
-- `fulfillment` evaluates it at an instant;
-- `explain` returns the same computation, with a value at every node;
-- `series_knots` gives its curve over a window;
-- `observe::next_change` gives the next instant at which the value, as a
-  view shows it (a whole percent, for example), changes. A client redraws
-  then, not on a ticking clock.
+- `fulfillment` computes its value at one time.
+- `explain` does the same computation, and returns the value at every node
+  of the term.
+- `series_knots` gives the points of its curve over a window of time.
+- `observe::next_change` gives the next time at which the displayed value
+  changes, at the precision of a view (for example, whole percent). A
+  client can redraw at that time, so it does not need a timer that ticks.
 
 ### 7. Pricing your own work
 
-A price answers "how well do things go if this stays as it is?", not "how
-important is this?". Low is urgent. The command line tool prices a todo in
-one of two ways:
+A price is a fulfillment. It answers the question "how well do things go if
+this stays as it is?". It does not answer "how important is this?". A low
+price means that the todo is urgent. The command-line tool gives a todo a
+price in one of two ways:
 
-- `--priority N`, a constant from 0 to 100: 10 is critical, 35 to 45 is a
-  real consequence within weeks, 70 to 85 is a nice-to-have, and 90 or more
-  is parked;
-- `--deadline YYYY-MM-DD`, a `Decay` from `--start` (default 55) to `--end`
-  (default 5), which begins `--lead-up-days` (default 3) before 17:00 on that
-  day.
+- `--priority N` sets a constant value from 0 to 100. Use 10 for a critical
+  problem, 35 to 45 for a real consequence within weeks, 70 to 85 for a
+  nice-to-have, and 90 or more for work that is parked.
+- `--deadline YYYY-MM-DD` sets a `Decay`. The value falls from `--start`
+  (default 55) to `--end` (default 5). The fall starts `--lead-up-days`
+  (default 3) before 17:00 on the deadline day.
 
-Some rules of thumb:
+Some guidelines:
 
-- A deadline is a decay toward its date, not a constant low number. The todo
-  becomes urgent when it should, and not before.
-- A todo that waits on another is a `Ref` to it, so it is exactly as urgent
-  as the thing it waits on.
-- A group of todos is a `Conj` of `Ref`s: its weakest member dominates the
-  group's value.
-- A recurring chore is a `Recur`: its term restarts at each `Tended`, so its
-  value falls with the time since the last pass.
-- `revise` writes a new spec from its instant on. The old spec still prices
-  every earlier instant.
+- For a deadline, use a decay toward the date, not a constant low value.
+  Then the todo becomes urgent at the right time, and not before.
+- If a todo waits on another todo, make its spec a `Ref` to that todo. Then
+  it is exactly as urgent as the todo that it waits on.
+- For a group of todos, use a `Conj` of `Ref`s. The weakest member of the
+  group has the most effect on the group's value.
+- For a recurring chore, use a `Recur`. Its term restarts at each `Tended`
+  event, so its value falls with the time since the last pass.
+- The command `revise` writes a new spec that applies from its time on. The
+  old spec still gives the value at every earlier time.
 
-The roadmap's [`PRICING.md`](https://github.com/bmabsout/prodrome/blob/roadmap-data/PRICING.md) is one
-project's scale, with anchors from 10% to 90%.
+The roadmap's
+[`PRICING.md`](https://github.com/bmabsout/prodrome/blob/roadmap-data/PRICING.md)
+is one example of a price scale, with reference points from 10% to 90%.
 
 ### 8. The chain compiler
 
-*SPEC §7.1.*
+*SPEC section 7.1.*
 
-`After` and `Recur` are the terms that read history. `chain::compile(term,
-env)` resolves each of them against a snapshot. It returns a term with the
-same reading and no lookup left in it: each link becomes one graded offset,
-a chain becomes one schedule, and a recurrence becomes one piece per pass. A
-cancelled upstream compiles to the moot value 1.0, and the compiler REPORTS
-it beside the term, because nothing in the number says so. The compiler is
-an optimisation with an equivalence law (law 13), not a second semantics:
-the interpreted path is unchanged, and compiling is opt-in.
+`After` and `Recur` are the terms that read the history. The function
+`chain::compile(term, env)` looks up each of these terms in a snapshot of
+the history. It returns a term that gives the same values and does no
+lookups:
+
+- each link becomes one offset;
+- a chain becomes one schedule;
+- a recurrence becomes one piece for each pass.
+
+If a todo upstream in a chain is cancelled, its link compiles to the value
+1.0. The value alone does not show the cancellation, so the compiler also
+reports it. The compiler is an optimisation, not a second definition of
+the semantics. A law (law 13) states that the compiled term and the
+original term give the same values. The original path still works, and a
+program compiles a term only if it asks to.
 
 ### 9. The view
 
-*SPEC §6.7.*
+*SPEC section 6.7.*
 
-`entries` composes the folds into one row per todo: its outcome, its claim,
-its function, its value (a number, `absent`, or why it does not link), its
-current content, its conflicts, and the objects that mention it.
-`list_order` is the one order a list shows: most urgent first, then every row
-with no number.
+The function `entries` combines the folds into one row for each todo. A row
+contains:
+
+- the todo's outcome and its claim;
+- its function of time;
+- its value: a number, `absent`, or the reason that `link` failed;
+- its current content;
+- its conflicts;
+- the objects that mention it.
+
+The function `list_order` gives the order of a list: the most urgent todo
+first, then every row that has no number.
 
 ## Part III. Using the crate
 
-### 10. A host: payload and policy
+### 10. Your program: a payload and a policy
 
-A host is a program over the core. It supplies two things:
+A program that uses the core supplies two things:
 
-- **A payload**, `payload::Payload`: the constructor name its records are
-  stored under, their fields in order, the vocabulary those fields nest, a
-  parse and a print, and the two readings the folds take (the spec a record
-  carries, and its checklist length). The default `reference` feature ships
-  `prodrome::reference::Todo`, the payload that `conformance/` was taken
-  with. A host with its own payload can turn the feature off with
-  `default-features = false`.
-- **A policy**, `policy::Policy`: one function from an event to `Binds` or
-  `Claims`, which is the whole of SPEC §5. `policy::Untrusted` is the
-  reference policy, and `Untrusted::none()` stands behind every writer.
+- **A payload**, which implements `payload::Payload`. The payload gives the
+  name of its record kind, the fields of a record in order, the vocabulary
+  of nested values in those fields, a parse function, a print function, and
+  the two values that the folds read (the spec of a record and its checklist
+  length). The default feature `reference` includes
+  `prodrome::reference::Todo`, which is the payload of the vectors in
+  `conformance/`. If your program has its own payload, turn the feature off
+  with `default-features = false`.
+- **A policy**, which implements `policy::Policy`. A policy is one function
+  from an event to `Binds` or `Claims`. This function is all of SPEC
+  section 5. `policy::Untrusted` is the reference policy.
+  `Untrusted::none()` lets every event bind.
 
-The `prodrome` command line tool is a host like any other: the reference
-payload, the reference policy, and a clock, over the core. It is the only
-code in the workspace that reads the machine's clock.
+The `prodrome` command-line tool is one such program. It uses the reference
+payload, the reference policy, and the system clock. It is the only code in
+the workspace that reads the system clock.
 
 ### 11. The Rust quick start
 
-The crate's [quick start](../core/src/lib.rs) is a doctest, so `cargo test`
-runs it. It does these steps:
+The [quick start](../core/src/lib.rs) in the crate documentation is a
+doctest, so `cargo test` runs it. It does these steps:
 
-1. Open a store, `EventStore::<TodoEvent<Todo>>::new(&dir,
-   Untrusted::none())`, and `init` its genesis.
-2. `append` a `Created` and a `SpecRevised` whose spec is a `Decay`. Each
-   event carries its own `at`; the store has no clock.
-3. Read the DAG back with `store.dag()`. Every object is rehashed on the
-   way in.
-4. Fold at an instant: `registers::fold` the nodes, then take `env` and
-   `flatten` of the one prodrome.
-5. `link` the todo's function, and evaluate it with `fulfillment`. A value is
-   `Option<f64>`; `None` is `∅`.
-6. Or call `view::entries` for the whole composition: one row per todo.
+1. Open a store with `EventStore::<TodoEvent<Todo>>::new(&dir,
+   Untrusted::none())`, and call `init` to write its genesis.
+2. Call `append` with a `Created` event, and then with a `SpecRevised` event
+   whose spec is a `Decay`. Each event carries its own `at`. The store has
+   no clock.
+3. Read the DAG with `store.dag()`. The store checks the hash of every
+   object as it reads it.
+4. Compute the state at one time: call `registers::fold` on the nodes, and
+   then call `env` and `flatten` on the one prodrome.
+5. Call `link` on the todo's function, and compute its value with
+   `fulfillment`. The value has the type `Option<f64>`, and `None` means
+   `∅`.
+6. Or call `view::entries` to get one row for each todo.
 
-`cargo doc --open` documents every module. The module list in
-`core/src/lib.rs` maps each module to its SPEC section.
+Run `cargo doc --open` to read the documentation of every module. The module
+list in `core/src/lib.rs` gives the SPEC section of each module.
 
 ### 12. The store on disk
 
-*SPEC §3 states every rule in this section.*
+*SPEC section 3 gives the full rules for this section.*
 
 ```
 <root>/
-  objects/<sha256>.py     one object, its canonical print
-  .gitattributes          written by the store where there is none
-  .lock                   held during an append
-  quarantine/<sha256>.py  a file set aside by fsck for failing its hash
+  objects/<sha256>.py     one object, as its canonical text
+  .gitattributes          written by the store if the file does not exist
+  .lock                   held while a program appends
+  quarantine/<sha256>.py  a file that fsck moved because its hash is wrong
 ```
 
-A print is a Python-literal expression from a closed grammar (SPEC §2). The
-parser accepts that grammar and nothing else, and it evaluates nothing.
+The canonical text of an object is an expression in a small grammar that
+uses Python literal syntax (SPEC section 2). The parser accepts only that
+grammar, and it does not evaluate anything.
 
-No file names the heads. A store's tips are derived: they are the objects
-that no object names as a parent. So a store under git merges by union. Two
-clones that each appended only added files, and `git merge` of the two is
-the Prodrome's own merge: nothing can conflict. A store from before 0.9 has
-a `HEAD`, and `refs/` if it had several heads; `prodrome verify` asks you to
-delete them.
+No file records the heads. Prodrome computes the TIPS of a store: the
+objects that no other object names as a parent. So you can keep a store in
+git and merge it with `git merge`. Two clones that each appended objects
+only added files, so the merge cannot conflict. A store from before version
+0.9 has a file `HEAD`, and a directory `refs/` if it had several heads.
+`prodrome verify` asks you to delete them.
 
-A crash leaves at most a temp file, and `prodrome verify` reports it. A file
-that does not hash to its name, or does not parse, is left out of every
-read with everything that rests on it, and the read says so. Every write
-refuses while such a file is there. `prodrome fsck` moves each such file to
-`quarantine/`, and the store writes again. `prodrome verify` checks the same
-things and changes nothing.
+If the program crashes during a write, the store contains at most one
+temporary file. `prodrome verify` reports it. If a file does not hash to its
+name, or does not parse, every read leaves it out, together with every
+object that depends on it. The read reports what it left out. While such a
+file exists, every write fails. `prodrome fsck` moves each such file to
+`quarantine/`, and then the store accepts writes again. `prodrome verify`
+does the same checks and changes nothing.
 
-**A store under git needs `objects/** -text -diff` in its
-`.gitattributes`.** The first write to a store with no `.gitattributes`
-writes one, so commit it. Without it, a checkout that converts line endings
-leaves files that no longer hash to their names.
+**If you keep a store in git, its `.gitattributes` must contain
+`objects/** -text -diff`.** The first write to a store creates this file if
+it does not exist, so commit the file. Without it, git can convert line
+endings on checkout, and then the files no longer hash to their names.
 
 ### 13. WebAssembly
 
@@ -289,28 +357,30 @@ leaves files that no longer hash to their names.
 $ nix build .#prodrome-wasm
 ```
 
-This produces `result/web/` for a bundler and `result/nodejs/` for a script.
-Each export (`verify_objects`, `fold`, `registers`, `entries`,
-`fulfillment`, `explain`, `compile`, `link`, `series_knots`, `next_change`,
-`term_json`, `lifecycle`, `seal` and `merge_object`) parses its arguments,
-calls the core, and returns JSON.
+This command builds `result/web/` for a bundler and `result/nodejs/` for a
+script. Each export parses its arguments, calls the core, and returns JSON.
+The exports are `verify_objects`, `fold`, `registers`, `entries`,
+`fulfillment`, `explain`, `compile`, `link`, `series_knots`,
+`next_change`, `term_json`, `lifecycle`, `seal` and `merge_object`.
 
-The JSON shape of a term is defined in `wasm/exports/src/json.rs`. JSON is
-JavaScript's literal grammar, and the core has its own. A record crosses as
-its payload's own field names. Beside the exports is `Todos`, the same
-exports generic over a schema. A host with its own schemas builds one module
-of them all, each a class of its own, with `prodrome_wasm_exports::schema!`;
-the header of `wasm/exports/src/lib.rs` explains how.
+The file `wasm/exports/src/json.rs` defines the JSON form of a term. The
+crate needs this separate format because JavaScript reads JSON, and the
+core uses its own grammar. A record uses the field names of its payload in
+JSON. The module also has `Todos`, which gives the same exports for any
+schema. If your program has its own schemas, build one module for all of
+them with the macro `prodrome_wasm_exports::schema!`. Each schema becomes
+its own class. The header of `wasm/exports/src/lib.rs` explains how.
 
-## What this guide does not cover yet
+## Topics that this guide does not cover yet
 
 - Worked FPL examples with plotted curves: `Within`, `After`, `Recur` and
-  `Periodic`, each with its curve over a month.
-- Sync between replicas, the overlay and a `Decision` (design §6.1).
-- Signatures and keys (SPEC §3, §5).
-- A declared schema, written as text (SPEC §6).
-- Nested histories and sets of prodromes (design §6.3).
-- The digest, a summary tree over a log (design §6.5).
+  `Periodic`, each with its curve over one month.
+- Sync between replicas, the overlay, and a `Decision` (design note section
+  6.1).
+- Signatures and keys (SPEC sections 3 and 5).
+- A schema that is written as text (SPEC section 6).
+- Nested histories and sets of prodromes (design note section 6.3).
+- The digest, a summary tree over a log (design note section 6.5).
 
-Until then, [`SPEC.md`](../SPEC.md) and the design notes in this directory
-cover these topics.
+Until the guide covers these topics, read [`SPEC.md`](../SPEC.md) and the
+design notes in this directory.

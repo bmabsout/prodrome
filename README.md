@@ -6,50 +6,59 @@ semantics.
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-A Prodrome store is a history of events about todos. The history never
-changes: a write only adds an object. You read the store at an instant, and
-the reading is what the history believed then: which todos were open, and how
-well each one was fulfilled. Each todo carries a spec, a term of FPL, a small
-fuzzy temporal logic. A spec is a function of time with values in `[0, 1]`,
-and a low value means the todo is urgent. So a list sorted by value puts the
-most urgent todo first.
+Prodrome stores a history of events about todos. A program adds events to
+the history and never changes or deletes them. To read the store, you choose
+a time. Prodrome then computes the state of each todo at that time from the
+events dated at or before that time: whether the todo is open, and how well it is
+fulfilled. Each todo has a spec. A spec is a formula in FPL, a small fuzzy
+temporal logic, and it gives a number from 0 to 1 for each point in time. A
+low number means that the todo is urgent. A list sorted by this number shows
+the most urgent todo first.
 
-- **Fulfillment is a function of time.** A deadline decays. A conjunction is
-  as good as its weakest member. A term can wait on another todo.
-- **Readings at any time.** Ask for the open todos at an instant `t`, and you
-  get what the store believed at `t`.
-- **A CRDT.** Every store is a full replica. Write offline, exchange objects
-  with any other store, and the stores converge without a shared clock. Two
-  concurrent writes to one field stay visible as a conflict, for a person to
-  settle.
-- **Content-addressed.** Each object is one file, named by the SHA-256 of its
-  bytes. You can verify a store from its files alone.
-- **Standing belongs to the host.** The database asks your policy whether an
-  event binds or only claims, and it keeps both readings.
-- **Runs in the browser.** The same core compiles to WebAssembly.
+- **Fulfillment changes with time.** For example, the value of a todo with a
+  deadline falls as the deadline comes near. A group of todos is only as
+  well fulfilled as its weakest member. A todo can wait on another todo.
+- **You can read the past.** If you ask for the open todos at a past time
+  `t`, Prodrome gives the same answer that it gave at `t`.
+- **Replicas merge without a server.** Every store is a full copy, called a
+  replica. You can write to a replica offline and then exchange objects with
+  another replica. All replicas that hold the same objects give the same
+  answers, and they do not need a shared clock. If two people change the
+  same field and neither has seen the other's change, Prodrome keeps both
+  values and shows them as a conflict. A person then settles the conflict.
+- **Each object is named by its hash.** Each object is one file. The name of
+  the file is the SHA-256 hash of the file's bytes. So you can check a store
+  for damage from its files alone.
+- **Your program decides whom to trust.** For each event, Prodrome asks your
+  policy whether the event takes effect or is only a suggestion. Prodrome
+  keeps both results.
+- **It runs in the browser.** The same core compiles to WebAssembly.
 
 ## Installation
 
-The crates are not on crates.io yet. Depend on the library by git revision:
+The crates are not on crates.io yet. To use the library, add it as a git
+dependency at a fixed commit:
 
 ```toml
 [dependencies]
 prodrome = { package = "prodrome-core", git = "https://github.com/bmabsout/prodrome", rev = "<commit>" }
 ```
 
-The library requires Rust 1.85 or later. The command line tool, `prodrome`, is
-the crate `prodrome-cli`:
+The library needs Rust 1.85 or later. The command-line tool is called
+`prodrome`, and it is in the crate `prodrome-cli`. Install it with cargo or
+build it with nix:
 
 ```console
 $ cargo install --git https://github.com/bmabsout/prodrome prodrome-cli
-$ nix build github:bmabsout/prodrome#prodrome-cli    # or with nix
+$ nix build github:bmabsout/prodrome#prodrome-cli
 ```
 
 ## Example
 
-A store is a directory. This example makes one, adds two todos, and reads the
-store at three instants. Each write prints the names of the objects it
-adds; the listing below leaves them out.
+A store is a directory. This example creates a store, adds two todos, and
+reads the store at three different times. Each command that writes prints
+the names of the objects that it adds. The listing below does not show these
+names.
 
 ```console
 $ export PRODROME_ACTOR=ada
@@ -66,7 +75,7 @@ $ prodrome done water-the-plants --at 2026-09-14T10:00:00
 $ prodrome list --at 2026-09-14T12:00:00
 1 open at 2026-09-14T12:00:00 — standing behind every writer
 0.251  write-the-report  write the report
-$ prodrome list --at 2026-09-13       # the past does not change
+$ prodrome list --at 2026-09-13       # a read of the past gives the same answer
 2 open at 2026-09-13T00:00:00 — standing behind every writer
 0.501  write-the-report  write the report
 0.800  water-the-plants  water the plants
@@ -74,31 +83,35 @@ $ prodrome verify
 ok: 6 objects, 2 heads
 ```
 
-The report's value falls as its deadline comes near, so it moves to the top
-of the list. The same example in Rust is the crate's
-[quick start](core/src/lib.rs), which `cargo test` runs.
+The value of the report falls as its deadline comes near, so the report
+moves to the top of the list. For the same example in Rust, see the
+[quick start](core/src/lib.rs) in the crate documentation. `cargo test` runs
+it.
 
 ## Where to go next
 
-- [The guide](docs/guide.md): the model first, then the Rust API, the store
-  on disk and WebAssembly.
-- [`SPEC.md`](SPEC.md): the contract. The laws are in §9.
-- [`CHANGELOG.md`](CHANGELOG.md): what changed, and what the stored bytes
-  promise.
-- [The documentation index](docs/README.md): design notes, development and
-  CI, and the issue mirror.
-- [The roadmap](docs/roadmap.md): this crate's own todos, as a Prodrome
-  store on the [`roadmap-data`](https://github.com/bmabsout/prodrome/tree/roadmap-data) branch.
-- [The viewer](docs/viewer.md): the roadmap in the browser, on
+- [The guide](docs/guide.md) explains the model first. Then it explains the
+  Rust API, the files on disk, and WebAssembly.
+- [`SPEC.md`](SPEC.md) is the specification. Section 9 lists the laws that
+  every implementation must pass.
+- [`CHANGELOG.md`](CHANGELOG.md) lists the changes in each release, and
+  which changes affect the stored format.
+- [The documentation index](docs/README.md) lists the design notes, the
+  development guide, and the description of the GitHub issue mirror.
+- [The roadmap](docs/roadmap.md) describes the work that is left for this
+  crate. The roadmap is itself a Prodrome store, on the
+  [`roadmap-data`](https://github.com/bmabsout/prodrome/tree/roadmap-data)
+  branch.
+- [The viewer](docs/viewer.md) shows the roadmap in the browser, on
   [GitHub Pages](https://bmabsout.github.io/prodrome/).
-- `cargo doc --open`: the API.
+- Run `cargo doc --open` to read the API documentation.
 
 ## Contributing
 
-Issues and pull requests are welcome. A change to semantics needs a change to
-`SPEC.md` in the same pull request, and a law or a vector that pins it.
-[`docs/development.md`](docs/development.md) explains the tests, the CI and
-the repository layout.
+Issues and pull requests are welcome. If you change the semantics, change
+`SPEC.md` in the same pull request, and add a law or a vector that tests the
+change. [`docs/development.md`](docs/development.md) explains the tests, the
+CI, and the layout of the repository.
 
 ## License
 
