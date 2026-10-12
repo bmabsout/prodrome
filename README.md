@@ -1,21 +1,25 @@
 # Prodrome
 
-**An event database that keeps every change, answers for any moment, and merges copies without a server.**
+**A store that keeps every change, can be read at any moment, and merges copies without a server.**
 
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-You define the kinds of events your application records: its schema. Prodrome
-stores each event as a file and never changes it. To read the data, you pick a
-moment, and Prodrome computes the state of everything at that moment from the
-events. Copies edited on different machines merge by exchanging files.
+Prodrome stores events, and a schema says what the events are. Each event is a
+file named by the hash of its contents, and no event is ever changed or
+deleted. To read the store, you pick a moment, and Prodrome computes the state
+at that moment from the events written up to then. Copies of a store edited on
+different machines merge by exchanging files, and every copy then reads the
+same.
 
-A schema can also give each entity a value that changes over time, written in
-FPL, a small temporal logic. The reference schema in this repository is a todo
-list in which each todo's urgency rises as its deadline comes closer. The
-`prodrome` command uses it.
+What you keep in it is up to you: an application's settings or messages, a
+list of tasks, a record of decisions. A schema can also give each entity a
+value that changes over time, written in FPL, a small temporal logic.
 
-## Example: the todo list
+## Try it
+
+The `prodrome` command uses the reference schema in this repository, a todo
+list in which a todo's urgency rises as its deadline comes closer.
 
 ```console
 $ export PRODROME_ACTOR=ada
@@ -44,8 +48,7 @@ documentation.
 
 ## Why Prodrome
 
-- **Any schema.** The store is generic over the events you define. Todos are
-  one example, not the limit.
+- **Any schema.** The store is generic over the events you define.
 - **Nothing is overwritten.** Every change is kept, so any past moment can be
   read again.
 - **Values that change with time, if you want them.** With FPL, a schema
