@@ -1,0 +1,1 @@
+Change(genesis='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', deps=('b5c723bdc1329dbc987d11814aa1b381d7ba74cde1c64710bf0481862699a1e4',), event=SpecRevised(todo='signature-proof-cache', at=datetime(2026, 10, 12, 13, 54, 7, 821947), actor='maintainer', spec=Flat(value=0.9), note=''))
