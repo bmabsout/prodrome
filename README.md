@@ -108,10 +108,7 @@ it.
 
 ## Contributing
 
-Issues and pull requests are welcome. If you change the semantics, change
-`SPEC.md` in the same pull request, and add a law or a vector that tests the
-change. [`docs/development.md`](docs/development.md) explains the tests, the
-CI, and the layout of the repository.
+Issues and pull requests are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
