@@ -5,28 +5,21 @@
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Prodrome is a mergeable store of events. A schema says what the events are, and
-Prodrome computes the state from them.
+Prodrome stores events, and your schema says what they are.
 
-- **It is a CRDT** (a conflict-free replicated data type). Any two copies of a
-  store merge, in any order, and end in the same state. So you can edit copies
-  offline on different machines and sync them later, with no server to
-  coordinate them. If both sides changed the same field, the field keeps both
-  values until someone picks one.
-- **It is immutable.** No event is ever changed or deleted, and each object is
-  indexed by the hash of its contents. So you can read the state at any past
-  moment, check a store for damage, and cache a result for as long as you
-  like, because the objects it was computed from never change.
-- **It runs anywhere.** The same Rust core works on a directory of files, in
-  memory, and in the browser through WebAssembly, and the copies sync with
-  each other.
-- **Its laws make every merge succeed.** [`SPEC.md`](SPEC.md) §9 states the
-  laws that every implementation must pass, and the tests check them. They
-  guarantee that a merge never fails and that any number of copies converge.
+- **It's a CRDT,** so any two copies merge, in any order, into the same state.
+  Edit copies offline on different machines and sync them later, with no
+  server.
+- **It's immutable,** so you can read the state at any past moment, check a
+  store for damage, and cache results for good.
+- **It runs anywhere:** on disk, in memory, or in the browser through
+  WebAssembly, and all of them sync with each other.
+- **Its laws guarantee every merge,** so distributed syncs always work. The
+  laws are in [`SPEC.md`](SPEC.md) §9, and the tests check them.
 
-What you keep in it is up to you: an application's settings or messages, a
-list of tasks, a record of decisions. A schema can also give each entity a
-value that changes over time, written in FPL, a small temporal logic.
+Use it for anything made of events: an app's settings or messages, a list of
+tasks, a record of decisions. A schema can also give each item a value that
+changes over time, with FPL, a small temporal logic.
 
 ## Try it
 
