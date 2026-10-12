@@ -1,8 +1,10 @@
 # Prodrome — the specification
 
-Prodrome is a temporal, content-addressed event database: event objects in a
-DAG, folds that turn them into belief at a moment, and FPL, a fuzzy temporal
-logic whose terms are a todo's fulfillment as a function of time. This
+Prodrome is a temporal, content-addressed event database. Its events are
+objects in a DAG, and a schema says what they are (`docs/design-register-types.md`
+§5). Folds turn the events into what is believed at a moment. A schema may give
+each entity a value over time with FPL, a fuzzy temporal logic. The reference
+schema, which §4 specifies, is a todo list whose value is a todo's fulfillment. This
 document is the contract; the crates in this repository are its reference
 implementation. §9 lists the laws every implementation must pass, bit for bit
 where this text says so and to 1e-9 where it says so, and `conformance/*.py`
