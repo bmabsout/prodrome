@@ -1,0 +1,1 @@
+Change(genesis='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', deps=(), event=Created(todo='plugin-store-admission', at=datetime(2026, 10, 12, 13, 54, 7, 831098), actor='maintainer', text="add a plugin's store to its user's store through the function store::accept", note=''))
