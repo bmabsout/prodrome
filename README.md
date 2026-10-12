@@ -5,7 +5,7 @@
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Prodrome works like git. Every change is an object named by the hash of its
+Prodrome works like git. Every change is an object indexed by the hash of its
 contents, the objects form a history, and two copies sync by exchanging the
 objects that each one is missing. Three things differ:
 
@@ -55,7 +55,7 @@ documentation.
 
 - **Values that change with time, if you want them.** With FPL, a schema
   combines deadlines, priorities and dependencies into one number per entity.
-- **Storage you can check.** Each event is a file named by the SHA-256 hash of
+- **Storage you can check.** Each event is a file indexed by the SHA-256 hash of
   its contents, and `prodrome verify` checks a whole store.
 - **You decide whom to trust.** Your program's policy says whose events
   count. The others are kept as suggestions.
