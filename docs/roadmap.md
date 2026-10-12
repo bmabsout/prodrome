@@ -1,34 +1,40 @@
-# The roadmap is a Prodrome
+# The roadmap is a Prodrome store
 
-This crate's roadmap is a Prodrome store. It lives on its own branch,
+The roadmap of this crate is a Prodrome store. The store is on its own
+branch,
 [`roadmap-data`](https://github.com/bmabsout/prodrome/tree/roadmap-data),
-apart from the code: a store of objects like any other, holding what this
-crate has left to do. The [viewer](viewer.md) shows it in the browser.
+apart from the code. Each item in the store is a todo: a piece of work that
+is left for this crate. The [viewer](viewer.md) shows the roadmap in the
+browser.
 
-## Read it
+## Read the roadmap
 
-Check the branch out, and `prodrome list` folds it at any instant you ask
-for. The list is ascending in fulfillment, so the most urgent item is at the
-top.
+Check out the branch and run `prodrome list`. The command computes the
+state of every item at the time that you give, or at the current time. The
+list is sorted by fulfillment from low to high, so the most urgent item is
+at the top.
 
 ```console
 $ git switch roadmap-data
 $ prodrome list
 $ prodrome list --at 2026-09-09
-$ prodrome list --untrusted pricing-bot   # the bot's suggestions as claims
+$ prodrome list --untrusted pricing-bot   # show the bot's suggestions as claims
 ```
 
-CI on `main` checks the branch out and runs `verify` and `list` over it on
-every change. So the code cannot stop reading its own data.
+On every pull request and every push to `main`, the CI checks out the
+roadmap branch and runs `verify` and `list` on it. So a change to the code
+cannot break the reading of the roadmap without the CI failing.
 
-## Issues are items
+## Issues become items
 
-An issue opened on this repository becomes item `gh-<number>` on the
-roadmap branch, at a neutral 80%. Its page is
-`https://bmabsout.github.io/prodrome/#/todo/gh-<number>`. Closing the issue
-completes the item, and reopening the issue reopens it.
+When someone opens an issue on this repository, a workflow adds an item
+`gh-<number>` to the roadmap branch, with a neutral price of 80%. The
+item's page is `https://bmabsout.github.io/prodrome/#/todo/gh-<number>`.
+When someone closes the issue, the workflow completes the item. When someone
+reopens the issue, the workflow reopens the item.
 
-A maintainer prices an item with a comment, on the scale in the branch's
+A maintainer sets the price of an item with a comment on the issue. The
+price uses the scale in the branch's
 [`PRICING.md`](https://github.com/bmabsout/prodrome/blob/roadmap-data/PRICING.md):
 
 ```
@@ -37,26 +43,34 @@ A maintainer prices an item with a comment, on the scale in the branch's
 /price ref gh-7
 ```
 
-A pricing bot (Claude) suggests a price on every new issue. Its suggestion
-is stored as a CLAIM by `pricing-bot`. The viewer shows it beside the item,
-and it binds nothing until a maintainer replies `/price accept`.
+A pricing bot (Claude) suggests a price for every new issue. The workflow
+stores the suggestion as a claim by the actor `pricing-bot`. A claim is a
+suggestion that does not take effect. The viewer shows the suggestion next
+to the item. The suggestion takes effect only when a maintainer replies
+`/price accept`.
 
 The workflows are `.github/workflows/mirror.yml` and `price.yml`. Both run
-one deterministic, offline binary, `prodrome-github`, from its own crate,
-`github/`. It is an optional integration, like the viewer: nothing in
-`core/` or `cli/` knows GitHub. [`github-agent.md`](github-agent.md)
-explains the flow and where trust stops.
+one binary, `prodrome-github`, which is deterministic and works offline. The
+binary is in its own crate, `github/`. It is an optional part, like the
+viewer: no code in `core/` or `cli/` knows about GitHub.
+[`github-agent.md`](github-agent.md) explains the workflow and the limits
+of trust in it.
 
-## Contribute to it
+## Add to the roadmap
 
-The roadmap branch changes the way the code changes: by a pull request,
-against that branch. The store holds no policy, because standing belongs to
-the host (SPEC §5), and a directory of objects is not a host. Content
-addressing takes its place. Every object is named by the hash of its bytes,
-nothing is ever rewritten, and a pull request's diff is exactly the objects
-it adds. So reviewers read the objects like code, and merging them is a
-maintainer's act.
+To add or change roadmap items, open a pull request against the
+`roadmap-data` branch, in the same way as for a change to the code. The
+store has no policy, because the program that reads a store supplies the
+policy (SPEC section 5), and a directory of objects is not a program.
+Instead, the review process protects the roadmap:
 
-To see what a particular writer's events would say without folding them,
-pass `--untrusted NAME`. The list then shows the confirmed reading and the
-claimed one side by side.
+- The name of every object is the hash of its bytes.
+- No one changes or deletes an object.
+- So the diff of a pull request contains exactly the objects that it adds.
+
+Reviewers read these objects in the same way as code, and a maintainer
+decides whether to merge them.
+
+To see what one writer's events would change without applying them, pass
+`--untrusted NAME`. The list then shows the confirmed state and the claimed
+state side by side.
