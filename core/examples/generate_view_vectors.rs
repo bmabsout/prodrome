@@ -4,8 +4,8 @@
 //! this, which is what makes the two files FROZEN evidence rather than a
 //! cache `conformance_view.rs` could quietly refill. See
 //! `core/tests/all/conformance_view.rs`'s module doc for the law this pins and
-//! `README.md`/`SPEC.md` §6.7 for the same rule stated for a reader who never
-//! opens this file.
+//! `docs/development.md`/`SPEC.md` §6.7 for the same rule stated for a reader
+//! who never opens this file.
 //!
 //! THE GENERATOR IS NOT SECOND. `common::a_log` is `tests/all/fold_laws.rs`'s own
 //! random-log strategy (`tests/common/mod.rs`, moved there so this example
