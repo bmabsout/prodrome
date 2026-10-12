@@ -1,13 +1,29 @@
 # Contributing to Prodrome
 
-Issues and pull requests are welcome. This page explains the workflow for a
-change. [`AGENTS.md`](AGENTS.md) gives the rules for code style, for people
-and for coding agents. [`docs/development.md`](docs/development.md)
-explains the tests, the CI, and the layout of the repository.
+Thank you for your interest in Prodrome. Issues and pull requests are
+welcome. This page explains how to set up the project, how to test a
+change, how maintainers review it, and the rules for code. [`docs/development.md`](docs/development.md) gives more detail
+about the tests, the CI, and the layout of the repository.
 
-## Before you push
+## Set up
 
-Run these checks. The CI runs the same checks.
+The project uses a nix flake. The flake gives the Rust toolchain and all
+other tools that the CI uses:
+
+```console
+$ git clone https://github.com/bmabsout/prodrome
+$ cd prodrome
+$ nix develop
+```
+
+If you do not use nix, install Rust 1.85 or later with rustup. You can then
+build and test the Rust crates with cargo. You need nix to build the wasm
+package, the viewer, and the Typst package.
+
+## Test your change
+
+Run these checks before you push. The CI runs the same checks, so a change
+that passes them locally usually passes in the CI:
 
 ```console
 $ nix develop -c cargo fmt --all --check
@@ -15,77 +31,106 @@ $ nix develop -c cargo clippy --locked --workspace --all-targets -- -D warnings
 $ PRODROME_MAX_CASES=32 nix develop -c cargo test --locked --workspace
 ```
 
-Before you ask for a review, also run the full gate:
+The variable `PRODROME_MAX_CASES=32` limits each property test to 32
+generated cases, so the tests finish in about a minute. Before you ask for
+a review, run the full gate. It runs every test at its full number of cases
+and builds every package:
 
 ```console
 $ nix flake check
 ```
 
-## One change in each pull request
+## Open a pull request
 
-Put one change in each pull request. If a change needs a preparatory
-refactor, open the refactor as its own pull request first. Describe the
-change in two or three plain sentences, and add one line that says how you
-tested it. The file `.github/pull_request_template.md` gives this form.
+Put one change in each pull request. A small pull request is easier to
+review, and if it breaks something, it is easier to find and revert. If
+your change needs a preparatory refactor, open the refactor as its own pull
+request first.
 
-## A change to semantics needs the SPEC, and a test
+Describe the change in two or three plain sentences, as you would explain
+it to a colleague. Add one line that says how you tested it. The template
+`.github/pull_request_template.md` gives this form. The commits give the
+details.
+
+## A change to semantics needs the SPEC and a test
 
 [`SPEC.md`](SPEC.md) is the specification, and this crate is its reference
-implementation. If your change alters what a program can observe, such as a
-value, a stored byte, or a result of `verify`, do these things in the same
-pull request:
+implementation. Other implementations depend on the SPEC, so the SPEC must
+always describe what the code does. If your change alters what a program
+can observe, such as a value, a stored byte, or a result of `verify`, do
+these things in the same pull request:
 
 1. Change `SPEC.md` to describe the new behaviour.
 2. Add a law in SPEC section 9 and a property test that checks it, or add a
-   vector in `conformance/`.
-3. Add an entry to [`CHANGELOG.md`](CHANGELOG.md). If the entry changes the
+   vector in `conformance/`. The test shows that the code follows the new
+   text.
+3. Add an entry to [`CHANGELOG.md`](CHANGELOG.md). If the change affects the
    stored format, say so.
 
-Never change the fields of a stored constructor that a release contains.
-To store new data, add a new constructor.
+Do not change the fields of a stored constructor that a release contains.
+Stores that exist today contain those bytes, and the name of each object is
+the hash of its bytes. To store new data, add a new constructor.
+
+## How maintainers review and merge
+
+The CI must pass on your pull request: the `cargo (lint)`, `cargo (test)`
+and `nix` checks. A maintainer then reads the change. The maintainer checks
+that the change does one thing, that the SPEC and the tests match the code,
+and that the code follows the style below. When the maintainer agrees with
+the change, the maintainer merges it with a merge commit.
 
 ## Roadmap items arrive by pull request
 
-The roadmap is a Prodrome store on the branch `roadmap-data`. To add or
-change an item, write the objects with the `prodrome` CLI, and open a pull
-request against `roadmap-data`. Do not edit or delete an existing object.
-The diff of the pull request must contain only new files in
-`roadmap/objects/`. A verdict on an item, such as "done", must name its
-evidence: a merged pull request, or the code that does the work.
-[`docs/roadmap.md`](docs/roadmap.md) explains the roadmap.
+The roadmap is a Prodrome store on the branch `roadmap-data`.
+[`docs/roadmap.md`](docs/roadmap.md) explains it. To add or change an item,
+write the objects with the `prodrome` CLI, and open a pull request against
+`roadmap-data`. Do not edit or delete an existing object. Each object is
+named by the hash of its bytes, so the diff of the pull request contains
+exactly the objects that it adds, and a reviewer can read each one. If you
+mark an item as done, name the evidence in the note: a merged pull request,
+or the code that does the work.
 
-## Write in plain technical English
+## Code style
 
-Write all prose in plain technical English, close to ASD-STE100. This rule
-covers documentation, comments, CHANGELOG entries, commit messages, pull
-request descriptions, and the text of roadmap items. A new reader must
-understand each sentence on the first read.
+These rules keep the code correct by construction, so that the compiler
+finds mistakes before a test or a user does.
 
-1. Give each sentence a concrete subject, a plain verb, and an explicit
-   object. Say who does what to what.
-2. Only people and programs act. Do not write that data, bytes, documents
-   or notes "promise", "say", "plan", "name" or "keep" something.
-3. Do not use riddles, wordplay or slogans. State the fact plainly.
-4. Use common words. Define each term of art in one plain sentence where it
-   first appears, or link to its definition. Do not put two terms of art in
-   one phrase.
-5. Put one idea in each sentence. Write instructions in the imperative.
-   Put a condition first.
-6. Keep the words "the" and "a". Do not drop words to save space.
-7. Use the active voice and the simple present tense.
-8. Write descriptions as explanations for a stranger, not as notes to
-   yourself.
+- **Make invalid states unrepresentable.** Use an enum for a value that has
+  several states, not a `bool` or an `Option`. Then no code can build a
+  state that has no meaning.
+- **Parse input once, at the edge.** Check input when it enters the program,
+  and return a type that records the check, such as `TodoId`. Then later
+  code does not need to check again.
+- **Write total functions.** Avoid `unwrap`, `expect` and `panic!`. If a
+  state is impossible, change the types so that it cannot occur.
+- **Match exhaustively.** Avoid a `_ =>` arm in a match on our own enums.
+  Then a new variant makes the compiler show every place that must handle
+  it.
+- **Use data for closed sets of behaviour.** Write a closed set of
+  behaviours as an enum that one function interprets, as `Term` does. Data
+  is easier to test, print and compare than a closure.
+- **Keep the core pure.** The core does not read the clock. Only the
+  command-line tool reads it. A pure function gives the same answer for the
+  same input, so a test can check it.
+- **Write one combinator with laws.** Do not copy a function for each type.
+  Make it generic, and state its laws.
+- **Test each law.** State each law in SPEC section 9, and name it in the
+  doc comment of the test that checks it.
+- **Put one concept in each file,** and name the file for the concept.
+- **Do not add checks for states that the types exclude,** and do not add an
+  abstraction that no code uses.
+- **Write comments about the code, not its history.** The commit message
+  records the history.
 
-For example, do not write "the history is free, and a schema is its
-reading". Write "Events are stored without a schema, and a program applies
-a schema when it reads the events."
+Some existing code does not follow every rule yet. The maintainers fix
+these places over time. Do not add new ones.
 
-## Public repository
+## This repository is public
 
-This repository is public. In examples, tests and roadmap items, use only
-neutral names and data, such as the actor `ada` and the todo "write the
-report". Do not write about a real person, account, deployment, place or
-private project.
+Everything that you write here is public. In examples, tests and roadmap
+items, use only neutral names and data, such as the actor `ada` and the
+todo "write the report". Do not write about a real person, account,
+deployment, place or private project.
 
 ## License
 

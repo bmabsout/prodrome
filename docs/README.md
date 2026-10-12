@@ -15,8 +15,7 @@ specification.
 
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) explains the workflow for a
   change, and the rules for written English.
-- [`../AGENTS.md`](../AGENTS.md) gives the rules for code style, for people
-  and for coding agents.
+- [`../AGENTS.md`](../AGENTS.md) gives instructions to coding agents.
 - [`development.md`](development.md) explains the tests, the CI, the
   conformance vectors, and the layout of the repository.
 - [`roadmap.md`](roadmap.md) explains the roadmap branch, how issues become
