@@ -802,6 +802,14 @@ and every vector and export reads as it did.
 
 ### Changed
 
+- **The README is short, and a guide starts in `docs/guide.md`.** The README
+  keeps what Prodrome is, its properties, installation, one example and
+  links. The model, pricing, the Rust API, the store on disk and WebAssembly
+  move to the guide, which teaches a reading of history at an instant
+  before the operations. Testing, CI, the vectors and the layout move to
+  `docs/development.md`; the roadmap and the viewer get pages of their own
+  (`docs/roadmap.md`, `docs/viewer.md`), and `docs/README.md` indexes them.
+  No code, law, vector or stored byte changes.
 - **CI: the pull request loop is about a minute (README, Testing).** A
   pull request's `cargo` job runs fmt, clippy and the doctests (`lint`)
   beside the workspace's other tests (`test`), with the flake's toolchain,
