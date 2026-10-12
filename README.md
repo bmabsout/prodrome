@@ -1,16 +1,21 @@
 # Prodrome
 
-**A store that keeps every change, can be read at any moment, and merges copies without a server.**
+**Like git, but for data: every change is kept, any moment can be read, and copies merge without stopping for conflicts.**
 
 [![CI](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml/badge.svg)](https://github.com/bmabsout/prodrome/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Prodrome stores events, and a schema says what the events are. Each event is a
-file named by the hash of its contents, and no event is ever changed or
-deleted. To read the store, you pick a moment, and Prodrome computes the state
-at that moment from the events written up to then. Copies of a store edited on
-different machines merge by exchanging files, and every copy then reads the
-same.
+Prodrome works like git. Every change is an object named by the hash of its
+contents, the objects form a history, and two copies sync by exchanging the
+objects that each one is missing. Three things differ:
+
+- **It stores events, not files.** A schema says what the events are, and
+  Prodrome computes the state from them.
+- **A merge never stops.** Two copies combine by keeping the events of both.
+  If both sides changed the same field, the field shows both values until
+  someone picks one.
+- **You can read any moment.** Ask for the state at any time, not only at a
+  commit, and you get the answer the store gave at that time.
 
 What you keep in it is up to you: an application's settings or messages, a
 list of tasks, a record of decisions. A schema can also give each entity a
@@ -46,16 +51,10 @@ output above shows only the list rows.
 The same example in Rust is the [quick start](core/src/lib.rs) in the crate
 documentation.
 
-## Why Prodrome
+## Also
 
-- **Any schema.** The store is generic over the events you define.
-- **Nothing is overwritten.** Every change is kept, so any past moment can be
-  read again.
 - **Values that change with time, if you want them.** With FPL, a schema
   combines deadlines, priorities and dependencies into one number per entity.
-- **Copies merge without a server.** Edit offline on several machines and
-  exchange files; every copy then gives the same answers. Conflicting edits
-  are kept side by side for a person to settle.
 - **Storage you can check.** Each event is a file named by the SHA-256 hash of
   its contents, and `prodrome verify` checks a whole store.
 - **You decide whom to trust.** Your program's policy says whose events
