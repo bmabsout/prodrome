@@ -1,0 +1,1 @@
+Change(genesis='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', deps=(), event=Created(todo='lazy-content-by-hash', at=datetime(2026, 10, 17, 10, 4, 41, 231240), actor='maintainer', text="sync a store's skeleton eagerly and fetch its content lazily, by hash", note='planned 2026-10-17'))
