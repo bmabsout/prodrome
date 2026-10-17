@@ -1,0 +1,1 @@
+Change(genesis='e44b01205cdace6f30ebc3c48eee515a5e1ef4d70aae9a18b591ba5f45a131a9', deps=(), event=Created(todo='mergeable-tag-sets', at=datetime(2026, 10, 17, 10, 4, 41, 250366), actor='maintainer', text='a register for a mergeable set of tags on any object, with aliases for renames', note='planned 2026-10-17'))
